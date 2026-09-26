@@ -115,6 +115,19 @@ async def put_compare(fid: int, body: CompareWith):
     return library.get(fid, full=True)
 
 
+@app.get("/api/files/{fid}/valuation")
+async def get_valuation(fid: int, cell: str | None = None, low: float | None = None, high: float | None = None):
+    """The Valuation tab: DCFs found in the workbook's formulas and recomputed in Python (no model calls)."""
+    import valuation
+    rec = library.get(fid, full=True)
+    if not rec or rec["status"] != "done":
+        raise HTTPException(404, "no processed file with that id")
+    try:
+        return await run_in_threadpool(valuation.view, rec["db_path"], cell, low, high)
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {e}")
+
+
 @app.get("/api/usage")
 def get_usage(session: str | None = None):
     import ratelimit

@@ -161,6 +161,32 @@ textarea { flex: 1; resize: none; min-height: 44px; max-height: 180px; padding: 
   border: 1px solid var(--rule); background: var(--ground); line-height: 1.45; }
 
 .chart-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px 12px; }
+.val-top { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; }
+.val-top label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.val-top label:first-child { flex: 1 1 280px; min-width: 0; }
+.val-top select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.val-top input { width: 90px; font-variant-numeric: tabular-nums; }
+.val-cases { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.val-case { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
+.val-case.base { border-color: var(--accent); }
+.val-case span { font-size: 12px; color: var(--muted); }
+.val-case b { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.val-case em { font-style: normal; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.val-tables td.n, .val-tables th.n { text-align: right; white-space: nowrap; }
+.val-tables tr.tot td { font-weight: 600; border-top: 1px solid var(--ink); }
+.val-tables .src { font-size: 12px; color: var(--muted); }
+@media (max-width: 760px) { .val-cases { grid-template-columns: minmax(0, 1fr); } }
+.dcf-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; display: grid; gap: 10px; }
+.dcf-card .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.dcf-card .top h4 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; flex-basis: 100%; }
+.dcf-card .big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dcf-card .facts { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--muted); }
+.dcf-card .facts b { color: var(--ink); font-weight: 500; }
+.dcf-card table { width: auto; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+.dcf-card td { padding: 3px 12px 3px 0; border-bottom: 1px solid var(--rule); }
+.dcf-card td.n { text-align: right; }
+.dcf-card tr.tot td { font-weight: 600; border-bottom: 0; }
+.dcf-card ul { margin: 0; padding-left: 18px; font-size: 13px; }
 .chart-card h4 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
 .chart-card .sub { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 .chart-box { position: relative; height: 300px; }
@@ -237,6 +263,7 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
     <nav class="tabs" id="tabs">
       <button type="button" data-tab="overview">Overview</button>
       <button type="button" data-tab="changes">Changes<span class="count" id="chg-count" hidden></span></button>
+      <button type="button" data-tab="valuation">Valuation</button>
       <button type="button" data-tab="ask">Ask</button>
     </nav>
   </div>
@@ -424,7 +451,7 @@ function renderTab() {
   $("#tabs").hidden = false;
   for (const b of $("#tabs").children) b.classList.toggle("on", b.dataset.tab === tab);
   $("#composer").hidden = tab !== "ask";
-  ({ overview: renderOverview, changes: renderChanges, ask: renderAsk })[tab]();
+  ({ overview: renderOverview, changes: renderChanges, valuation: renderValuation, ask: renderAsk })[tab || "overview"]();
 }
 
 // ---- overview ----
@@ -504,6 +531,88 @@ function tableOf(rows, cols) {
     ${rows.map(r => `<tr>${cols.map(c => `<td>${c[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 function more(total, shown) { return total > shown ? `<p class="muted" style="font-size:13px;margin:8px 0 0">Showing ${shown} of ${fmtN(total)}.</p>` : ""; }
+
+// ---- valuation ----
+// DCFs found in the workbook's own formulas and recomputed in Python on the server (no model calls).
+const valState = {};
+async function renderValuation() {
+  const fid = detail.id, saved = valState[fid] || JSON.parse(store(`val:${fid}`) || "{}");
+  $("#pane").innerHTML = `<div class="wrap"><p class="muted">Finding the DCFs in this workbook…</p></div>`;
+  const q = new URLSearchParams();
+  if (saved.cell) q.set("cell", saved.cell);
+  if (saved.low != null) q.set("low", saved.low);
+  if (saved.high != null) q.set("high", saved.high);
+  let v;
+  try {
+    const res = await fetch(`/api/files/${fid}/valuation?${q}`);
+    v = await res.json(); if (!res.ok) throw new Error(v.detail || res.statusText);
+  } catch (e) { $("#pane").innerHTML = `<div class="wrap"><div class="callout red">Couldn't load the valuation: ${esc(e.message)}</div></div>`; return; }
+  if (detail?.id !== fid || tab !== "valuation") return;
+  const n = x => x == null ? "–" : Number(x).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const pct = x => (x * 100).toFixed(2) + "%";
+  const failed = v.valuations.filter(x => !x.ok || !x.matches);
+  const failedList = failed.length ? `<details class="more"><summary>${failed.length} other valuation cell${failed.length === 1 ? "" : "s"} found but not reproduced</summary>
+      <table><tbody>${failed.map(x => `<tr><td><span class="ref">${esc(x.cell)}</span> ${esc(x.label)}</td><td class="n">${n(x.value)}</td><td class="src">${esc(x.reason || "recomputed value differs from the workbook")}</td></tr>`).join("")}</tbody></table></details>` : "";
+  if (!v.selected) {
+    $("#pane").innerHTML = `<div class="wrap"><div class="card"><p style="margin:0">No DCF found in this workbook. The Valuation tab looks for
+      cells labelled like a valuation (enterprise value, equity value, NPV, total valuation) whose formula is a <code>SUMPRODUCT</code> of a
+      cash-flow row and a discount-factor row, possibly plus other amounts.</p></div>${failedList}</div>`;
+    return;
+  }
+  const r = v.result, A = v.assumptions, C = v.cases;
+  const units = A.units.length ? A.units.join(", ") : "Units aren't labelled on the cash-flow row";
+  const ok = v.valuations.filter(x => x.ok && x.matches);
+  const delta = (x, base) => { const d = x - base; return `${d >= 0 ? "+" : "−"}${n(Math.abs(d))} (${d >= 0 ? "+" : "−"}${Math.abs(d / base * 100).toFixed(1)}%)`; };
+  const src = x => x ? `<div class="src">${esc(x)}</div>` : "";
+  const casesHtml = [["low", "Low value"], ["base", "Model"], ["high", "High value"]].map(([k, t]) => `
+    <div class="val-case ${k}"><span>${t} · discount rate ${pct(C[k].rate)}</span><b>${n(C[k].total)}</b>
+      <em class="${k === "base" ? "" : C[k].total < C.base.total ? "chg-down" : "chg-up"}">${k === "base"
+        ? (r.matches ? `Matches the workbook's ${esc(v.selected)}` : `Workbook ${esc(v.selected)}: ${n(r.compare_to)}`)
+        : delta(C[k].total, C.base.total) + " vs model"}</em></div>`).join("");
+  const assumptions = `<table><tbody>
+      <tr><td>Discount rate</td><td class="n">${pct(A.rate)}</td></tr><tr><td colspan="2" class="src">${esc(A.rate_source)}</td></tr>
+      <tr><td>Valuation date</td><td class="n">${esc(A.valuation_date)}</td></tr><tr><td colspan="2" class="src">${esc(A.valuation_date_source)}</td></tr>
+      <tr><td>Cut-off (last discounted period)</td><td class="n">${esc(A.terminal_date || "none")}</td></tr>${A.terminal_source ? `<tr><td colspan="2" class="src">${esc(A.terminal_source)}</td></tr>` : ""}
+      <tr><td>Discounting</td><td class="n">${esc(A.timing)}-of-period, ${esc(A.day_count)}</td></tr>
+      <tr><td>Periods discounted</td><td class="n">${A.periods} (${esc(A.first_period)} to ${esc(A.last_period)})</td></tr>
+      <tr><td>Cash flows (undiscounted)</td><td class="n">${n(A.undiscounted)}</td></tr><tr><td colspan="2" class="src">${A.cashflow.map(esc).join("; ")}</td></tr>
+      <tr><td>Discount factors</td><td class="n"><span class="ref">${esc(A.factor_row.split(" ")[0])}</span></td></tr><tr><td colspan="2" class="src">${esc(A.factor_row)} · period ends ${esc(A.period_ends)}</td></tr>
+      <tr><td>Units</td><td class="n">${esc(A.units.join(", ") || "not labelled")}</td></tr>
+    </tbody></table>`;
+  const bridgeRows = r.bridge.map(b => `<tr><td>${b.value < 0 ? "Less" : "Add"}: ${esc(b.label)}<div class="src">${esc(b.source)}</div></td>
+      ${["low", "base", "high"].map(() => `<td class="n">${n(b.value)}</td>`).join("")}</tr>`).join("");
+  const conclusions = `<table><thead><tr><th></th><th class="n">Low</th><th class="n">Model</th><th class="n">High</th></tr></thead><tbody>
+      <tr><td>Discount rate</td>${["low", "base", "high"].map(k => `<td class="n">${pct(C[k].rate)}</td>`).join("")}</tr>
+      <tr><td>PV of cash flows</td>${["low", "base", "high"].map(k => `<td class="n">${n(C[k].pv)}</td>`).join("")}</tr>
+      ${bridgeRows}
+      <tr class="tot"><td>${esc(ok.find(x => x.cell === v.selected)?.label || "Value")}</td>${["low", "base", "high"].map(k => `<td class="n">${n(C[k].total)}</td>`).join("")}</tr>
+      <tr><td>vs model</td><td class="n">${delta(C.low.total, C.base.total)}</td><td class="n">–</td><td class="n">${delta(C.high.total, C.base.total)}</td></tr>
+      <tr><td>Workbook's calculated value <span class="ref">${esc(v.selected)}</span></td><td></td><td class="n">${n(r.compare_to)}</td><td></td></tr>
+      <tr><td colspan="4">${r.matches ? `<span class="pill ok">Python recompute matches the workbook</span>` : `<span class="pill bad">Python recompute differs from the workbook by ${n(r.total - r.compare_to)}</span>`}</td></tr>
+    </tbody></table>`;
+  $("#pane").innerHTML = `<div class="wrap">
+    <div class="val-top">
+      <label>Valuation<select id="val-cell">${ok.map(x => `<option value="${esc(x.cell)}" ${x.cell === v.selected ? "selected" : ""}>${esc(x.label || x.cell)} · ${esc(x.cell)} · ${n(x.value)}</option>`).join("")}</select></label>
+      <label>Low case rate (%)<input id="val-low" type="number" step="0.25" value="${(C.low.rate * 100).toFixed(2)}"></label>
+      <label>High case rate (%)<input id="val-high" type="number" step="0.25" value="${(C.high.rate * 100).toFixed(2)}"></label>
+      <button class="btn ghost" type="button" id="val-reset">Model rate ± 1%</button>
+    </div>
+    <div class="val-cases">${casesHtml}</div>
+    <div id="val-chart"></div>
+    <div class="card val-tables"><h3>Conclusions</h3><div class="scroll-x">${conclusions}</div></div>
+    <div class="card val-tables"><h3>Valuation assumptions</h3>${assumptions}</div>
+    <p class="muted" style="font-size:12.5px;margin:0">${esc(units)}. Recomputed in Python from the workbook's saved cash flows, with no model calls.
+      Low and high change the discount rate only: the cash flows and bridge amounts stay as the workbook saved them. Levers like growth, CPI or
+      terminal assumptions change the cash flows themselves, which needs the Python rebuild of the model.</p>
+    ${failedList}
+  </div>`;
+  const card = chartCard(v.chart); $("#val-chart").append(card); mountCharts($("#val-chart"));
+  const save = st => { valState[fid] = st; store(`val:${fid}`, JSON.stringify(st)); renderValuation(); };
+  $("#val-cell").onchange = e => save({ cell: e.target.value });
+  const rates = () => save({ cell: v.selected, low: parseFloat($("#val-low").value) / 100, high: parseFloat($("#val-high").value) / 100 });
+  $("#val-low").onchange = rates; $("#val-high").onchange = rates;
+  $("#val-reset").onclick = () => save({ cell: v.selected });
+}
 
 function renderChanges() {
   const d = detail, x = d.diff;
@@ -631,6 +740,8 @@ async function ask(text) {
       steps.insertAdjacentHTML("beforeend", `<div class="step muted">Paused ${e.seconds}s: ${esc(e.model)} is near its per-minute budget (limit minus a safety margin).</div>`);
     } else if (e.type === "chart_review") {
       label.textContent = `Checking the chart “${e.title || ""}” before showing it…`;
+    } else if (e.type === "dcf") {
+      a.append(dcfCard(e.result));
     } else if (e.type === "chart") {
       const card = chartCard(e.spec); a.append(card); mountCharts(a);
     } else if (e.type === "error") a.insertAdjacentHTML("beforeend", `<div class="error">${esc(e.text)}</div>`);
@@ -712,6 +823,30 @@ function phaseText(d) {
   if (!d.phases || !d.phases.length) return "";
   return "<br>" + d.phases.map(p => `${esc(p.name)} ${esc(d.labels[p.start])}–${esc(d.labels[p.end])}`).join(" · ");
 }
+function dcfCard(r) {
+  const n = v => v == null ? "" : v.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const pct = v => (v * 100).toFixed(2) + "%";
+  const units = r.units.length ? r.units.join(", ") : "units not labelled";
+  const badge = r.compare_to == null ? "" : r.matches
+    ? `<span class="pill ok">Matches ${esc(r.compare_source.split(" ")[0])}</span>`
+    : `<span class="pill bad">Workbook ${esc(r.compare_source.split(" ")[0])}: ${n(r.compare_to)}</span>`;
+  const bridge = r.bridge.length ? `<table><tr><td>PV of cash flows</td><td class="n">${n(r.pv)}</td></tr>${r.bridge.map(b => {
+      return `<tr><td>${b.value < 0 ? "Less" : "Add"}: ${esc(b.label)}</td><td class="n">${n(b.value)}</td></tr>`; }).join("")}
+      <tr class="tot"><td>Total</td><td class="n">${n(r.total)}</td></tr></table>` : "";
+  const sens = r.sensitivity.length ? `<table><tr><td class="muted">Discount rate</td>${r.sensitivity.map(x => `<td class="n">${pct(x.rate)}</td>`).join("")}<td class="n"><b>${pct(r.rate)}</b></td></tr>
+      <tr><td class="muted">Value</td>${r.sensitivity.map(x => `<td class="n">${n(x.total)}</td>`).join("")}<td class="n"><b>${n(r.total)}</b></td></tr></table>
+      <div class="muted" style="font-size:12px">What-ifs hold the workbook's saved cash flows and bridge fixed.</div>` : "";
+  const fixes = r.corrections.length ? `<div class="callout amber" style="font-size:13px"><b>Corrected to follow the workbook's formula:</b><ul>${r.corrections.map(c => `<li>${esc(c)}</li>`).join("")}</ul></div>` : "";
+  const card = document.createElement("div"); card.className = "dcf-card";
+  card.innerHTML = `<div class="top"><h4>DCF recomputed in Python</h4><span class="big">${n(r.total)}</span><span class="muted">${esc(units)}</span>${badge}</div>
+    <div class="facts"><span>Rate <b>${pct(r.rate)}</b></span><span>Valuation date <b>${esc(r.valuation_date)}</b></span>
+      <span>Periods <b>${r.periods}</b> (${esc(r.first_period || "")} to ${esc(r.last_period || "")})</span>
+      <span>Convention <b>${esc(r.timing)}-of-period, ${esc(r.day_count)}</b></span></div>
+    <div class="facts"><span>Cash flows <b>${r.rows.map(esc).join("; ")}</b></span></div>
+    ${fixes}${bridge}${sens}`;
+  return card;
+}
+
 function chartCard(spec) {
   const card = document.createElement("div"); card.className = "chart-card";
   const refs = spec.series.map(s => `<span class="ref">${esc(s.range)}</span>`).join("");
@@ -814,7 +949,7 @@ async function copyText(text, btn, card) {
 function renderReview(card) {
   const spec = card._spec, rv = spec.review, slot = card.querySelector(".review-slot");
   if (!slot) return;
-  if (!rv) { slot.innerHTML = ""; return; }
+  if (!rv) { slot.innerHTML = spec.note ? `<p class="chart-note">${esc(spec.note)}</p>` : ""; return; }
   const names = { title: "title", kind: "chart type", x_start: "visible range", x_end: "visible range", y_min: "y-axis range", y_max: "y-axis range", note: "note" };
   const changed = [...new Set(rv.changed.map(k => names[k] || k))];
   const head = rv.verdict === "skipped" ? `Not reviewed: ${esc(rv.issues[0] || "")}`

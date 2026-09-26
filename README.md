@@ -65,6 +65,37 @@ range are corrected in code. The data can't be changed; "Full range" undoes the 
 told what was changed so its answer matches. `find` ignores spaces and punctuation ("cash flow" finds
 "Cashflow"). "Copy data" falls back to a selectable panel where the browser blocks clipboard access.
 
+DCF recompute: the `dcf` tool (`bench/dcf.py`) redoes a valuation's discounting in plain Python from the
+workbook's saved cash-flow rows: PV to the valuation date, end- or mid-period, Excel `YEARFRAC` actual/actual or
+actual/365 (what `XNPV` uses), an optional cut-off date, and a bridge to equity or enterprise value (cells, numbers,
+or a row's amount in the valuation-date period, like a `SUMIFS` on the date row). With `compare_to` it checks
+the result against the workbook's own value. When they differ, it follows that cell's formula to the model's
+`SUMPRODUCT` and discount factor row. If that formula shows the cause (the wrong cash-flow row, a cut-off, the
+convention, a valuation-date amount), it corrects the run and lists every correction; otherwise it reports the
+mismatch. `rates` gives what-if values at other discount rates, with the cash flows and bridge held fixed; the
+cash flows themselves aren't recalculated. Called without a cash-flow row, it lists cells that look like
+valuation results, with their formulas; without a rate or valuation date, it lists candidate cells. The chat
+shows each result as a card.
+
+Valuation tab: finds every DCF in a workbook from its formulas and recomputes it, with no model calls
+(`bench/valuation.py`, `GET /api/files/{id}/valuation`). A DCF is a cell labelled like a valuation (enterprise
+value, equity value, NPV, total valuation) whose formula is, or adds amounts to, a `SUMPRODUCT` of a
+cash-flow row and a discount-factor row. The assumptions are read back from the discount factors: for each
+candidate valuation date and convention, the rate is back-solved from one factor and kept only if it reproduces
+every factor. The cut-off is the last period with a non-zero factor, and the rate is named by the cell holding that
+value. The value cell's formula is split into additive terms: the PV, other cells (debt, cash) and `SUMIFS`
+picks of one period's amount. The tab shows three things:
+- Low, model and high values. The low and high discount rates are editable and default to the model's rate ± 1
+  percentage point.
+- A chart of the cash flows and their present values over the discounted periods. A final-period outlier such as
+  a terminal value is left out of the default view and named in a note.
+- A conclusions table (PV, bridge, value and the difference from the model, for each case) and an assumptions
+  table giving each assumption's source cell.
+
+Valuation cells that can't be reproduced, for example a result rescaled by a units divisor or a rolling
+`XNPV`, are listed with the reason. Low and high change only the discount rate, so levers that move the cash
+flows (growth, CPI, terminal assumptions) need the Python rebuild.
+
 Token usage: every model call (chat, identify, change summary) is logged to the `usage` table in
 `out/registry.db` (`bench/usage.py`). The header shows this chat and all-time totals; click it for totals by
 purpose, model, day and recent chats. A chat session starts with the first question and ends with "New chat".

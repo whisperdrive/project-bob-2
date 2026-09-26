@@ -355,3 +355,35 @@ def chart_note(spec: dict) -> str:
         else:
             lines.append(f"- {s['name']} ({s['range']}): no numeric values")
     return "\n".join(lines)
+
+
+def dcf(cashflow=None, rate=None, valuation_date=None, dates: str | None = None, timing: str = "end",
+        day_count: str = "actual/actual", terminal_date=None, adjustments: list | None = None,
+        compare_to=None, rates: list | None = None) -> str:
+    """Recompute a DCF from cash-flow rows in Python (see dcf.py). Without a cash-flow row, lists the model's
+    valuation result cells; without a rate or valuation date, lists the cells that look like one."""
+    return dcf_result(cashflow, rate, valuation_date, dates, timing, day_count, terminal_date, adjustments,
+                      compare_to, rates)[0]
+
+
+def dcf_result(cashflow=None, rate=None, valuation_date=None, dates=None, timing="end", day_count="actual/actual",
+               terminal_date=None, adjustments=None, compare_to=None, rates=None) -> tuple[str, dict | None]:
+    """(text for the model, a card for the UI or None when only candidates were listed)."""
+    import dcf as _dcf
+    db = _db()
+    blank = lambda v: v in (None, "", [])
+    if blank(cashflow):
+        found = _dcf.outputs(db)
+        return ("cashflow not given. Cells that look like the model's valuation results, with their formulas "
+                "(follow the formula: the row a SUMPRODUCT / XNPV / NPV discounts is the cash flow; the other "
+                "terms of a SUM are the bridge):\n  " + ("\n  ".join(found) if found else "none found; use find()")), None
+    missing = [w for w, v in (("rate", rate), ("valuation_date", valuation_date)) if blank(v)]
+    if missing:
+        out = []
+        for w in missing:
+            c = _dcf.candidates(db, "rate" if w == "rate" else "date")
+            out.append(f"{w} not given. Candidates:\n  " + ("\n  ".join(c) if c else "none found; use find()"))
+        return "\n".join(out) + "\nCall dcf again with the ones this valuation uses (trace the discount factor row if unsure).", None
+    r = _dcf.compute(db, cashflow, rate, valuation_date, dates or None, timing or "end", day_count or "actual/actual",
+                     terminal_date or None, adjustments or None, compare_to or None, rates or None)
+    return _dcf.report(r), _dcf.card(r)

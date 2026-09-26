@@ -3,7 +3,7 @@
 ask() is a generator of events (dicts) so a UI can show each tool call as it happens:
     {"type": "tool_call", "name", "args"}   {"type": "tool_result", "name", "output", "chars"}
     {"type": "answer", "text"}              {"type": "usage", "input_tokens", "cached_tokens", "output_tokens", "calls"}
-    {"type": "error", "text"}
+    {"type": "dcf", "result"}               {"type": "error", "text"}
 """
 import json
 
@@ -63,6 +63,39 @@ TOOLS = [
                         "timeline (e.g. actuals only); otherwise a series covering part of the timeline is "
                         "held back with a warning so you can chart the full row instead"}},
          "required": ["title", "series"]}},
+    {"type": "function", "name": "dcf",
+     "description": "Recompute a DCF value in Python from the workbook's cash-flow rows: discounts each period's "
+                    "saved cash flow to the valuation date and optionally bridges to equity / enterprise value. "
+                    "Call with no arguments to list the model's valuation result cells and formulas. Use it to check the workbook's valuation, or for what-ifs on the discount rate (cash flows "
+                    "are held as saved). Leave rate or valuation_date out to get a list of candidate cells.",
+     "parameters": {"type": "object", "properties": {
+         "cashflow": {"type": "array", "items": {"type": "string"},
+                      "description": "row ranges summed per period, e.g. ['Val!L87:HO87', 'Val!L89:HO89'] "
+                                     "(FCFF + terminal value), or 'Val!r173' for the sheet's whole timeline"},
+         "rate": {"type": "string", "description": "cell (Scenario!F435), named range, or number (0.1325 or 13.25%)"},
+         "valuation_date": {"type": "string", "description": "cell, named range, or YYYY-MM-DD"},
+         "dates": {"type": "string", "description": "optional row of period END dates, e.g. Val!r8; found "
+                                                    "automatically otherwise"},
+         "timing": {"type": "string", "enum": ["end", "mid", "auto"],
+                    "description": "end- or mid-period discounting; 'auto' tries both day counts and timings "
+                                   "and keeps the one matching compare_to"},
+         "day_count": {"type": "string", "enum": ["actual/actual", "actual/365"],
+                       "description": "actual/actual = Excel YEARFRAC basis 1 (default); actual/365 = XNPV"},
+         "terminal_date": {"type": "string", "description": "optional: leave out periods after this date/cell"},
+         "adjustments": {"type": "array", "description": "optional bridge added to the PV in order, e.g. "
+                         "+ net debt to get EV; negative values subtract",
+                         "items": {"type": "object", "properties": {
+                             "label": {"type": "string"},
+                             "value": {"type": "string", "description": "cell, named range or number; or a "
+                                       "row (Sheet!r172) with at_valuation_date"},
+                             "at_valuation_date": {"type": "boolean", "description": "take the row's amount in "
+                                                   "the period ending on the valuation date (like a SUMIFS on "
+                                                   "the date row)"}},
+                             "required": ["value"]}},
+         "compare_to": {"type": "string", "description": "the workbook's own value (a cell) to check against"},
+         "rates": {"type": "array", "items": {"type": "number"},
+                   "description": "optional what-if discount rates, e.g. [0.12, 0.13, 0.14]"}},
+         "required": []}},
     {"type": "function", "name": "sql",
      "description": "Read-only SQLite query. Tables: cells(sheet,row,col,addr,formula,value), "
                     "rows(sheet,row,section,label,units,n_formula,n_const,patterns,samples), "
@@ -87,6 +120,19 @@ usually a calculated row on an operations or valuation sheet, not an input or ac
 Forecast periods automatically. If the chart tool says a series only covers part of the timeline, chart the
 suggested full rows instead (or set partial_ok if the user asked for that part only).
 
+To check or recompute a valuation, or answer "what if the discount rate were X", use the dcf tool:
+1. Find the model's value cell (call dcf with no arguments to list candidates, with formulas). Use the one
+   the user means: equity value, enterprise value, NPV. Don't compare against a cell with value 0.
+2. Read its formula with cells, and follow it down: a SUMPRODUCT(cash flow row, discount factor row), XNPV or
+   NPV names the cash-flow row; the other terms of a SUM (debt, cash, an amount at the valuation date) are
+   the bridge (adjustments). Look at the discount factor row's formula for the rate, valuation date and any
+   cut-off date (terminal_date).
+3. Call dcf with those rows and cells and compare_to = the value cell (timing='auto' if unsure).
+If it doesn't match, apply the tool's "->" suggestions and call it again before answering. Say whether it
+matched; if it still doesn't, say so plainly and don't guess a cause. If the tool says CORRECTED, tell the
+user what it changed (e.g. the cut-off date or a valuation-date amount the model adds).
+What-if rates hold the saved cash flows fixed; say so.
+
 Workbook overview:
 """
 
@@ -97,7 +143,7 @@ class _HeldBack(Exception):
 
 def _run_tool(name: str, args: dict) -> str:
     fn = {"find": tools.find, "rows": tools.rows, "trace": tools.trace,
-          "cells": tools.cells, "sql": tools.sql}.get(name)
+          "cells": tools.cells, "sql": tools.sql, "dcf": tools.dcf}.get(name)
     if fn is None:
         return f"unknown tool {name}"
     try:
@@ -164,6 +210,13 @@ def ask(question: str, db_path: str, model: str, history: list | None = None, in
                         out = tools.chart_note(spec) + "\n" + chartreview.describe(spec)
                     except _HeldBack as e:
                         out = str(e)
+                    except Exception as e:
+                        out = f"error: {type(e).__name__}: {e}"
+                elif c.name == "dcf":
+                    try:
+                        out, card = tools.dcf_result(**args)
+                        if card:
+                            yield {"type": "dcf", "result": card}
                     except Exception as e:
                         out = f"error: {type(e).__name__}: {e}"
                 else:
