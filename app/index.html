@@ -166,6 +166,21 @@ textarea { flex: 1; resize: none; min-height: 44px; max-height: 180px; padding: 
 .val-top label:first-child { flex: 1 1 280px; min-width: 0; }
 .val-top select { width: 100%; min-width: 0; text-overflow: ellipsis; }
 .val-top input { width: 90px; font-variant-numeric: tabular-nums; }
+#val-body, #sc-results { display: flex; flex-direction: column; gap: 20px; }
+.val-steps { display: inline-flex; }
+.val-steps button { background: var(--surface); border: 1px solid var(--rule); padding: 7px 14px; font-size: 13.5px; color: var(--muted); margin-left: -1px; }
+.val-steps button:first-child { border-radius: 7px 0 0 7px; margin-left: 0; }
+.val-steps button:last-child { border-radius: 0 7px 7px 0; }
+.val-steps button.on { background: var(--accent-soft); color: var(--ref-ink); border-color: var(--accent); position: relative; font-weight: 600; }
+.val-steps button:disabled { opacity: .45; cursor: not-allowed; }
+.val-tables tr.pick { cursor: pointer; } .val-tables tr.pick:hover td { background: var(--accent-soft); }
+.sc-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px 18px; }
+.sc-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
+.sc-form input, .sc-form select { font-size: 14px; padding: 6px 8px; width: 100%; min-width: 0; font-variant-numeric: tabular-nums; }
+.sc-form .src, .sc-bridge .src { font-size: 11.5px; color: var(--muted); }
+.sc-pair { display: flex; gap: 6px; }
+.sc-bridge { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.sc-bridge .chk { display: flex; gap: 6px; align-items: center; font-size: 13.5px; }
 .val-cases { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .val-case { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
 .val-case.base { border-color: var(--accent); }
@@ -278,6 +293,7 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 
 <script>
 const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmtN = n => Number(n).toLocaleString();
 const store = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} };
@@ -533,85 +549,170 @@ function tableOf(rows, cols) {
 function more(total, shown) { return total > shown ? `<p class="muted" style="font-size:13px;margin:8px 0 0">Showing ${shown} of ${fmtN(total)}.</p>` : ""; }
 
 // ---- valuation ----
-// DCFs found in the workbook's own formulas and recomputed in Python on the server (no model calls).
+// Step 1 (Validate): can the workbook's DCF anchors be reproduced in Python, step by step?
+// Step 2 (Scenarios): a validated anchor under other assumptions and methodology. All on the server, no model calls.
 const valState = {};
+const vN = x => x == null ? "–" : Number(x).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const vPct = x => x == null ? "–" : (x * 100).toFixed(2) + "%";
+const vDelta = (x, base) => { const d = x - base; if (Math.abs(d) < 0.05) return "no change";
+  return `${d >= 0 ? "+" : "−"}${vN(Math.abs(d))} (${d >= 0 ? "+" : "−"}${Math.abs(d / base * 100).toFixed(1)}%)`; };
+const TIMING = { end: "End of period", mid: "Mid-period" };
+const DAYCOUNT = { "actual/actual": "Actual/actual (YEARFRAC)", "actual/365": "Actual/365 (XNPV)" };
+function valSave(fid, st) { valState[fid] = st; store(`val:${fid}`, JSON.stringify(st)); }
+
 async function renderValuation() {
-  const fid = detail.id, saved = valState[fid] || JSON.parse(store(`val:${fid}`) || "{}");
-  $("#pane").innerHTML = `<div class="wrap"><p class="muted">Finding the DCFs in this workbook…</p></div>`;
-  const q = new URLSearchParams();
-  if (saved.cell) q.set("cell", saved.cell);
-  if (saved.low != null) q.set("low", saved.low);
-  if (saved.high != null) q.set("high", saved.high);
+  const fid = detail.id, st = valState[fid] || JSON.parse(store(`val:${fid}`) || "{}");
+  valState[fid] = st;
+  $("#pane").innerHTML = `<div class="wrap"><p class="muted">Finding and checking the DCFs in this workbook…</p></div>`;
   let v;
   try {
-    const res = await fetch(`/api/files/${fid}/valuation?${q}`);
+    const res = await fetch(`/api/files/${fid}/valuation${st.cell ? "?cell=" + encodeURIComponent(st.cell) : ""}`);
     v = await res.json(); if (!res.ok) throw new Error(v.detail || res.statusText);
   } catch (e) { $("#pane").innerHTML = `<div class="wrap"><div class="callout red">Couldn't load the valuation: ${esc(e.message)}</div></div>`; return; }
   if (detail?.id !== fid || tab !== "valuation") return;
-  const n = x => x == null ? "–" : Number(x).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-  const pct = x => (x * 100).toFixed(2) + "%";
-  const failed = v.valuations.filter(x => !x.ok || !x.matches);
-  const failedList = failed.length ? `<details class="more"><summary>${failed.length} other valuation cell${failed.length === 1 ? "" : "s"} found but not reproduced</summary>
-      <table><tbody>${failed.map(x => `<tr><td><span class="ref">${esc(x.cell)}</span> ${esc(x.label)}</td><td class="n">${n(x.value)}</td><td class="src">${esc(x.reason || "recomputed value differs from the workbook")}</td></tr>`).join("")}</tbody></table></details>` : "";
   if (!v.selected) {
     $("#pane").innerHTML = `<div class="wrap"><div class="card"><p style="margin:0">No DCF found in this workbook. The Valuation tab looks for
       cells labelled like a valuation (enterprise value, equity value, NPV, total valuation) whose formula is a <code>SUMPRODUCT</code> of a
-      cash-flow row and a discount-factor row, possibly plus other amounts.</p></div>${failedList}</div>`;
-    return;
+      cash-flow row and a discount-factor row, possibly plus other amounts.</p></div>${anchorTable(v, true)}</div>`;
+    bindAnchorRows(fid); return;
   }
-  const r = v.result, A = v.assumptions, C = v.cases;
-  const units = A.units.length ? A.units.join(", ") : "Units aren't labelled on the cash-flow row";
-  const ok = v.valuations.filter(x => x.ok && x.matches);
-  const delta = (x, base) => { const d = x - base; return `${d >= 0 ? "+" : "−"}${n(Math.abs(d))} (${d >= 0 ? "+" : "−"}${Math.abs(d / base * 100).toFixed(1)}%)`; };
-  const src = x => x ? `<div class="src">${esc(x)}</div>` : "";
-  const casesHtml = [["low", "Low value"], ["base", "Model"], ["high", "High value"]].map(([k, t]) => `
-    <div class="val-case ${k}"><span>${t} · discount rate ${pct(C[k].rate)}</span><b>${n(C[k].total)}</b>
-      <em class="${k === "base" ? "" : C[k].total < C.base.total ? "chg-down" : "chg-up"}">${k === "base"
-        ? (r.matches ? `Matches the workbook's ${esc(v.selected)}` : `Workbook ${esc(v.selected)}: ${n(r.compare_to)}`)
-        : delta(C[k].total, C.base.total) + " vs model"}</em></div>`).join("");
-  const assumptions = `<table><tbody>
-      <tr><td>Discount rate</td><td class="n">${pct(A.rate)}</td></tr><tr><td colspan="2" class="src">${esc(A.rate_source)}</td></tr>
-      <tr><td>Valuation date</td><td class="n">${esc(A.valuation_date)}</td></tr><tr><td colspan="2" class="src">${esc(A.valuation_date_source)}</td></tr>
-      <tr><td>Cut-off (last discounted period)</td><td class="n">${esc(A.terminal_date || "none")}</td></tr>${A.terminal_source ? `<tr><td colspan="2" class="src">${esc(A.terminal_source)}</td></tr>` : ""}
-      <tr><td>Discounting</td><td class="n">${esc(A.timing)}-of-period, ${esc(A.day_count)}</td></tr>
-      <tr><td>Periods discounted</td><td class="n">${A.periods} (${esc(A.first_period)} to ${esc(A.last_period)})</td></tr>
-      <tr><td>Cash flows (undiscounted)</td><td class="n">${n(A.undiscounted)}</td></tr><tr><td colspan="2" class="src">${A.cashflow.map(esc).join("; ")}</td></tr>
-      <tr><td>Discount factors</td><td class="n"><span class="ref">${esc(A.factor_row.split(" ")[0])}</span></td></tr><tr><td colspan="2" class="src">${esc(A.factor_row)} · period ends ${esc(A.period_ends)}</td></tr>
-      <tr><td>Units</td><td class="n">${esc(A.units.join(", ") || "not labelled")}</td></tr>
-    </tbody></table>`;
-  const bridgeRows = r.bridge.map(b => `<tr><td>${b.value < 0 ? "Less" : "Add"}: ${esc(b.label)}<div class="src">${esc(b.source)}</div></td>
-      ${["low", "base", "high"].map(() => `<td class="n">${n(b.value)}</td>`).join("")}</tr>`).join("");
-  const conclusions = `<table><thead><tr><th></th><th class="n">Low</th><th class="n">Model</th><th class="n">High</th></tr></thead><tbody>
-      <tr><td>Discount rate</td>${["low", "base", "high"].map(k => `<td class="n">${pct(C[k].rate)}</td>`).join("")}</tr>
-      <tr><td>PV of cash flows</td>${["low", "base", "high"].map(k => `<td class="n">${n(C[k].pv)}</td>`).join("")}</tr>
-      ${bridgeRows}
-      <tr class="tot"><td>${esc(ok.find(x => x.cell === v.selected)?.label || "Value")}</td>${["low", "base", "high"].map(k => `<td class="n">${n(C[k].total)}</td>`).join("")}</tr>
-      <tr><td>vs model</td><td class="n">${delta(C.low.total, C.base.total)}</td><td class="n">–</td><td class="n">${delta(C.high.total, C.base.total)}</td></tr>
-      <tr><td>Workbook's calculated value <span class="ref">${esc(v.selected)}</span></td><td></td><td class="n">${n(r.compare_to)}</td><td></td></tr>
-      <tr><td colspan="4">${r.matches ? `<span class="pill ok">Python recompute matches the workbook</span>` : `<span class="pill bad">Python recompute differs from the workbook by ${n(r.total - r.compare_to)}</span>`}</td></tr>
-    </tbody></table>`;
+  if (st.cell !== v.selected) { st.cell = v.selected; st.sc = null; }
+  const step = st.step === "scenario" && v.validated ? "scenario" : "validate";
+  const good = v.anchors.filter(a => a.ok && a.matches);
   $("#pane").innerHTML = `<div class="wrap">
     <div class="val-top">
-      <label>Valuation<select id="val-cell">${ok.map(x => `<option value="${esc(x.cell)}" ${x.cell === v.selected ? "selected" : ""}>${esc(x.label || x.cell)} · ${esc(x.cell)} · ${n(x.value)}</option>`).join("")}</select></label>
-      <label>Low case rate (%)<input id="val-low" type="number" step="0.25" value="${(C.low.rate * 100).toFixed(2)}"></label>
-      <label>High case rate (%)<input id="val-high" type="number" step="0.25" value="${(C.high.rate * 100).toFixed(2)}"></label>
-      <button class="btn ghost" type="button" id="val-reset">Model rate ± 1%</button>
+      <label>Anchor value<select id="val-cell">${v.anchors.filter(a => a.ok).map(a => `<option value="${esc(a.cell)}" ${a.cell === v.selected ? "selected" : ""}>${a.matches ? "✓" : "✗"} ${esc(a.label || a.cell)} · ${esc(a.cell)} · ${vN(a.value)}</option>`).join("")}</select></label>
+      <span class="seg val-steps"><button type="button" data-step="validate" class="${step === "validate" ? "on" : ""}">1 · Validate</button><button type="button" data-step="scenario" class="${step === "scenario" ? "on" : ""}" ${v.validated ? "" : "disabled title=\"Validate the anchor first\""}>2 · Scenarios</button></span>
     </div>
-    <div class="val-cases">${casesHtml}</div>
-    <div id="val-chart"></div>
-    <div class="card val-tables"><h3>Conclusions</h3><div class="scroll-x">${conclusions}</div></div>
-    <div class="card val-tables"><h3>Valuation assumptions</h3>${assumptions}</div>
-    <p class="muted" style="font-size:12.5px;margin:0">${esc(units)}. Recomputed in Python from the workbook's saved cash flows, with no model calls.
-      Low and high change the discount rate only: the cash flows and bridge amounts stay as the workbook saved them. Levers like growth, CPI or
-      terminal assumptions change the cash flows themselves, which needs the Python rebuild of the model.</p>
-    ${failedList}
+    <div id="val-body"></div>
   </div>`;
+  $("#val-cell").onchange = e => { valSave(fid, { cell: e.target.value, step }); renderValuation(); };
+  $$(".val-steps [data-step]").forEach(b => b.onclick = () => { if (b.disabled) return; st.step = b.dataset.step; valSave(fid, st); renderValuation(); });
+  if (step === "validate") renderValidate(fid, v, good); else renderScenario(fid, v);
+}
+
+function anchorTable(v, all) {
+  const rows = v.anchors.filter(a => all || a.ok);
+  if (!rows.length) return "";
+  return `<div class="card val-tables"><h3>Anchor values in this workbook</h3><div class="scroll-x"><table>
+    <thead><tr><th>Anchor</th><th class="n">Workbook</th><th class="n">Python</th><th>Result</th></tr></thead><tbody>
+    ${rows.map(a => `<tr class="${a.ok ? "pick" : ""}" data-cell="${esc(a.cell)}"><td>${esc(a.label || "")} <span class="ref">${esc(a.cell)}</span></td>
+      <td class="n">${vN(a.value)}</td><td class="n">${a.ok ? vN(a.total) : "–"}</td>
+      <td>${a.ok && a.matches ? `<span class="pill ok">Reproduced</span>` : a.ok ? `<span class="pill bad">Differs</span>` : `<span class="src">${esc(a.reason || "")}</span>`}</td></tr>`).join("")}
+    </tbody></table></div></div>`;
+}
+function bindAnchorRows(fid) {
+  $$("#pane tr.pick").forEach(tr => tr.onclick = () => { valSave(fid, { cell: tr.dataset.cell, step: "validate" }); renderValuation(); });
+}
+
+function renderValidate(fid, v, good) {
+  const A = v.assumptions, anchor = v.checks[v.checks.length - 1];
+  const bridgeText = v.bridge.length ? ", then " + v.bridge.map(b => `${b.value < 0 ? "less" : "add"} ${esc(b.label.toLowerCase())}`).join(", ") : "";
+  const tick = ok => ok === true ? `<span class="pill ok">✓ Matches</span>` : ok === false ? `<span class="pill bad">✗ Differs</span>` : `<span class="muted" style="font-size:12px">–</span>`;
+  $("#val-body").innerHTML = `
+    <div class="callout ${v.validated ? "green" : "red"}">${v.validated
+      ? `<b>Reproduced.</b> Recomputing ${esc(anchor.what)} in Python gives ${vN(anchor.ours)}, the same as the workbook's <span class="ref">${esc(anchor.where)}</span>. The cash flows and discounting approach below are the model's. You can move on to <b>2 · Scenarios</b>.`
+      : `<b>Not reproduced.</b> Python gives ${vN(anchor.ours)}; the workbook's <span class="ref">${esc(anchor.where)}</span> is ${vN(anchor.theirs)}. Scenarios stay locked until the anchor is reproduced.`}</div>
+    <div class="card"><h3>Approach found</h3><p style="margin:0;line-height:1.6">Discount <b>${esc(A.cashflow.join("; "))}</b>
+      ${A.timing === "mid" ? "at the middle of each period" : "at the end of each period"} at <b>${vPct(A.rate)}</b> a year back to the valuation date
+      <b>${esc(A.valuation_date)}</b>, measuring time with ${esc(DAYCOUNT[A.day_count])}; ${A.terminal_date ? `periods after <b>${esc(A.terminal_date)}</b> aren't discounted` : "every later period is discounted"}${bridgeText}.
+      <span class="muted">${A.periods} periods, ${esc(A.first_period)} to ${esc(A.last_period)}.</span></p></div>
+    <div class="card val-tables"><h3>Step-by-step check</h3><div class="scroll-x"><table>
+      <thead><tr><th>Step</th><th>What</th><th class="n">Python</th><th class="n">Workbook</th><th></th></tr></thead><tbody>
+      ${v.checks.map(c => `<tr class="${c.step === "Anchor value" ? "tot" : ""}"><td>${esc(c.step)}</td><td>${esc(c.what)}${c.where ? `<div class="src">${esc(c.where)}${c.note ? " · " + esc(c.note) : ""}</div>` : c.note ? `<div class="src">${esc(c.note)}</div>` : ""}</td>
+        <td class="n">${vN(c.ours)}</td><td class="n">${vN(c.theirs)}</td><td>${tick(c.ok)}</td></tr>`).join("")}
+      </tbody></table></div></div>
+    <div id="val-chart"></div>
+    <div class="card val-tables"><h3>Model assumptions</h3><table><tbody>
+      <tr><td>Discount rate</td><td class="n">${vPct(A.rate)}</td></tr><tr><td colspan="2" class="src">${esc(A.rate_source)}</td></tr>
+      <tr><td>Valuation date</td><td class="n">${esc(A.valuation_date)}</td></tr><tr><td colspan="2" class="src">${esc(A.valuation_date_source)}</td></tr>
+      <tr><td>Cut-off (last discounted period)</td><td class="n">${esc(A.terminal_date || "none")}</td></tr>
+      <tr><td>Discounting</td><td class="n">${esc(TIMING[A.timing])}, ${esc(DAYCOUNT[A.day_count])}</td></tr>
+      <tr><td>Cash flows (undiscounted, discounted periods)</td><td class="n">${vN(A.undiscounted)}</td></tr>
+      <tr><td>Discount factors</td><td class="n"><span class="ref">${esc(A.factor_row.split(" ")[0])}</span></td></tr><tr><td colspan="2" class="src">${esc(A.factor_row)} · period ends ${esc(A.period_ends)}</td></tr>
+      <tr><td>Units</td><td class="n">${esc(A.units.join(", ") || "not labelled")}</td></tr>
+    </tbody></table></div>
+    ${anchorTable(v, true)}`;
   const card = chartCard(v.chart); $("#val-chart").append(card); mountCharts($("#val-chart"));
-  const save = st => { valState[fid] = st; store(`val:${fid}`, JSON.stringify(st)); renderValuation(); };
-  $("#val-cell").onchange = e => save({ cell: e.target.value });
-  const rates = () => save({ cell: v.selected, low: parseFloat($("#val-low").value) / 100, high: parseFloat($("#val-high").value) / 100 });
-  $("#val-low").onchange = rates; $("#val-high").onchange = rates;
-  $("#val-reset").onclick = () => save({ cell: v.selected });
+  bindAnchorRows(fid);
+}
+
+function renderScenario(fid, v) {
+  const st = valState[fid], A = v.assumptions;
+  const sc = st.sc = st.sc || {};
+  const bridge = v.bridge;
+  const cut = sc.cutoff == null ? "model" : sc.cutoff === "" ? "none" : "custom";
+  $("#val-body").innerHTML = `
+    <div class="card"><h3>Assumptions and method</h3>
+      <div class="sc-form">
+        <label>Discount rate (%)<input id="sc-rate" type="number" step="0.25" value="${((sc.rate ?? A.rate) * 100).toFixed(2)}"><span class="src">Model ${vPct(A.rate)}</span></label>
+        <label>Valuation date<input id="sc-vd" type="date" value="${esc(sc.valuation_date || A.valuation_date)}"><span class="src">Model ${esc(A.valuation_date)}</span></label>
+        <label>Discount at<select id="sc-timing">${Object.entries(TIMING).map(([k, t]) => `<option value="${k}" ${(sc.timing || A.timing) === k ? "selected" : ""}>${t}</option>`).join("")}</select><span class="src">Model ${esc(TIMING[A.timing])}</span></label>
+        <label>Time measured by<select id="sc-dc">${Object.entries(DAYCOUNT).map(([k, t]) => `<option value="${k}" ${(sc.day_count || A.day_count) === k ? "selected" : ""}>${t}</option>`).join("")}</select><span class="src">Model ${esc(DAYCOUNT[A.day_count])}</span></label>
+        <label>Cut-off<select id="sc-cut"><option value="model" ${cut === "model" ? "selected" : ""}>Model's (${esc(A.terminal_date || "none")})</option><option value="none" ${cut === "none" ? "selected" : ""}>None: discount every period</option><option value="custom" ${cut === "custom" ? "selected" : ""}>Another date…</option></select>
+          <input id="sc-cutdate" type="date" value="${esc(cut === "custom" ? sc.cutoff : A.terminal_date || "")}" ${cut === "custom" ? "" : "hidden"}></label>
+        <label>Sensitivity: low / high rate (%)<span class="sc-pair"><input id="sc-low" type="number" step="0.25" value="${sc.low != null ? (sc.low * 100).toFixed(2) : ""}" placeholder="+1%"><input id="sc-high" type="number" step="0.25" value="${sc.high != null ? (sc.high * 100).toFixed(2) : ""}" placeholder="−1%"></span><span class="src">Blank: scenario rate ± 1%</span></label>
+      </div>
+      ${bridge.length ? `<div class="sc-bridge"><span class="muted" style="font-size:12px">Bridge items</span>${bridge.map((b, i) => `<label class="chk"><input type="checkbox" data-i="${i}" ${(sc.include?.[i] ?? true) ? "checked" : ""}> ${b.value < 0 ? "Less" : "Add"} ${esc(b.label)} <span class="src">${vN(b.value)}</span></label>`).join("")}</div>` : ""}
+      <div style="margin-top:12px"><button class="btn ghost" type="button" id="sc-reset">Reset to the model</button></div>
+    </div>
+    <div id="sc-results"><p class="muted">Calculating…</p></div>
+    <p class="muted" style="font-size:12.5px;margin:0">Scenarios re-discount the workbook's saved cash flows; bridge amounts are the workbook's values. Changing growth, CPI, terminal value or
+      other drivers changes the cash flows themselves, which needs the Python rebuild of the model.</p>`;
+  const read = () => {
+    const num = id => { const x = parseFloat($(id).value); return isNaN(x) ? null : x / 100; };
+    const c = $("#sc-cut").value; $("#sc-cutdate").hidden = c !== "custom";
+    st.sc = { rate: num("#sc-rate"), valuation_date: $("#sc-vd").value || null, timing: $("#sc-timing").value, day_count: $("#sc-dc").value,
+      cutoff: c === "model" ? null : c === "none" ? "" : ($("#sc-cutdate").value || null),
+      include: bridge.map((_, i) => $(`.sc-bridge [data-i="${i}"]`).checked), low: num("#sc-low"), high: num("#sc-high") };
+    valSave(fid, st); runScenario(fid);
+  };
+  let t; $$("#val-body .sc-form input, #val-body .sc-form select, #val-body .sc-bridge input").forEach(el => el.onchange = el.oninput = () => { clearTimeout(t); t = setTimeout(read, 350); });
+  $("#sc-reset").onclick = () => { st.sc = null; valSave(fid, st); renderScenario(fid, v); };
+  runScenario(fid);
+}
+
+async function runScenario(fid) {
+  const st = valState[fid], sc = st.sc || {};
+  const body = { cell: st.cell, rate: sc.rate, valuation_date: sc.valuation_date, timing: sc.timing, day_count: sc.day_count,
+    cutoff: sc.cutoff == null ? "model" : sc.cutoff, include: sc.include, low: sc.low, high: sc.high };
+  const seq = (st._seq = (st._seq || 0) + 1);
+  let r;
+  try {
+    const res = await fetch(`/api/files/${fid}/valuation/scenario`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    r = await res.json(); if (!res.ok) throw new Error(r.detail || res.statusText);
+  } catch (e) { if ($("#sc-results")) $("#sc-results").innerHTML = `<div class="callout red">${esc(e.message)}</div>`; return; }
+  if (seq !== st._seq || !$("#sc-results")) return;
+  const M = r.model, S = r.scenario, units = r.units.length ? r.units.join(", ") : "units not labelled";
+  const row = (label, m, s) => `<tr><td>${label}</td><td class="n">${m}</td><td class="n">${s}</td><td class="n ${m === s ? "muted" : ""}">${m === s ? "same" : "changed"}</td></tr>`;
+  const bridgeRows = M.bridge.map(b => { const x = S.bridge.find(y => y.source === b.source);
+    return `<tr><td>${b.value < 0 ? "Less" : "Add"}: ${esc(b.label)}</td><td class="n">${vN(b.value)}</td><td class="n">${x ? vN(x.value) : "excluded"}</td><td class="n ${x ? "muted" : ""}">${x ? "same" : "changed"}</td></tr>`; }).join("");
+  $("#sc-results").innerHTML = `
+    <div class="val-cases">
+      <div class="val-case"><span>Model (validated) · ${esc(r.label)}</span><b>${vN(M.total)}</b><em>${vPct(M.rate)} · matches the workbook</em></div>
+      <div class="val-case base"><span>Scenario</span><b>${vN(S.total)}</b><em>${vPct(S.rate)}</em></div>
+      <div class="val-case"><span>Scenario vs model</span><b class="${S.total < M.total - 0.05 ? "chg-down" : S.total > M.total + 0.05 ? "chg-up" : ""}">${vDelta(S.total, M.total)}</b><em>${r.changes.length ? esc(r.changes.join("; ")) : "Same as the model: change an assumption above"}</em></div>
+    </div>
+    <div class="card val-tables"><h3>Model vs scenario</h3><div class="scroll-x"><table>
+      <thead><tr><th></th><th class="n">Model</th><th class="n">Scenario</th><th class="n"></th></tr></thead><tbody>
+      ${row("Discount rate", vPct(M.rate), vPct(S.rate))}
+      ${row("Valuation date", esc(M.valuation_date), esc(S.valuation_date))}
+      ${row("Discount at", TIMING[M.timing], TIMING[S.timing])}
+      ${row("Time measured by", DAYCOUNT[M.day_count], DAYCOUNT[S.day_count])}
+      ${row("Cut-off", esc(M.terminal_date || "none"), esc(S.terminal_date || "none"))}
+      <tr><td>PV of cash flows</td><td class="n">${vN(M.pv)}</td><td class="n">${vN(S.pv)}</td><td class="n">${vDelta(S.pv, M.pv)}</td></tr>
+      ${bridgeRows}
+      <tr class="tot"><td>${esc(r.label || "Value")}</td><td class="n">${vN(M.total)}</td><td class="n">${vN(S.total)}</td><td class="n">${vDelta(S.total, M.total)}</td></tr>
+    </tbody></table></div></div>
+    <div class="card val-tables"><h3>Sensitivity to the discount rate (around the scenario)</h3><div class="scroll-x"><table>
+      <thead><tr><th></th>${r.sensitivity.map(x => `<th class="n">${x.case === "scenario" ? "Scenario" : x.case === "low" ? "Low" : "High"}</th>`).join("")}</tr></thead><tbody>
+      <tr><td>Discount rate</td>${r.sensitivity.map(x => `<td class="n">${vPct(x.rate)}</td>`).join("")}</tr>
+      <tr><td>PV of cash flows</td>${r.sensitivity.map(x => `<td class="n">${vN(x.pv)}</td>`).join("")}</tr>
+      <tr class="tot"><td>Value</td>${r.sensitivity.map(x => `<td class="n">${vN(x.total)}</td>`).join("")}</tr>
+      <tr><td>vs model</td>${r.sensitivity.map(x => `<td class="n">${vDelta(x.total, M.total)}</td>`).join("")}</tr>
+    </tbody></table></div><p class="src" style="margin:8px 0 0">${esc(units)}</p></div>
+    <div id="sc-chart"></div>`;
+  const card = chartCard(r.chart); $("#sc-chart").append(card); mountCharts($("#sc-chart"));
 }
 
 function renderChanges() {
@@ -849,7 +950,7 @@ function dcfCard(r) {
 
 function chartCard(spec) {
   const card = document.createElement("div"); card.className = "chart-card";
-  const refs = spec.series.map(s => `<span class="ref">${esc(s.range)}</span>`).join("");
+  const refs = [...new Set(spec.series.map(s => s.range))].map(r => `<span class="ref">${esc(r)}</span>`).join("");
   const modes = spec.annual ? `<span class="seg"><button type="button" data-mode="periodic">${FREQ_WORD[spec.frequency] || "Periodic"}</button><button type="button" data-mode="annual">Annual</button></span>` : "";
   card.innerHTML = `<h4>${esc(spec.title)}</h4><div class="sub"></div>
     <div class="chart-box"><canvas role="img" aria-label="${esc(spec.title)}"></canvas></div>

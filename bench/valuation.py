@@ -305,7 +305,7 @@ def build(db, v: dict) -> dict:
     if parts["pv_sign"] != 1:
         return {**_public(v), "ok": False, "reason": "the PV doesn't enter its formula exactly once with a + sign"}
     cf_range = f"{cf[0]}!{dcf._addr(cf[2], cf[1])}:{dcf._addr(cf[4], cf[1])}"
-    return {**_public(v), "ok": True, "inputs": {
+    return {**_public(v), "ok": True, "df": list(dfr), "inputs": {
         "cashflow": [cf_range], "rate": fx["rate"], "valuation_date": fx["valuation_date"],
         "timing": fx["timing"], "day_count": fx["day_count"], "terminal_date": fx["terminal_date"],
         "adjustments": parts["items"], "compare_to": v["cell"]},
@@ -330,6 +330,7 @@ def catalogue(db_path: str) -> list[dict]:
             r = dcf.compute(db, **b["inputs"], fix=False)
             b["matches"] = r["compare_to"] is not None and dcf._close(r["total"], r["compare_to"])
             b["rate_value"] = r["rate"]
+            b["total"] = r["total"]
         out.append(b)
     out.sort(key=lambda b: (not b.get("ok"), not b.get("matches"), _rank(b["label"]), b["cell"]))
     with _LOCK:
@@ -344,50 +345,56 @@ def _rank(label: str) -> int:
     return 9
 
 
-def view(db_path: str, cell: str | None = None, low: float | None = None, high: float | None = None) -> dict:
-    """Everything the Valuation tab shows for one DCF. low / high are the discount rates for the low and high
-    value cases (default: the model's rate +/- 1 percentage point)."""
+def _listing(cat):
+    return [{"cell": b["cell"], "label": b["label"], "value": b["value"], "total": b.get("total"),
+             "ok": b.get("ok", False), "matches": b.get("matches", False), "reason": b.get("reason")} for b in cat]
+
+
+def _pick(cat, cell):
+    usable = [b for b in cat if b.get("ok")]
+    return next((b for b in usable if b["cell"] == cell), usable[0] if usable else None)
+
+
+def _chart(db, db_path, cf_range, runs: list[tuple[str, dict]], cumulative: bool = False) -> dict:
+    """The workbook's cash flows and each run's present value per period; or, with cumulative, only each run's
+    running total of present value (how the value builds up; the last point is the PV of cash flows), which
+    shows where runs diverge. runs: [(series name, compute() result)]."""
     import chartdata
     import tools
-    cat = catalogue(db_path)
-    usable = [b for b in cat if b.get("ok")]
-    listing = [{"cell": b["cell"], "label": b["label"], "value": b["value"], "ok": b.get("ok", False),
-                "matches": b.get("matches", False), "reason": b.get("reason")} for b in cat]
-    if not usable:
-        return {"valuations": listing, "selected": None}
-    pick = next((b for b in usable if b["cell"] == cell), usable[0])
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    base_rate = pick["rate_value"]
-    # rates as fractions (0.1425); the low value case uses the higher rate
-    low = base_rate + 0.01 if low is None or low != low else low
-    high = max(base_rate - 0.01, 0.0) if high is None or high != high else high
-    r = dcf.compute(db, **pick["inputs"], rates=[low, high], fix=False)
-    adj = sum(b["value"] for b in r["bridge"])
-    cases = {"low": {"rate": low, "total": r["sensitivity"][0]["total"]},
-             "base": {"rate": r["rate"], "total": r["total"]},
-             "high": {"rate": high, "total": r["sensitivity"][1]["total"]}}
-    for c in cases.values():
-        c["pv"] = c["total"] - adj
-
-    # the cash-flow chart: the workbook's row plus each period's present value at the model's rate
     with tools.using(db_path):
-        spec = tools.chart("Cash flows and present values", [{"range": pick["inputs"]["cashflow"][0],
-                                                               "name": "Cash flow (workbook)"}], kind="bar")
-    ends, _ = dcf.period_ends(db, *dcf._row_range(db, pick["inputs"]["cashflow"][0])[::2])
-    f = dcf.factors(ends, r["valuation_date"], r["rate"], r["timing"], r["day_count"], r["terminal_date"])
+        spec = tools.chart("Cash flows and present values", [{"range": cf_range, "name": "Cash flow (workbook)"}],
+                           kind="bar")
+    sheet, _, cf_cols = dcf._row_range(db, cf_range)
+    ends, _ = dcf.period_ends(db, sheet, cf_cols)
     cols = spec.get("columns") or []
     cfd = spec["series"][0]["data"]
-    pvs = [(v * f[c]) if isinstance(v, (int, float)) and f.get(c) else None for v, c in zip(cfd, cols)]
-    spec["series"].append({"name": f"Present value at {r['rate']:.2%}", "range": "computed in Python",
-                           "data": pvs, "label": "Present value", "units": spec["series"][0].get("units")})
+    live = set()
+    for name, r in runs:
+        f = dcf.factors(ends, r["valuation_date"], r["rate"], r["timing"], r["day_count"], r["terminal_date"])
+        live |= {i for i, c in enumerate(cols) if f.get(c)}
+        pv = [(v * f[c]) if isinstance(v, (int, float)) and f.get(c) else None for v, c in zip(cfd, cols)]
+        if cumulative:
+            run, acc, started = [], 0.0, False
+            for x in pv:
+                started = started or x is not None
+                acc += x or 0.0
+                run.append(acc if started else None)
+            pv = run
+        # the source row's range keeps the chart's phase shading on that sheet
+        spec["series"].append({"name": name, "range": f"{cf_range} (discounted in Python)",
+                               "label": "Cumulative present value" if cumulative else "Present value",
+                               "units": spec["series"][0].get("units"), "data": pv})
+    if cumulative:
+        spec["series"] = spec["series"][1:]
+        spec.update(title="Cumulative present value", kind="line")
     spec = chartdata.enrich(spec, db)
-    live = [i for i, c in enumerate(cols) if f.get(c)]
+    live = sorted(live)
     if live:
         x_end, extra = live[-1], ""
         # chart rule F1: a period more than 5x the next largest (typically a terminal value at the end) flattens
         # everything else, so leave it out of the default view and say so
         vals = sorted(((abs(cfd[i]), i) for i in live if isinstance(cfd[i], (int, float))), reverse=True)
-        if len(vals) > 2 and vals[1][0] and vals[0][0] > 5 * vals[1][0] and vals[0][1] >= live[-1] - 1:
+        if not cumulative and len(vals) > 2 and vals[1][0] and vals[0][0] > 5 * vals[1][0] and vals[0][1] >= live[-1] - 1:
             i = vals[0][1]
             x_end = i - 1
             extra = (f" The {spec['period_labels'][i]} cash flow ({cfd[i]:,.0f}, {vals[0][0] / vals[1][0]:.0f}x the next "
@@ -395,19 +402,153 @@ def view(db_path: str, cell: str | None = None, low: float | None = None, high: 
         spec["view"] = {"x_start": live[0], "x_end": x_end}
         if spec.get("annual") and len(live) > 40:
             spec["mode"] = "annual"  # a few dozen annual bars read better than 100+ quarterly ones
-        spec["note"] = (f"Showing the discounted periods ({r['first_period']:%b-%Y} to {r['last_period']:%b-%Y}).{extra} "
-                        "“Full range” shows the whole timeline.")
+        spec["note"] = (f"Showing the discounted periods ({spec['period_labels'][live[0]]} to "
+                        f"{spec['period_labels'][live[-1]]}).{extra} \u201cFull range\u201d shows the whole timeline."
+                        + (" Each line is the running total of present value; its last point is the PV of cash flows."
+                           if cumulative else ""))
+    return spec
+
+
+def _assumptions(pick, r) -> dict:
+    iso = lambda d: d.isoformat() if d else None
+    return {"rate": r["rate"], "rate_source": pick["rate_note"] or r["rate_source"],
+            "valuation_date": iso(r["valuation_date"]), "valuation_date_source": r["valuation_date_source"],
+            "terminal_date": iso(r["terminal_date"]), "timing": r["timing"], "day_count": r["day_count"],
+            "cashflow": r["rows"], "factor_row": pick["factor_row"], "period_ends": pick["ends_source"],
+            "periods": r["periods"], "first_period": iso(r["first_period"]), "last_period": iso(r["last_period"]),
+            "undiscounted": r["undiscounted"], "units": r.get("units") or []}
+
+
+def validation(db_path: str, cell: str | None = None) -> dict:
+    """Step 1: can the workbook's own numbers be reproduced? Every anchor value, and for the selected one the
+    approach found and a check of each step (cash flows, discount factors, PV, bridge, the anchor itself)."""
+    cat = catalogue(db_path)
+    pick = _pick(cat, cell)
+    if not pick:
+        return {"anchors": _listing(cat), "selected": None}
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    r = dcf.compute(db, **pick["inputs"], fix=False)
+    sheet, row, cols = dcf._row_range(db, pick["inputs"]["cashflow"][0])
+    ends, _ = dcf.period_ends(db, sheet, cols)
+    checks = []
+
+    # cash flows: the row's own total column, if it has one (e.g. =SUM(L173:HO173))
+    flows = {c: dcf._num(v) or 0.0 for c, v in db.execute(
+        "SELECT col, value FROM cells WHERE sheet=? AND row=? AND col BETWEEN ? AND ?", (sheet, row, cols[0], cols[-1]))}
+    total_cell = None
+    for c, f, v in db.execute("SELECT col, formula, value FROM cells WHERE sheet=? AND row=? AND formula LIKE '%SUM(%' "
+                              "AND (col < ? OR col > ?)", (sheet, row, cols[0], cols[-1])):
+        m = re.fullmatch(r"=\+?SUM\(\$?([A-Z]+)\$?\d+:\$?([A-Z]+)\$?\d+\)", (f or "").replace(" ", ""), re.I)
+        if m and dcf._col(m[1]) == cols[0] and dcf._col(m[2]) == cols[-1] and dcf._num(v) is not None:
+            total_cell = (f"{sheet}!{dcf._addr(c, row)}", dcf._num(v))
+            break
+    ours_sum = sum(flows.values())
+    checks.append({"step": "Cash flows", "what": f"{len(cols)} periods read from {r['rows'][0]}",
+                   "ours": ours_sum, "theirs": total_cell[1] if total_cell else None,
+                   "where": total_cell[0] if total_cell else None,
+                   "ok": dcf._close(ours_sum, total_cell[1]) if total_cell else None,
+                   "note": None if total_cell else "the row has no total column to compare with"})
+
+    # discount factors, period by period
+    dfr = pick["df"]
+    theirs = {c: dcf._num(v) or 0.0 for c, v in db.execute(
+        "SELECT col, value FROM cells WHERE sheet=? AND row=?", (dfr[0], dfr[1])) if c in ends}
+    ours = dcf.factors(ends, r["valuation_date"], r["rate"], r["timing"], r["day_count"], r["terminal_date"])
+    worst = max((abs(ours[c] - theirs.get(c, 0.0)), c) for c in ours)
+    checks.append({"step": "Discount factors", "what": f"{sum(1 for c in ours if ours[c])} non-zero factors vs "
+                   f"{dfr[0]}!r{dfr[1]}, {r['timing']}-of-period, {r['day_count']}",
+                   "ours": None, "theirs": None, "where": f"{dfr[0]}!r{dfr[1]}", "ok": worst[0] < 1e-9,
+                   "note": f"largest difference {worst[0]:.1e} ({ends[worst[1]]})"})
+
+    # PV: the workbook's SUMPRODUCT cell
+    pv_ref = dcf._ref(pick["pv_cell"], "")
+    pv_theirs = dcf._num(dcf._cell(db, *pv_ref[:3]))
+    checks.append({"step": "Present value", "what": "sum of cash flow x discount factor", "ours": r["pv"],
+                   "theirs": pv_theirs, "where": pick["pv_cell"],
+                   "ok": pv_theirs is not None and dcf._close(r["pv"], pv_theirs), "note": None})
+
+    # bridge
+    for b in r["bridge"]:
+        checks.append({"step": "Bridge", "what": b["label"], "ours": b["value"], "theirs": None, "where": b["source"],
+                       "ok": None, "note": "read from the workbook"})
+
+    checks.append({"step": "Anchor value", "what": pick["label"] or pick["cell"], "ours": r["total"],
+                   "theirs": r["compare_to"], "where": pick["cell"],
+                   "ok": r["compare_to"] is not None and dcf._close(r["total"], r["compare_to"]), "note": None})
+    A = _assumptions(pick, r)
+    return {"anchors": _listing(cat), "selected": pick["cell"], "validated": checks[-1]["ok"],
+            "assumptions": A, "checks": checks, "bridge": r["bridge"], "pv": r["pv"], "total": r["total"],
+            "chart": _chart(db, db_path, pick["inputs"]["cashflow"][0], [("Present value (model)", r)])}
+
+
+def scenario(db_path: str, cell: str | None = None, rate: float | None = None, valuation_date: str | None = None,
+             timing: str | None = None, day_count: str | None = None, cutoff: str | None = "model",
+             include: list[bool] | None = None, low: float | None = None, high: float | None = None) -> dict:
+    """Step 2: the validated anchor recomputed under chosen assumptions and methodology. Anything not given
+    stays as the model has it. cutoff: "model" (the model's cut-off), "" (none) or YYYY-MM-DD.
+    include: which bridge items to keep (all by default). low / high: sensitivity rates around the scenario rate
+    (default: scenario rate +/- 1pp). Cash flows and bridge amounts are the workbook's saved values."""
+    cat = catalogue(db_path)
+    pick = _pick(cat, cell)
+    if not pick:
+        return {"selected": None}
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    base_in = pick["inputs"]
+    model = dcf.compute(db, **base_in, fix=False)
+    s_in = dict(base_in)
+    if rate is not None and rate == rate:
+        s_in["rate"] = rate
+    if valuation_date:
+        s_in["valuation_date"] = valuation_date
+    if timing in dcf.TIMINGS:
+        s_in["timing"] = timing
+    if day_count in dcf.DAY_COUNTS:
+        s_in["day_count"] = day_count
+    if cutoff != "model":
+        s_in["terminal_date"] = cutoff or None
+    items = base_in["adjustments"]
+    if include is not None:
+        items = [a for a, keep in zip(items, list(include) + [True] * len(items)) if keep]
+    s_in["adjustments"] = items
+    s_rate = dcf._num(dcf.resolve(db, s_in["rate"])[0])
+    lo = s_rate + 0.01 if low is None or low != low else low
+    hi = max(s_rate - 0.01, 0.0) if high is None or high != high else high
+    sc = dcf.compute(db, **{**s_in, "compare_to": None}, rates=[lo, hi], fix=False)
+    adj = sum(b["value"] for b in sc["bridge"])
+    changes = []
+    if not dcf._close(sc["rate"], model["rate"]):
+        changes.append(f"discount rate {model['rate']:.2%} → {sc['rate']:.2%}")
+    if sc["valuation_date"] != model["valuation_date"]:
+        changes.append(f"valuation date {model['valuation_date']} → {sc['valuation_date']}")
+    words = {"end": "end of period", "mid": "mid-period", "actual/actual": "actual/actual (YEARFRAC)",
+             "actual/365": "actual/365 (XNPV)"}
+    if sc["timing"] != model["timing"]:
+        changes.append(f"discounted at {words[model['timing']]} → {words[sc['timing']]}")
+    if sc["day_count"] != model["day_count"]:
+        changes.append(f"time measured by {words[model['day_count']]} → {words[sc['day_count']]}")
+    if sc["terminal_date"] != model["terminal_date"]:
+        changes.append(f"cut-off {model['terminal_date'] or 'none'} → {sc['terminal_date'] or 'none'}")
+    dropped = [b["label"] for b, keep in zip(model["bridge"], list(include or []) + [True] * len(model["bridge"])) if not keep]
+    if dropped:
+        changes.append("bridge without " + ", ".join(dropped))
     iso = lambda d: d.isoformat() if d else None
     return {
-        "valuations": listing, "selected": pick["cell"],
-        "result": dcf.card(r), "cases": cases, "chart": spec,
-        "assumptions": {
-            "rate": r["rate"], "rate_source": pick["rate_note"] or r["rate_source"],
-            "valuation_date": iso(r["valuation_date"]), "valuation_date_source": r["valuation_date_source"],
-            "terminal_date": iso(r["terminal_date"]),
-            "terminal_source": "last period with a non-zero discount factor" if r["terminal_date"] else None,
-            "timing": r["timing"], "day_count": r["day_count"], "cashflow": r["rows"], "factor_row": pick["factor_row"],
-            "period_ends": pick["ends_source"], "periods": r["periods"], "first_period": iso(r["first_period"]),
-            "last_period": iso(r["last_period"]), "undiscounted": r["undiscounted"], "units": r.get("units") or [],
-        },
+        "selected": pick["cell"], "label": pick["label"], "validated": bool(pick.get("matches")),
+        "model": {"rate": model["rate"], "pv": model["pv"], "total": model["total"], "workbook": model["compare_to"],
+                  "valuation_date": iso(model["valuation_date"]), "timing": model["timing"],
+                  "day_count": model["day_count"], "terminal_date": iso(model["terminal_date"]),
+                  "bridge": model["bridge"]},
+        "scenario": {"rate": sc["rate"], "pv": sc["pv"], "total": sc["total"], "valuation_date": iso(sc["valuation_date"]),
+                     "timing": sc["timing"], "day_count": sc["day_count"], "terminal_date": iso(sc["terminal_date"]),
+                     "bridge": sc["bridge"], "periods": sc["periods"], "first_period": iso(sc["first_period"]),
+                     "last_period": iso(sc["last_period"])},
+        "sensitivity": [{"case": "low", "rate": lo, "total": sc["sensitivity"][0]["total"],
+                         "pv": sc["sensitivity"][0]["total"] - adj},
+                        {"case": "scenario", "rate": sc["rate"], "total": sc["total"], "pv": sc["pv"]},
+                        {"case": "high", "rate": hi, "total": sc["sensitivity"][1]["total"],
+                         "pv": sc["sensitivity"][1]["total"] - adj}],
+        "changes": changes, "units": sc.get("units") or [],
+        "chart": _chart(db, db_path, base_in["cashflow"][0],
+                        [("Cumulative PV (model)", model)] + ([("Cumulative PV (scenario)", sc)] if changes else []),
+                        cumulative=True),
     }

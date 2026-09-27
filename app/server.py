@@ -115,15 +115,43 @@ async def put_compare(fid: int, body: CompareWith):
     return library.get(fid, full=True)
 
 
-@app.get("/api/files/{fid}/valuation")
-async def get_valuation(fid: int, cell: str | None = None, low: float | None = None, high: float | None = None):
-    """The Valuation tab: DCFs found in the workbook's formulas and recomputed in Python (no model calls)."""
-    import valuation
+def _done_db(fid: int) -> str:
     rec = library.get(fid, full=True)
     if not rec or rec["status"] != "done":
         raise HTTPException(404, "no processed file with that id")
+    return rec["db_path"]
+
+
+@app.get("/api/files/{fid}/valuation")
+async def get_valuation(fid: int, cell: str | None = None):
+    """Valuation tab, step 1: the workbook's DCF anchors, recomputed in Python and checked step by step."""
+    import valuation
+    db_path = _done_db(fid)
     try:
-        return await run_in_threadpool(valuation.view, rec["db_path"], cell, low, high)
+        return await run_in_threadpool(valuation.validation, db_path, cell)
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {e}")
+
+
+class Scenario(BaseModel):
+    cell: str | None = None
+    rate: float | None = None
+    valuation_date: str | None = None
+    timing: str | None = None
+    day_count: str | None = None
+    cutoff: str | None = "model"
+    include: list[bool] | None = None
+    low: float | None = None
+    high: float | None = None
+
+
+@app.post("/api/files/{fid}/valuation/scenario")
+async def post_scenario(fid: int, body: Scenario):
+    """Valuation tab, step 2: a validated anchor under chosen assumptions and methodology (no model calls)."""
+    import valuation
+    db_path = _done_db(fid)
+    try:
+        return await run_in_threadpool(lambda: valuation.scenario(db_path, **body.model_dump()))
     except Exception as e:
         raise HTTPException(500, f"{type(e).__name__}: {e}")
 

@@ -77,24 +77,28 @@ cash flows themselves aren't recalculated. Called without a cash-flow row, it li
 valuation results, with their formulas; without a rate or valuation date, it lists candidate cells. The chat
 shows each result as a card.
 
-Valuation tab: finds every DCF in a workbook from its formulas and recomputes it, with no model calls
-(`bench/valuation.py`, `GET /api/files/{id}/valuation`). A DCF is a cell labelled like a valuation (enterprise
-value, equity value, NPV, total valuation) whose formula is, or adds amounts to, a `SUMPRODUCT` of a
-cash-flow row and a discount-factor row. The assumptions are read back from the discount factors: for each
-candidate valuation date and convention, the rate is back-solved from one factor and kept only if it reproduces
-every factor. The cut-off is the last period with a non-zero factor, and the rate is named by the cell holding that
-value. The value cell's formula is split into additive terms: the PV, other cells (debt, cash) and `SUMIFS`
-picks of one period's amount. The tab shows three things:
-- Low, model and high values. The low and high discount rates are editable and default to the model's rate ± 1
-  percentage point.
-- A chart of the cash flows and their present values over the discounted periods. A final-period outlier such as
-  a terminal value is left out of the default view and named in a note.
-- A conclusions table (PV, bridge, value and the difference from the model, for each case) and an assumptions
-  table giving each assumption's source cell.
+Valuation tab: works on the workbook's DCFs with no model calls (`bench/valuation.py`). A DCF is a cell labelled
+like a valuation (enterprise value, equity value, NPV, total valuation) whose formula is, or adds amounts to, a
+`SUMPRODUCT` of a cash-flow row and a discount-factor row. The assumptions are read back from the discount factors:
+for each candidate valuation date and convention, the rate is back-solved from one factor and kept only if it
+reproduces every factor. The cut-off is the last period with a non-zero factor, and the rate is named by the cell
+holding that value. The value cell's formula is split into additive terms: the PV, other cells (debt, cash) and
+`SUMIFS` picks of one period's amount. The tab has two steps:
+1. **Validate** (`GET /api/files/{id}/valuation`): can the client's anchor values be reproduced? It lists every
+   anchor with the workbook's value, Python's value and the result, and states the approach found in plain words.
+   A step-by-step check compares the cash-flow total with the row's own total column, the discount factors period by
+   period, the PV with the workbook's `SUMPRODUCT` cell, and the bridge items and anchor value. It also charts the
+   cash flows and their present values and shows the model's assumptions with source cells. Cells that can't be
+   reproduced, for example a result rescaled by a units divisor or a rolling `XNPV`, are listed with the reason.
+2. **Scenarios** (`POST /api/files/{id}/valuation/scenario`, unlocked once the anchor is reproduced): choose the
+   discount rate, valuation date, end- or mid-period discounting, day count (`YEARFRAC` actual/actual or
+   actual/365 as in `XNPV`), cut-off (the model's, none, or another date), which bridge items to include, and low /
+   high rates. It shows the validated model value, the scenario value and the difference, a model-vs-scenario table
+   with each changed assumption, the rate sensitivity around the scenario, and a chart of cumulative present value
+   for both.
 
-Valuation cells that can't be reproduced, for example a result rescaled by a units divisor or a rolling
-`XNPV`, are listed with the reason. Low and high change only the discount rate, so levers that move the cash
-flows (growth, CPI, terminal assumptions) need the Python rebuild.
+Scenarios re-discount the saved cash flows. Levers that move the cash flows (growth, CPI, terminal assumptions)
+need the Python rebuild.
 
 Token usage: every model call (chat, identify, change summary) is logged to the `usage` table in
 `out/registry.db` (`bench/usage.py`). The header shows this chat and all-time totals; click it for totals by
