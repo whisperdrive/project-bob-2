@@ -16,3 +16,17 @@ def uri(path) -> str:
 
 def connect(path, **kw) -> sqlite3.Connection:
     return sqlite3.connect(uri(path), uri=True, **kw)
+
+
+def patched(path, values: dict, **kw) -> sqlite3.Connection:
+    """A read-only connection whose `cells` shows other values in place of the saved ones ({(sheet, row, col):
+    value}), e.g. the Python overlay's results, so code that reads model.db (dcf.py, valuation.py) works on them
+    unchanged. A temporary view named cells shadows the table for this connection only; the file is untouched."""
+    db = connect(path, **kw)
+    db.executescript("""
+        CREATE TEMP TABLE patch(sheet TEXT, row INT, col INT, value, PRIMARY KEY(sheet, row, col));
+        CREATE TEMP VIEW cells AS SELECT c.sheet, c.row, c.col, c.addr, c.formula,
+            CASE WHEN p.sheet IS NULL THEN c.value ELSE p.value END AS value
+            FROM main.cells c LEFT JOIN temp.patch p ON p.sheet = c.sheet AND p.row = c.row AND p.col = c.col;""")
+    db.executemany("INSERT INTO temp.patch VALUES (?,?,?,?)", [(*k, v) for k, v in values.items()])
+    return db

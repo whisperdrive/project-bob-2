@@ -18,6 +18,7 @@
   --ok-bg: #e5f3ea; --ok: #16692f; --warn-bg: #fff3cc; --warn: #7a5200; --bad-bg: #fbe7e5; --bad: #a3261c;
   --info-bg: #e3f1fd; --info: #0f5a9c; --code-bg: #f0f0f4;
   --s1: #1a9afa; --s2: #747480; --s3: #2e2e38;
+  --c1: #1a9afa; --c2: #2e2e38; --c3: #d97a00; --c4: #8a8a96; --c5: #16692f; --c6: #a3261c;
   --q1: #d6ebfd; --q2: #aed6fb; --q3: #7fbef8; --q4: #4ea5f5; --q5: #1a8ae6; --q6: #126cb8; --q7: #0b4f8a;
   --sans: "Noto Sans", system-ui, -apple-system, sans-serif; --mono: "Noto Sans Mono", ui-monospace, Menlo, monospace;
   color-scheme: light;
@@ -29,6 +30,7 @@
     --ok-bg: #173323; --ok: #7fd49a; --warn-bg: #3a3012; --warn: #f3cf62; --bad-bg: #3d1d1b; --bad: #f4a39b;
     --info-bg: #15304a; --info: #8cc8f7; --code-bg: #2e2e38; color-scheme: dark;
     --s1: #1a9afa; --s2: #9a9aa8; --s3: #f0f0f5;
+    --c1: #4bb0fb; --c2: #f0f0f5; --c3: #f3a43b; --c4: #9a9aa8; --c5: #7fd49a; --c6: #f4a39b;
     --q1: #0b2e4f; --q2: #0f3d69; --q3: #154f87; --q4: #1a63a8; --q5: #1a7fd6; --q6: #4ba3f0; --q7: #8cc8f7;
   }
 }
@@ -38,6 +40,7 @@
   --ok-bg: #173323; --ok: #7fd49a; --warn-bg: #3a3012; --warn: #f3cf62; --bad-bg: #3d1d1b; --bad: #f4a39b;
   --info-bg: #15304a; --info: #8cc8f7; --code-bg: #2e2e38; color-scheme: dark;
   --s1: #1a9afa; --s2: #9a9aa8; --s3: #f0f0f5;
+  --c1: #4bb0fb; --c2: #f0f0f5; --c3: #f3a43b; --c4: #9a9aa8; --c5: #7fd49a; --c6: #f4a39b;
   --q1: #0b2e4f; --q2: #0f3d69; --q3: #154f87; --q4: #1a63a8; --q5: #1a7fd6; --q6: #4ba3f0; --q7: #8cc8f7;
 }
 * { box-sizing: border-box; }
@@ -189,6 +192,69 @@ details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
 .tag.lever { background: var(--info-bg); color: var(--info); }
 .tag.out { background: var(--ok-bg); color: var(--ok); }
 #tip { position: fixed; pointer-events: none; background: var(--bar); color: #fff; font-size: 12.5px; padding: 6px 9px; border-radius: 4px; z-index: 40; max-width: 320px; display: none; border-left: 3px solid var(--yellow); }
+/* charts, the DCF tab and the chat (python overlay step), after the Model Desk's */
+.chart-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px 12px; }
+.chart-card h4 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+.chart-card .sub { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.chart-box { position: relative; height: 300px; }
+.chart-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+.chart-tools button { background: none; border: 1px solid var(--rule-strong); border-radius: 4px; padding: 3px 10px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.chart-tools button:hover, .chart-tools button.on { color: var(--ink); border-color: var(--ink); }
+.chart-tools .src { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; }
+.chart-note { font-size: 13px; margin: 8px 0 0; max-width: 80ch; }
+details.creview { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+details.creview ul { margin: 4px 0 0; padding-left: 18px; }
+.copy-panel { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.copy-panel textarea { height: 140px; }
+.val-cases { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 760px) { .val-cases { grid-template-columns: minmax(0, 1fr); } }
+.val-case { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; display: grid; gap: 2px; }
+.val-case.base { border-color: var(--ink); box-shadow: inset 0 3px 0 var(--yellow); }
+.val-case span { font-size: 12px; color: var(--muted); }
+.val-case b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.val-case em { font-style: normal; font-size: 12.5px; }
+.up { color: var(--ok); } .down { color: var(--bad); }
+.sc-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px 18px; }
+.sc-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
+.sc-form input, .sc-form select { font-size: 14px; padding: 6px 8px; width: 100%; min-width: 0; background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 4px; }
+.sc-pair { display: flex; gap: 6px; }
+.sc-bridge { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); font-size: 13.5px; }
+.sc-bridge label { display: flex; gap: 6px; align-items: center; }
+tr.tot td { font-weight: 600; border-top: 1px solid var(--ink); }
+tr.pick { cursor: pointer; } tr.pick:hover td { background: var(--raised); }
+.dcf-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; display: grid; gap: 8px; }
+.dcf-card h4 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.dcf-card .big { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dcf-card .facts { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--muted); }
+.dcf-card .facts b { color: var(--ink); }
+.dcf-card table { width: auto; font-size: 13px; }
+.dcf-card td { padding: 3px 12px 3px 0; }
+.thread { display: flex; flex-direction: column; gap: 22px; margin: 14px 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chips button { background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 99px; padding: 6px 14px; font-size: 13.5px; cursor: pointer; text-align: left; }
+.chips button:hover { border-color: var(--ink); }
+.q { align-self: flex-end; max-width: 80%; background: var(--bar); color: #fff; padding: 10px 14px; border-radius: 10px 10px 2px 10px; white-space: pre-wrap; border-left: 3px solid var(--yellow); }
+.a { display: flex; flex-direction: column; gap: 10px; }
+details.work { border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); font-size: 13px; }
+details.work summary { padding: 8px 12px; color: var(--muted); list-style: none; display: flex; align-items: center; gap: 8px; }
+details.work summary::-webkit-details-marker { display: none; }
+details.work summary::before { content: "▸"; transition: transform .15s; }
+details.work[open] summary::before { transform: rotate(90deg); }
+.wsteps { border-top: 1px solid var(--rule); padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.wstep .call { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.wstep .call b { color: var(--link); }
+.wstep pre { margin: 4px 0 0; max-height: 180px; overflow: auto; background: var(--code-bg); padding: 8px 10px; border-radius: 4px; font: 12px/1.45 var(--mono); color: var(--muted); white-space: pre; }
+.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); animation: pulse 1s infinite alternate; flex: none; }
+@keyframes pulse { from { opacity: .25; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } .bar i { transition: none; } }
+.answer { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 18px; overflow-x: auto; font-size: 14.5px; }
+.answer h1, .answer h2, .answer h3, .answer h4 { font-size: 15px; margin: 14px 0 6px; }
+.answer code { font: 12.5px var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+.answer table { width: auto; }
+.chat-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chat-stats b { color: var(--ink); }
+.composer { display: flex; gap: 10px; align-items: flex-end; }
+.composer textarea { flex: 1; resize: none; min-height: 46px; max-height: 180px; font-family: var(--sans); font-size: 14.5px; padding: 10px 12px; }
 @media (max-width: 640px) { .hbar, nav.steps, main { padding-left: 16px; padding-right: 16px; } }
 </style>
 </head>
@@ -260,7 +326,7 @@ async function open(id) { E = await api(`/api/engagements/${id}`); state.doc = n
 // dots but doesn't rebuild the page, so the edit isn't lost.
 function editing() {
   const a = document.activeElement;
-  return state.factEdit != null || state.editingTable || !!(a && a.closest("main") && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+  return state.factEdit != null || state.editingTable || CHAT.streaming || !!(a && a.closest("main") && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
 }
 async function refresh(force = false) {
   if (!E) return;
@@ -836,7 +902,8 @@ async function bindModels() {
 }
 
 // ---- step 6: python overlay ------------------------------------------------------------------------------
-const OV = {mode: "workbook", changes: {}, vd: null, months: null, result: null, running: false, trace: null, q: "", found: [], eid: null};
+const OV = {mode: "workbook", changes: {}, vd: null, months: null, result: null, running: false, trace: null, q: "", found: [], eid: null, tab: "live"};
+const OV_TABS = [["live", "Run it live"], ["valuation", "Valuation (DCF)"], ["ask", "Ask"]];
 const serialToISO = s => new Date(Date.UTC(1899, 11, 30) + Math.round(s) * 86400000).toISOString().slice(0, 10);
 function leverShown(l, v) {
   if (v == null || typeof v !== "number") return v ?? "";
@@ -850,7 +917,7 @@ function leverRaw(l, shown) {
 function viewPython() {
   const head = `<div class="lede"><div><h1><b>Python overlay</b></h1><p>Last year's overlay rebuilt as a Python module from its own formulas: every formula cell becomes Python, checked against the value Excel saved, then against the report. Run it live: change the assumptions, or feed it from the prior or the current client model to roll the valuation forward.</p></div></div>`;
   if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in step 3 first.</div>`;
-  if (OV.eid !== E.id) Object.assign(OV, {mode: "workbook", changes: {}, vd: null, months: null, result: null, trace: null, q: "", found: [], eid: E.id});
+  if (OV.eid !== E.id) Object.assign(OV, {mode: "workbook", changes: {}, vd: null, months: null, result: null, trace: null, q: "", found: [], eid: E.id, tab: "live"});
   const O = E.overlay;
   const run = `<div class="row"><button class="btn ${E.overlay_status === "done" ? "" : "primary"}" id="buildOv" ${busy(E.overlay_status) ? "disabled" : ""}>${E.overlay_status === "done" ? "Rebuild the Python overlay" : "Build the Python overlay"}</button>
     ${busy(E.overlay_status) ? `<span class="pill info">${esc(E.overlay_step || "Working")}</span>` : ""}${E.overlay_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.overlay_error)}</span>` : ""}
@@ -874,7 +941,11 @@ function viewPython() {
   ${!O.reference_approved ? `<div class="callout warn">Built with report facts that aren't all approved; levers and tie-out may be incomplete. Approve them in step 2 and rebuild.</div>` : ""}
   <div class="tiles">${tiles.map(([b, t]) => `<div class="tile"><b>${esc(b)}</b><span>${esc(t)}</span></div>`).join("")}</div>
   ${validationCard(O)}
-  ${busy(E.overlay_status) ? `<div class="card empty">Rebuilding the module… the live panel comes back when it's done.</div>` : `<div class="card" id="ovLive">${liveCard(O)}</div>`}
+  <div class="seg" role="tablist" aria-label="Python overlay" id="ovTabs" style="justify-self:start">${OV_TABS.map(([k, t]) => `<button role="tab" data-ovtab="${k}" class="${OV.tab === k ? "on" : ""}" aria-selected="${OV.tab === k}">${t}</button>`).join("")}</div>
+  ${busy(E.overlay_status) ? `<div class="card empty">Rebuilding the module… this comes back when it's done.</div>`
+    : OV.tab === "valuation" ? `<div id="ovVal" class="stack">${ovValuationPane()}</div>`
+    : OV.tab === "ask" ? `<div id="ovAsk">${ovAskPane()}</div>`
+    : `<div class="card" id="ovLive">${liveCard(O)}</div>`}
   ${tieCard(O)}
   <div class="card"><h2>The module</h2><p class="sub">${esc(O.files.overlay || "")}, sheets ${esc(O.sheets.join(", "))}: ${st.formula_cells.toLocaleString()} formula cells in ${st.rows.toLocaleString()} functions (${st.branches.toLocaleString()} branches). Each function returns its line item's value for a column; the Excel formula is in the comment beside each branch.
   ${st.volatile?.length ? ` Volatile functions (${esc(st.volatile.join(", "))}) depend on the day or the file and won't match.` : ""}</p>
@@ -996,10 +1067,365 @@ function bindLive() {
   $("#ovTraceClose")?.addEventListener("click", () => { OV.trace = null; $("#ovTrace").innerHTML = ""; });
 }
 bind.python = () => {
-  $("#buildOv")?.addEventListener("click", () => { OV.result = null; act(() => api(`/api/engagements/${E.id}/overlay`, {method: "POST"})); });
+  $("#buildOv")?.addEventListener("click", () => { OV.result = null; VAL.v = null; VAL.dcf = null; act(() => api(`/api/engagements/${E.id}/overlay`, {method: "POST"})); });
+  document.querySelectorAll("#ovTabs [data-ovtab]").forEach(b => b.onclick = () => { OV.tab = b.dataset.ovtab; render(); });
   // no runs while a rebuild is replacing the module
-  if (E.overlay && !busy(E.overlay_status)) { bindLive(); if (!OV.result && !OV.running) ovSchedule(0); }
+  if (!E.overlay || busy(E.overlay_status)) return;
+  if (OV.tab === "valuation") bindOvValuation();
+  else if (OV.tab === "ask") bindOvAsk();
+  else { bindLive(); if (!OV.result && !OV.running) ovSchedule(0); }
 };
+
+// ---- charts (after the Model Desk's: phases shaded, periodic / annual, line / bar, copy, the review's notes) ----
+function shownData(spec, mode) {
+  const sign = spec.sign || 1, a = spec.annual, annual = mode === "annual" && a;
+  const labels = annual ? a.labels : (spec.period_labels || spec.labels);
+  const series = (annual ? a.series : spec.series).map(s => ({name: s.name, method: s.method, data: s.data.map(v => v == null ? null : v * sign + 0)}));
+  return {labels, series, phases: (annual ? a.phases : spec.phases) || null};
+}
+const phasePlugin = {
+  id: "phases",
+  beforeDatasetsDraw(chart, args, opts) {
+    const ph = opts.phases; if (!ph || !ph.length) return;
+    const {ctx, chartArea: area, scales: {x}} = chart, half = (x.getPixelForValue(1) - x.getPixelForValue(0)) / 2;
+    ctx.save();
+    ph.forEach((p, k) => {
+      const x0 = Math.max(area.left, x.getPixelForValue(p.start) - half), x1 = Math.min(area.right, x.getPixelForValue(p.end) + half);
+      if (x1 <= area.left || x0 >= area.right) return;
+      if (k % 2 === 0) { ctx.fillStyle = opts.shade; ctx.fillRect(x0, area.top, x1 - x0, area.bottom - area.top); }
+      if (x1 - x0 > Math.max(60, ctx.measureText(p.name).width + 16)) {
+        ctx.fillStyle = opts.text; ctx.font = "11px " + getComputedStyle(document.body).fontFamily; ctx.textAlign = "center"; ctx.fillText(p.name, (x0 + x1) / 2, area.top + 12);
+      }
+    });
+    ctx.restore();
+  },
+};
+const FREQ_WORD = {monthly: "Monthly", quarterly: "Quarterly", "semi-annual": "Half-yearly", annual: "Annual"};
+const METHOD_WORD = {sum: "totals", last: "year-end values", first: "opening values", average: "averages"};
+function chartSubtitle(spec, mode) {
+  const units = spec.units && !/not\s+label/i.test(spec.units) ? esc(spec.units) : "Units not labelled";
+  const sign = spec.sign === -1 ? " · negative values shown as positive" : "";
+  const d = shownData(spec, mode), n = d.labels.length, span = n ? ` · ${esc(d.labels[0])} to ${esc(d.labels[n - 1])}` : "";
+  const ph = d.phases?.length ? "<br>" + d.phases.map(p => `${esc(p.name)} ${esc(d.labels[p.start])}–${esc(d.labels[p.end])}`).join(" · ") : "";
+  if (mode === "annual" && spec.annual) {
+    const a = spec.annual, methods = [...new Set(a.series.map(s => METHOD_WORD[s.method]))].join(" / ");
+    return `${units}${sign} · ${n} years: annual ${methods} by ${esc(a.basis)}${span}${a.partial.some(Boolean) ? " · * partial year" : ""}${ph}`;
+  }
+  return `${units}${sign} · ${n} ${(FREQ_WORD[spec.frequency] || "").toLowerCase() || "points"}${n ? " periods" : ""}${span}`.replace(" periods periods", " periods") + ph;
+}
+function chartCard(spec) {
+  const card = document.createElement("div"); card.className = "chart-card";
+  const refs = [...new Set(spec.series.map(s => s.range))].map(r => `<span class="mono">${esc(r)}</span>`).join(" ");
+  const modes = spec.annual ? `<span class="seg"><button type="button" data-mode="periodic">${FREQ_WORD[spec.frequency] || "Periodic"}</button><button type="button" data-mode="annual">Annual</button></span>` : "";
+  card.innerHTML = `<h4>${esc(spec.title)}</h4><div class="sub"></div><div class="chart-box"><canvas role="img" aria-label="${esc(spec.title)}"></canvas></div>
+    <div class="chart-tools">${modes}<button type="button" data-kind="line">Line</button><button type="button" data-kind="bar">Bar</button>
+      <button type="button" data-act="copy">Copy data</button><button type="button" data-act="reset">Full range</button><span class="src">Source ${refs}</span></div>
+    <div class="creview-slot"></div><script type="application/json">${JSON.stringify(spec).replace(/</g, "\\u003c")}<\/script>`;
+  return card;
+}
+function mountCharts(root) {
+  root.querySelectorAll(".chart-card").forEach(card => {
+    if (card._chart) return;
+    const spec = card._spec = JSON.parse(card.querySelector('script[type="application/json"]').textContent);
+    card._mode = spec.mode || "periodic";
+    const draw = (kind, useView = true) => {
+      card._chart?.destroy();
+      const mode = card._mode, d = shownData(spec, mode), ink = tok("--ink"), muted = tok("--muted"), rule = tok("--rule");
+      const f = v => v == null ? "–" : Number(v).toLocaleString(undefined, {maximumFractionDigits: Math.abs(v) < 10 ? 4 : 1});
+      const unit = spec.units && !/not\s+label/i.test(spec.units) ? " " + spec.units : "";
+      card._chart = new Chart(card.querySelector("canvas"), {type: kind, plugins: [phasePlugin],
+        data: {labels: d.labels, datasets: d.series.map((s, i) => { const c = tok(`--c${(i % 6) + 1}`);
+          return {label: s.name, data: s.data, borderColor: c, backgroundColor: kind === "bar" ? c : c + "22", borderWidth: 2,
+            pointRadius: d.labels.length > 60 ? 0 : 2.5, pointHoverRadius: 4, tension: 0, fill: false, spanGaps: true}; })},
+        options: {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},
+          plugins: {phases: {phases: d.phases, shade: tok("--code-bg"), text: muted},
+            legend: {display: d.series.length > 1, labels: {color: ink, boxWidth: 12, font: {family: tok("--sans")}}},
+            tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${f(c.raw)}${unit}`}}},
+          scales: {x: {ticks: {color: muted, maxRotation: 0, autoSkip: true, maxTicksLimit: 10}, grid: {display: false}, border: {color: rule}},
+                   y: {ticks: {color: muted, callback: v => Number(v).toLocaleString()}, grid: {color: rule}, border: {display: false}}},
+          onClick: (evt, els, chart) => { if (!els.length) return; const i = els[0].index, n = chart.data.labels.length;
+            chart.options.scales.x.min = Math.max(0, i - 10); chart.options.scales.x.max = Math.min(n - 1, i + 10); chart.update(); }}});
+      const v = useView && spec.view;
+      if (v) {  // the framing the chart review chose (data unchanged)
+        const o = card._chart.options.scales, py = spec.annual?.period_year, annual = mode === "annual" && py;
+        if (v.x_start != null) o.x.min = !annual ? v.x_start : py[v.x_start] + (py[v.x_start - 1] === py[v.x_start] ? 1 : 0);
+        if (v.x_end != null) o.x.max = !annual ? v.x_end : py[v.x_end] - (py[v.x_end + 1] === py[v.x_end] ? 1 : 0);
+        if (mode !== "annual") { if (v.y_min != null) o.y.min = v.y_min; if (v.y_max != null) o.y.max = v.y_max; }
+        card._chart.update();
+      }
+      spec.kind = kind; spec.mode = mode;
+      card.querySelector(".sub").innerHTML = chartSubtitle(spec, mode);
+      card.querySelectorAll("[data-kind]").forEach(b => b.classList.toggle("on", b.dataset.kind === kind));
+      card.querySelectorAll("[data-mode]").forEach(b => b.classList.toggle("on", b.dataset.mode === mode));
+    };
+    const rv = spec.review, slot = card.querySelector(".creview-slot");
+    if (rv) {
+      const names = {title: "title", kind: "chart type", x_start: "visible range", x_end: "visible range", y_min: "y-axis range", y_max: "y-axis range", note: "note"};
+      const changed = [...new Set(rv.changed.map(k => names[k] || k))];
+      const head = rv.verdict === "skipped" ? `Not reviewed: ${esc(rv.issues[0] || "")}` : changed.length
+        ? `Checked before showing (${esc(rv.model || "")}): adjusted the ${changed.join(", ")}. The data is unchanged; “Full range” shows everything.` : `Checked before showing (${esc(rv.model || "")}): no changes needed.`;
+      slot.innerHTML = (spec.note ? `<p class="chart-note">${esc(spec.note)}</p>` : "") + (rv.issues.length && rv.verdict !== "skipped"
+        ? `<details class="creview"><summary>${head}</summary><ul>${rv.issues.map(i => `<li>${esc(i)}</li>`).join("")}</ul></details>` : `<p class="small muted" style="margin:6px 0 0">${head}</p>`);
+    } else if (spec.note) slot.innerHTML = `<p class="chart-note">${esc(spec.note)}</p>`;
+    card.querySelectorAll("[data-kind]").forEach(b => b.onclick = () => draw(b.dataset.kind));
+    card.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => { card._mode = b.dataset.mode; draw(spec.kind || "line"); });
+    card.querySelector('[data-act="reset"]').onclick = () => draw(spec.kind || "line", false);
+    card.querySelector('[data-act="copy"]').onclick = e => {
+      const d = shownData(spec, card._mode), rows = [["Period", ...d.series.map(s => s.name)], ...d.labels.map((l, i) => [l, ...d.series.map(s => s.data[i] ?? "")])];
+      copyText(rows.map(r => r.join("\t")).join("\n"), e.currentTarget, card);
+    };
+    draw(spec.kind || "line");
+  });
+}
+async function copyText(text, btn, card) {
+  const done = msg => { btn.textContent = msg; setTimeout(() => btn.textContent = "Copy data", 1800); };
+  try { await navigator.clipboard.writeText(text); return done("Copied"); } catch {}
+  const ta = document.createElement("textarea"); ta.value = text; ta.style.cssText = "position:fixed;top:0;left:0;opacity:0"; document.body.append(ta); ta.select();
+  let ok = false; try { ok = document.execCommand("copy"); } catch {}
+  ta.remove(); if (ok) return done("Copied");
+  let panel = card.querySelector(".copy-panel");
+  if (!panel) { panel = document.createElement("div"); panel.className = "copy-panel";
+    panel.innerHTML = `<span class="small muted">This browser blocked copying. The data is selected below: press Ctrl+C (Cmd+C on a Mac), then paste into Excel.</span><textarea readonly></textarea>`; card.append(panel); }
+  const box = panel.querySelector("textarea"); box.value = text; box.focus(); box.select(); done("Select + copy below");
+}
+function dcfCard(r) {  // the Model Desk's dcf tool result
+  const n = v => v == null ? "" : v.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1}), pct = v => (v * 100).toFixed(2) + "%";
+  const badge = r.compare_to == null ? "" : r.matches ? `<span class="pill ok">Matches ${esc(r.compare_source.split(" ")[0])}</span>` : `<span class="pill bad">Workbook ${esc(r.compare_source.split(" ")[0])}: ${n(r.compare_to)}</span>`;
+  const card = document.createElement("div"); card.className = "dcf-card";
+  card.innerHTML = `<h4>DCF recomputed in Python (saved cash flows)</h4><div class="row"><span class="big">${n(r.total)}</span><span class="muted small">${esc(r.units.join(", ") || "units not labelled")}</span>${badge}</div>
+    <div class="facts"><span>Rate <b>${pct(r.rate)}</b></span><span>Valuation date <b>${esc(r.valuation_date)}</b></span><span>Periods <b>${r.periods}</b> (${esc(r.first_period || "")} to ${esc(r.last_period || "")})</span><span>Convention <b>${esc(r.timing)}-of-period, ${esc(r.day_count)}</b></span></div>
+    ${r.bridge.length ? `<table><tr><td>PV of cash flows</td><td class="num">${n(r.pv)}</td></tr>${r.bridge.map(b => `<tr><td>${b.value < 0 ? "Less" : "Add"}: ${esc(b.label)}</td><td class="num">${n(b.value)}</td></tr>`).join("")}<tr class="tot"><td>Total</td><td class="num">${n(r.total)}</td></tr></table>` : ""}
+    ${r.corrections.length ? `<div class="callout warn small"><b>Corrected to follow the workbook's formula:</b> ${esc(r.corrections.join("; "))}</div>` : ""}`;
+  return card;
+}
+
+// ---- python overlay: Valuation (DCF) tab: the Model Desk's Validate and Scenarios, on the live module ------
+const VAL = {eid: null, cell: null, step: "validate", v: null, loading: false, sc: {}, dcf: null, seq: 0};
+const vN = x => x == null ? "–" : Number(x).toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1});
+const vPct = x => x == null ? "–" : (x * 100).toFixed(2) + "%";
+const vDelta = (x, base) => { const d = x - base; if (Math.abs(d) < 0.05) return "no change";
+  return `<span class="${d > 0 ? "up" : "down"}">${d >= 0 ? "+" : "−"}${vN(Math.abs(d))} (${d >= 0 ? "+" : "−"}${Math.abs(d / base * 100).toFixed(1)}%)</span>`; };
+const TIMING = {end: "End of period", mid: "Mid-period"};
+const DAYCOUNT = {"actual/actual": "Actual/actual (YEARFRAC)", "actual/365": "Actual/365 (XNPV)"};
+const FEED_NAME = {workbook: "As saved", prior: "Prior client model", current: "Current model, rolled forward"};
+function ovValuationPane() {
+  if (VAL.eid !== E.id) Object.assign(VAL, {eid: E.id, cell: null, step: "validate", v: null, sc: {}, dcf: null});
+  const v = VAL.v;
+  if (!v) return `<div class="card"><p class="muted" style="margin:0">Finding and checking the overlay's DCFs…</p></div>`;
+  if (!v.selected) return `<div class="card"><p style="margin:0">No DCF found on the overlay sheets. This tab looks for cells labelled like a valuation (enterprise value, equity value, NPV) whose formula is a <span class="mono">SUMPRODUCT</span> of a cash-flow row and a discount-factor row, possibly plus other amounts.</p></div>${anchorTable(v)}`;
+  const step = VAL.step === "methods" && v.validated ? "methods" : "validate";
+  return `<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-end">
+    <label class="small muted" style="flex:1 1 320px;min-width:0">Anchor value<br><select class="in" id="valCell" style="width:100%">${v.anchors.filter(a => a.ok).map(a => `<option value="${esc(a.cell)}" ${a.cell === v.selected ? "selected" : ""}>${a.matches ? "✓" : "✗"} ${esc(a.label || a.cell)} · ${esc(a.cell)} · ${vN(a.value)}</option>`).join("")}</select></label>
+    <div class="seg" role="tablist" aria-label="Step"><button role="tab" data-vstep="validate" class="${step === "validate" ? "on" : ""}">1 · Validate</button><button role="tab" data-vstep="methods" class="${step === "methods" ? "on" : ""}" ${v.validated ? "" : `disabled title="Validate the anchor first"`}>2 · Live module and methods</button></div></div>
+    <p class="small muted" style="margin:10px 0 0">${step === "validate" ? "The DCF found in the overlay, recomputed step by step from the values Excel saved (the Model Desk's Validate step)." : "The same DCF on the Python overlay's own numbers (the feed and input changes from <b>Run it live</b>), checked against the module, then under another discounting method."}</p></div>
+  <div id="valBody" class="stack">${step === "validate" ? validateHtml(v) : methodsHtml(v)}</div>`;
+}
+function anchorTable(v) {
+  if (!v.anchors.length) return "";
+  return `<div class="card"><h2>Anchor values in the overlay</h2><div class="scroll"><table><thead><tr><th>Anchor</th><th class="num">Workbook</th><th class="num">Python</th><th>Result</th></tr></thead><tbody>
+  ${v.anchors.map(a => `<tr class="${a.ok ? "pick" : ""}" data-anchor="${esc(a.cell)}"><td>${esc(a.label || "")} <span class="mono">${esc(a.cell)}</span></td><td class="num">${vN(a.value)}</td><td class="num">${a.ok ? vN(a.total) : "–"}</td>
+    <td>${a.ok && a.matches ? `<span class="pill ok">Reproduced</span>` : a.ok ? `<span class="pill bad">Differs</span>` : `<span class="small muted">${esc(a.reason || "")}</span>`}</td></tr>`).join("")}</tbody></table></div></div>`;
+}
+function validateHtml(v) {
+  const A = v.assumptions, anchor = v.checks[v.checks.length - 1];
+  const bridge = v.bridge.length ? ", then " + v.bridge.map(b => `${b.value < 0 ? "less" : "add"} ${esc(b.label.toLowerCase())}`).join(", ") : "";
+  const tick = ok => ok === true ? `<span class="pill ok">✓ Matches</span>` : ok === false ? `<span class="pill bad">✗ Differs</span>` : `<span class="muted small">–</span>`;
+  return `<div class="callout ${v.validated ? "info" : "bad"}">${v.validated
+      ? `<b>Reproduced.</b> Recomputing ${esc(anchor.what)} in Python gives ${vN(anchor.ours)}, the same as the workbook's <span class="mono">${esc(anchor.where)}</span>. Move on to <b>2 · Live module and methods</b> to run it on this year's numbers.`
+      : `<b>Not reproduced.</b> Python gives ${vN(anchor.ours)}; the workbook's <span class="mono">${esc(anchor.where)}</span> is ${vN(anchor.theirs)}. Step 2 stays locked until the anchor is reproduced.`}</div>
+    <div class="card"><h2>Approach found</h2><p style="margin:0;line-height:1.6">Discount <b>${esc(A.cashflow.join("; "))}</b> ${A.timing === "mid" ? "at the middle of each period" : "at the end of each period"} at <b>${vPct(A.rate)}</b> a year back to the valuation date <b>${esc(A.valuation_date)}</b>, measuring time with ${esc(DAYCOUNT[A.day_count])}; ${A.terminal_date ? `periods after <b>${esc(A.terminal_date)}</b> aren't discounted` : "every later period is discounted"}${bridge}. <span class="muted">${A.periods} periods, ${esc(A.first_period)} to ${esc(A.last_period)}.</span></p></div>
+    <div class="card"><h2>Step-by-step check</h2><div class="scroll"><table><thead><tr><th>Step</th><th>What</th><th class="num">Python</th><th class="num">Workbook</th><th></th></tr></thead><tbody>
+      ${v.checks.map(c => `<tr class="${c.step === "Anchor value" ? "tot" : ""}"><td>${esc(c.step)}</td><td>${esc(c.what)}${c.where || c.note ? `<div class="small muted">${esc([c.where, c.note].filter(Boolean).join(" · "))}</div>` : ""}</td><td class="num">${vN(c.ours)}</td><td class="num">${vN(c.theirs)}</td><td>${tick(c.ok)}</td></tr>`).join("")}</tbody></table></div></div>
+    <div id="valChart"></div>
+    <div class="card"><h2>Model assumptions</h2><dl class="kv">
+      <dt>Discount rate</dt><dd>${vPct(A.rate)} <span class="small muted">${esc(A.rate_source)}</span></dd>
+      <dt>Valuation date</dt><dd>${esc(A.valuation_date)} <span class="small muted">${esc(A.valuation_date_source)}</span></dd>
+      <dt>Cut-off</dt><dd>${esc(A.terminal_date || "none")}</dd><dt>Discounting</dt><dd>${esc(TIMING[A.timing])}, ${esc(DAYCOUNT[A.day_count])}</dd>
+      <dt>Cash flows (undiscounted)</dt><dd>${vN(A.undiscounted)}</dd><dt>Discount factors</dt><dd class="small">${esc(A.factor_row)} · period ends ${esc(A.period_ends)}</dd>
+      <dt>Units</dt><dd>${esc(A.units.join(", ") || "not labelled")}</dd></dl></div>
+    ${anchorTable(v)}`;
+}
+function methodsHtml(v) {
+  const A = v.assumptions, sc = VAL.sc, bridge = VAL.dcf?.live?.bridge || v.bridge, w = E.overlay?.wiring || {};
+  const cut = sc.cutoff == null ? "model" : sc.cutoff === "" ? "none" : "custom", nch = Object.keys(OV.changes).length;
+  const avail = {workbook: true, prior: !!w.prior, current: !!w.current};
+  return `<div class="card"><h2>Feed and inputs</h2><p class="sub">Shared with <b>Run it live</b>: where the client values come from, and the inputs you've changed there.</p>
+    <div class="row"><div class="seg" role="radiogroup" aria-label="Feed">${Object.entries(FEED_NAME).map(([m, t]) => `<button role="radio" aria-checked="${OV.mode === m}" data-vfeed="${m}" class="${OV.mode === m ? "on" : ""}" ${avail[m] ? "" : "disabled"}>${esc(t)}</button>`).join("")}</div>
+    <span class="small">${nch ? `${nch} input change(s): ${Object.entries(OV.changes).map(([k, x]) => `<span class="pill info">${esc(k)} = ${esc(typeof x === "number" ? +x.toPrecision(10) : x)}</span>`).join(" ")}` : `<span class="muted">No input changes. Change levers or inputs on <b>Run it live</b>.</span>`}</span></div></div>
+  <div class="card"><h2>Discounting method</h2><p class="sub">On top of the feed and changes above. Blank or unchanged fields keep the model's method.</p>
+    <div class="sc-form">
+      <label>Discount rate (%)<input id="scRate" type="number" step="0.25" value="${sc.rate != null ? (sc.rate * 100).toFixed(2) : ""}" placeholder="${(A.rate * 100).toFixed(2)}"><span>Model ${vPct(A.rate)}${VAL.dcf && Math.abs(VAL.dcf.live.rate - A.rate) > 1e-12 ? ` · live ${vPct(VAL.dcf.live.rate)}` : ""}</span></label>
+      <label>Valuation date<input id="scVd" type="date" value="${esc(sc.valuation_date || "")}"><span>Live ${esc(VAL.dcf?.live?.valuation_date || A.valuation_date)}</span></label>
+      <label>Discount at<select id="scTiming">${Object.entries(TIMING).map(([k, t]) => `<option value="${k}" ${(sc.timing || A.timing) === k ? "selected" : ""}>${t}</option>`).join("")}</select><span>Model ${esc(TIMING[A.timing])}</span></label>
+      <label>Time measured by<select id="scDc">${Object.entries(DAYCOUNT).map(([k, t]) => `<option value="${k}" ${(sc.day_count || A.day_count) === k ? "selected" : ""}>${t}</option>`).join("")}</select><span>Model ${esc(DAYCOUNT[A.day_count])}</span></label>
+      <label>Cut-off<select id="scCut"><option value="model" ${cut === "model" ? "selected" : ""}>Model's (${esc(A.terminal_date || "none")})</option><option value="none" ${cut === "none" ? "selected" : ""}>None: discount every period</option><option value="custom" ${cut === "custom" ? "selected" : ""}>Another date…</option></select>
+        <input id="scCutDate" type="date" value="${esc(cut === "custom" ? sc.cutoff : A.terminal_date || "")}" ${cut === "custom" ? "" : "hidden"}></label>
+      <label>Sensitivity: low / high rate (%)<span class="sc-pair"><input id="scLow" type="number" step="0.25" value="${sc.low != null ? (sc.low * 100).toFixed(2) : ""}" placeholder="+1%"><input id="scHigh" type="number" step="0.25" value="${sc.high != null ? (sc.high * 100).toFixed(2) : ""}" placeholder="−1%"></span><span>Blank: ± 1%</span></label>
+    </div>
+    ${bridge.length ? `<div class="sc-bridge"><span class="small muted">Bridge items</span>${bridge.map((b, i) => `<label><input type="checkbox" data-bi="${i}" ${(sc.include?.[i] ?? true) ? "checked" : ""}> ${b.value < 0 ? "Less" : "Add"} ${esc(b.label)} <span class="small muted">${vN(b.value)}</span></label>`).join("")}</div>` : ""}
+    <div style="margin-top:12px"><button class="btn small ghost" id="scReset">Reset to the model's method</button></div></div>
+  <div id="dcfResults" class="stack">${VAL.dcf ? dcfResultsHtml(VAL.dcf) : `<p class="muted">Calculating…</p>`}</div>`;
+}
+function dcfResultsHtml(r) {
+  const W = r.workbook, L = r.live, S = r.scenario, units = r.units.length ? r.units.join(", ") : "units not labelled";
+  const row = (label, a, b, c) => `<tr><td>${label}</td><td class="num">${a}</td><td class="num">${b}</td><td class="num">${c}</td></tr>`;
+  const bridge = L.bridge.map(b => { const x = S.bridge.find(y => y.source === b.source), w0 = W.bridge.find(y => y.source === b.source);
+    return row(`${b.value < 0 ? "Less" : "Add"}: ${esc(b.label)}`, w0 ? vN(w0.value) : "–", vN(b.value), x ? vN(x.value) : "excluded"); }).join("");
+  const feed = r.feed, roll = feed.roll;
+  return `<div class="val-cases">
+      <div class="val-case"><span>As saved in Excel · ${esc(r.label)}</span><b>${vN(W.total)}</b><em>${vPct(W.rate)} · ${esc(W.valuation_date)}</em></div>
+      <div class="val-case"><span>Python overlay · ${esc(FEED_NAME[feed.mode])}${Object.keys(feed.changes).length ? " + changes" : ""}</span><b>${vN(L.total)}</b><em>${r.agrees ? `✓ the module's own cell agrees` : `<span class="down">✗ the module's cell gives ${vN(L.anchor)}</span>`} · ${vDelta(L.total, W.total)} vs saved</em></div>
+      <div class="val-case base"><span>Scenario method</span><b>${vN(S.total)}</b><em>${r.method_changes.length ? `${vDelta(S.total, L.total)} · ${esc(r.method_changes.join("; "))}` : "Same method as the model: change it above"}</em></div></div>
+    ${roll ? `<div class="callout info small">Rolled forward ${roll.months} months to ${esc(roll.valuation_date || "?")}${feed.unmatched ? `; ${feed.unmatched} client value(s) couldn't be matched and are blank` : ""}.</div>` : ""}
+    <div class="card"><h2>Two independent calculations</h2><p class="sub">The Python overlay computes every cell from the overlay's formulas; the DCF recompute takes only its cash flows, dates and bridge and discounts them again. Agreement checks both.</p>
+      <div class="scroll"><table><thead><tr><th>Check</th><th>What</th><th class="num">DCF recompute</th><th class="num">Cell</th><th></th></tr></thead><tbody>
+      ${r.checks.map(c => `<tr><td>${esc(c.step)}</td><td class="small">${esc(c.what)} <span class="mono">${esc(c.where)}</span></td><td class="num">${vN(c.ours)}</td><td class="num">${vN(c.theirs)}</td><td>${c.ok ? `<span class="pill ok">✓ Agrees</span>` : `<span class="pill bad">✗ Differs</span>`}</td></tr>`).join("")}</tbody></table></div></div>
+    <div class="card"><h2>Saved vs live vs scenario</h2><div class="scroll"><table><thead><tr><th></th><th class="num">As saved</th><th class="num">Python overlay</th><th class="num">Scenario</th></tr></thead><tbody>
+      ${row("Discount rate", vPct(W.rate), vPct(L.rate), vPct(S.rate))}
+      ${row("Valuation date", esc(W.valuation_date), esc(L.valuation_date), esc(S.valuation_date))}
+      ${row("Discount at", TIMING[W.timing], TIMING[L.timing], TIMING[S.timing])}
+      ${row("Time measured by", DAYCOUNT[W.day_count], DAYCOUNT[L.day_count], DAYCOUNT[S.day_count])}
+      ${row("Cut-off", esc(W.terminal_date || "none"), esc(L.terminal_date || "none"), esc(S.terminal_date || "none"))}
+      ${row("Periods", `${W.periods} (${esc(W.first_period)} to ${esc(W.last_period)})`, `${L.periods} (${esc(L.first_period)} to ${esc(L.last_period)})`, `${S.periods}`)}
+      ${row("Cash flows (undiscounted)", vN(W.undiscounted), vN(L.undiscounted), vN(S.undiscounted))}
+      ${row("PV of cash flows", vN(W.pv), vN(L.pv), vN(S.pv))}${bridge}
+      <tr class="tot"><td>${esc(r.label)}</td><td class="num">${vN(W.total)}</td><td class="num">${vN(L.total)}</td><td class="num">${vN(S.total)}</td></tr></tbody></table></div></div>
+    <div class="card"><h2>Sensitivity to the discount rate (around the scenario)</h2><div class="scroll"><table><thead><tr><th></th>${r.sensitivity.map(x => `<th class="num">${x.case === "scenario" ? "Scenario" : x.case === "low" ? "Low" : "High"}</th>`).join("")}</tr></thead><tbody>
+      <tr><td>Discount rate</td>${r.sensitivity.map(x => `<td class="num">${vPct(x.rate)}</td>`).join("")}</tr>
+      <tr><td>PV of cash flows</td>${r.sensitivity.map(x => `<td class="num">${vN(x.pv)}</td>`).join("")}</tr>
+      <tr class="tot"><td>Value</td>${r.sensitivity.map(x => `<td class="num">${vN(x.total)}</td>`).join("")}</tr>
+      <tr><td>vs Python overlay</td>${r.sensitivity.map(x => `<td class="num">${vDelta(x.total, L.total)}</td>`).join("")}</tr></tbody></table></div><p class="small muted" style="margin:8px 0 0">${esc(units)}</p></div>
+    <div id="dcfChart"></div>`;
+}
+async function loadOvValuation() {
+  if (VAL.loading) return;
+  VAL.loading = true;
+  try { VAL.v = await api(`/api/engagements/${E.id}/overlay/valuation${VAL.cell ? "?cell=" + encodeURIComponent(VAL.cell) : ""}`); VAL.cell = VAL.v.selected; }
+  catch (e) { VAL.v = null; const b = $("#ovVal"); if (b) b.innerHTML = `<div class="callout bad">Couldn't load the valuation: ${esc(e.message)}</div>`; VAL.loading = false; return; }
+  VAL.loading = false;
+  if (state.step === "python" && OV.tab === "valuation" && $("#ovVal")) { $("#ovVal").innerHTML = ovValuationPane(); bindOvValuation(); }
+}
+function readMethod() {
+  const num = id => { const x = parseFloat($(id)?.value); return isNaN(x) ? null : x / 100; };
+  const c = $("#scCut").value; $("#scCutDate").hidden = c !== "custom";
+  VAL.sc = {rate: num("#scRate"), valuation_date: $("#scVd").value || null, timing: $("#scTiming").value, day_count: $("#scDc").value,
+    cutoff: c === "model" ? null : c === "none" ? "" : ($("#scCutDate").value || null),
+    include: [...document.querySelectorAll("#valBody [data-bi]")].map(x => x.checked), low: num("#scLow"), high: num("#scHigh")};
+}
+async function runOvDcf() {
+  const sc = VAL.sc, seq = ++VAL.seq;
+  const body = {mode: OV.mode, changes: OV.changes, cell: VAL.cell, rate: sc.rate, dcf_valuation_date: sc.valuation_date, timing: sc.timing, day_count: sc.day_count,
+    cutoff: sc.cutoff == null ? "model" : sc.cutoff, include: sc.include?.length ? sc.include : null, low: sc.low, high: sc.high};
+  if (OV.mode === "current") { body.valuation_date = OV.vd || E.overlay?.roll?.current_valuation_date || null; if (OV.months != null && OV.months !== "") body.months = +OV.months; }
+  let r;
+  try { r = await api(`/api/engagements/${E.id}/overlay/dcf`, {method: "POST", body}); }
+  catch (e) { if (seq === VAL.seq && $("#dcfResults")) $("#dcfResults").innerHTML = `<div class="callout bad">${esc(e.message)}</div>`; return; }
+  if (seq !== VAL.seq) return;
+  VAL.dcf = r;
+  const box = $("#dcfResults"); if (!box) return;
+  box.innerHTML = dcfResultsHtml(r);
+  $("#dcfChart").append(chartCard(r.chart)); mountCharts($("#dcfChart"));
+}
+function bindOvValuation() {
+  if (!VAL.v) { loadOvValuation(); return; }
+  $("#valCell")?.addEventListener("change", e => { VAL.cell = e.target.value; VAL.v = null; VAL.dcf = null; VAL.sc = {}; $("#ovVal").innerHTML = ovValuationPane(); loadOvValuation(); });
+  document.querySelectorAll("#ovVal [data-anchor]").forEach(tr => tr.onclick = () => { if (!tr.classList.contains("pick")) return; VAL.cell = tr.dataset.anchor; VAL.v = null; VAL.dcf = null; VAL.sc = {}; VAL.step = "validate"; $("#ovVal").innerHTML = ovValuationPane(); loadOvValuation(); });
+  document.querySelectorAll("#ovVal [data-vstep]").forEach(b => b.onclick = () => { if (b.disabled) return; VAL.step = b.dataset.vstep; $("#ovVal").innerHTML = ovValuationPane(); bindOvValuation(); });
+  if (!(VAL.step === "methods" && VAL.v.validated)) {
+    if (VAL.v.chart && $("#valChart")) { $("#valChart").append(chartCard(VAL.v.chart)); mountCharts($("#valChart")); }
+    return;
+  }
+  document.querySelectorAll("#ovVal [data-vfeed]").forEach(b => b.onclick = () => { OV.mode = b.dataset.vfeed; OV.result = null; VAL.dcf = null; $("#ovVal").innerHTML = ovValuationPane(); bindOvValuation(); });
+  let t;
+  document.querySelectorAll("#valBody .sc-form input, #valBody .sc-form select, #valBody .sc-bridge input").forEach(el => el.onchange = el.oninput = () => { clearTimeout(t); t = setTimeout(() => { readMethod(); runOvDcf(); }, 350); });
+  $("#scReset").onclick = () => { VAL.sc = {}; $("#ovVal").innerHTML = ovValuationPane(); bindOvValuation(); };
+  if (VAL.dcf) { $("#dcfChart").append(chartCard(VAL.dcf.chart)); mountCharts($("#dcfChart")); }
+  runOvDcf();
+}
+
+// ---- python overlay: Ask tab (the Model Desk's chat, with the overlay's tools) ------------------------------
+const CHAT = {eid: null, history: [], html: "", session: null, streaming: false, model: null};
+const EXAMPLES = ["Roll the valuation forward onto this year's client model. What are enterprise and equity value, and what drives the change?",
+  "What if the discount rate were 8% and terminal growth 2%? Compare with the report's sensitivities.",
+  "Chart the valuation cash flows: last year's client model against this year's, rolled forward.",
+  "Which client-model rows does the overlay read, and how did they change this year?",
+  "On this year's numbers, what does mid-period discounting do to enterprise value?"];
+const newSession = () => { try { return crypto.randomUUID(); } catch { return String(Date.now()) + Math.random(); } };
+function ovAskPane() {
+  if (CHAT.eid !== E.id) Object.assign(CHAT, {eid: E.id, history: [], html: "", session: newSession(), model: null});
+  const intro = `<div id="chatIntro"><p class="muted" style="margin:0 0 12px;max-width:72ch">The model uses the Model Desk's tools (search, rows, trace, cells, SQL, charts, DCF) on any of the engagement's workbooks, plus tools that run the Python overlay: what-ifs that recompute the cash flows, the roll-forward onto this year's model, charts of recomputed rows and the DCF under other methods. It knows the report's key facts, the levers and the outputs.</p>
+    <div class="chips" id="examples">${EXAMPLES.map(q => `<button type="button">${esc(q)}</button>`).join("")}</div></div>`;
+  return `<div class="card"><div class="row" style="justify-content:space-between"><div><h2>Ask about the engagement</h2><p class="sub" style="margin:0">Answers cite cells; every number comes from a tool call you can open.</p></div>
+    <div class="row small"><label for="chatModel" class="muted">Model</label><select class="in" id="chatModel">${CFG.models.map(m => `<option ${m === (CHAT.model || E.model) ? "selected" : ""}>${esc(m)}</option>`).join("")}</select>
+    ${CHAT.history.length ? `<button class="btn small" id="newChat">New chat</button>` : ""}</div></div>
+    <div class="thread" id="thread">${CHAT.html || intro}</div>
+    <form class="composer" id="askForm"><textarea id="question" rows="1" placeholder="Ask about the valuation, the models or a what-if…" aria-label="Question"></textarea><button class="btn primary" id="send" ${CHAT.streaming ? "disabled" : ""}>Ask</button></form></div>`;
+}
+function bindOvAsk() {
+  mountCharts($("#thread"));
+  $("#chatModel").onchange = e => { CHAT.model = e.target.value; };
+  $("#newChat")?.addEventListener("click", () => { Object.assign(CHAT, {history: [], html: "", session: newSession()}); $("#ovAsk").innerHTML = ovAskPane(); bindOvAsk(); });
+  $("#examples")?.addEventListener("click", e => { const b = e.target.closest("button"); if (b) ovAsk(b.textContent); });
+  const q = $("#question"), grow = () => { q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 180) + "px"; };
+  $("#askForm").onsubmit = e => { e.preventDefault(); const t = q.value.trim(); if (!t || CHAT.streaming) return; q.value = ""; grow(); ovAsk(t); };
+  q.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#askForm").requestSubmit(); } };
+  q.oninput = grow;
+}
+const argText = a => Object.entries(a).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+function runCard(res) {  // an overlay_run result, as a compact table
+  const d = document.createElement("div"); d.className = "dcf-card";
+  const ch = Object.keys(res.changes || {}).length;
+  d.innerHTML = `<h4>Python overlay · ${esc(FEED_NAME[res.mode])}${res.roll ? ` to ${esc(res.roll.valuation_date || "")}` : ""}${ch ? ` · ${ch} change(s)` : ""}</h4>
+    <div class="scroll"><table><thead><tr><th>Output</th><th class="num">Workbook</th><th class="num">This feed</th>${ch ? `<th class="num">With changes</th>` : ""}</tr></thead><tbody>
+    ${res.outputs.map(o => `<tr><td>${esc(o.label)} <span class="mono small muted">${esc(o.cell)}</span></td><td class="num">${esc(fmt(o.workbook, 1))}</td><td class="num">${esc(fmt(o.base, 1))}</td>${ch ? `<td class="num"><b>${esc(fmt(o.value, 1))}</b></td>` : ""}</tr>`).join("")}</tbody></table></div>
+    ${ch ? `<div class="small muted">${Object.entries(res.changes).map(([k, v]) => `${esc(k)} = ${esc(v)}`).join(" · ")}</div>` : ""}`;
+  return d;
+}
+async function ovAsk(text) {
+  const eid = E.id, model = $("#chatModel")?.value || E.model;
+  CHAT.streaming = true; $("#chatIntro")?.remove();
+  const thread = $("#thread");
+  thread.insertAdjacentHTML("beforeend", `<div class="q">${esc(text)}</div>`);
+  const a = document.createElement("div"); a.className = "a";
+  a.innerHTML = `<details class="work"><summary><span class="pulse"></span><span class="label">Looking things up…</span></summary><div class="wsteps"></div></details>`;
+  thread.append(a); $("#send").disabled = true;
+  const steps = a.querySelector(".wsteps"), label = a.querySelector(".label");
+  let calls = 0, chars = 0, answer = "", t0 = performance.now(), last;
+  const handle = e => {
+    if (e.type === "tool_call") { calls++; label.textContent = `Looking things up… ${calls} tool call${calls === 1 ? "" : "s"}`;
+      last = document.createElement("div"); last.className = "wstep"; last.innerHTML = `<div class="call"><b>${esc(e.name)}</b>(${esc(argText(e.args))})</div>`; steps.append(last); }
+    else if (e.type === "tool_result") { chars += e.chars; last?.insertAdjacentHTML("beforeend", `<pre>${esc(e.output)}</pre>`); }
+    else if (e.type === "answer") { answer = e.text; const div = document.createElement("div"); div.className = "answer"; div.innerHTML = md(e.text || "_(empty answer)_"); a.append(div); }
+    else if (e.type === "usage") a.insertAdjacentHTML("beforeend", `<div class="chat-stats"><span><b>${nfmt(e.input_tokens)}</b> input tokens</span><span><b>${nfmt(e.cached_tokens || 0)}</b> cached</span><span><b>${nfmt(e.output_tokens)}</b> output tokens</span><span><b>${e.calls}</b> model turns</span><span><b>${((performance.now() - t0) / 1000).toFixed(1)}s</b></span><span>${esc(model)}</span></div>`);
+    else if (e.type === "waiting") label.textContent = `Waiting ${e.seconds}s to stay under ${e.model}'s rate limit…`;
+    else if (e.type === "chart_review") label.textContent = `Checking the chart “${e.title || ""}” before showing it…`;
+    else if (e.type === "chart") { a.append(chartCard(e.spec)); mountCharts(a); }
+    else if (e.type === "dcf") a.append(dcfCard(e.result));
+    else if (e.type === "overlay_run") a.append(runCard(e.result));
+    else if (e.type === "error") a.insertAdjacentHTML("beforeend", `<div class="callout bad">${esc(e.text)}</div>`);
+    a.scrollIntoView({block: "end", behavior: "smooth"});
+  };
+  try {
+    const res = await fetch(`/api/engagements/${eid}/overlay/ask`, {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({question: text, model, history: CHAT.history, session: CHAT.session})});
+    if (!res.ok) { let m = res.statusText; try { m = (await res.json()).detail || m; } catch {} throw new Error(m); }
+    const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
+    for (;;) { const {value, done} = await reader.read(); if (done) break; buf += dec.decode(value, {stream: true});
+      let i; while ((i = buf.indexOf("\n")) >= 0) { handle(JSON.parse(buf.slice(0, i))); buf = buf.slice(i + 1); } }
+  } catch (e) { handle({type: "error", text: `Couldn't get an answer: ${e.message}`}); }
+  a.querySelector(".pulse")?.remove();
+  label.textContent = `Lookups: ${calls} tool call${calls === 1 ? "" : "s"}, ${nfmt(chars)} characters read`;
+  if (answer) CHAT.history.push({role: "user", content: text}, {role: "assistant", content: answer});
+  CHAT.streaming = false;
+  if (CHAT.eid === eid) {
+    // keep the thread without live chart objects; charts are re-mounted from their JSON when the tab is drawn again
+    const copy = thread.cloneNode(true); copy.querySelectorAll(".chart-card").forEach(c => { c.querySelector(".chart-box").innerHTML = `<canvas role="img"></canvas>`; });
+    CHAT.html = copy.innerHTML;
+  }
+  const s = $("#send"); if (s) { s.disabled = false; $("#question")?.focus(); }
+  if (!$("#newChat") && CHAT.history.length && state.step === "python" && OV.tab === "ask") { $("#ovAsk").innerHTML = ovAskPane(); bindOvAsk(); }
+  spend();
+}
 
 boot().catch(e => { $("#main").innerHTML = `<div class="callout bad">Couldn't start: ${esc(e.message)}</div>`; });
 </script>

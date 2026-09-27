@@ -663,9 +663,12 @@ def overlay_session(eid: int):
     return _SESSIONS[eid]
 
 
-def overlay_run(eid: int, mode: str, changes: dict, valuation_date: str | None, months: int | None) -> dict:
+def _live(eid: int, mode: str, changes: dict | None) -> tuple:
+    """The engagement's session and summary, after checking the feed exists; changes with dates as serials."""
     import overlay as ovmod
     sess, summary = overlay_session(eid)
+    if mode not in ("workbook", "prior", "current"):
+        raise ValueError("the feed must be workbook, prior or current")
     if mode == "current" and not summary["wiring"].get("current"):
         raise ValueError("assign the current client model (step 3) and rebuild to roll forward")
     if mode == "prior" and not summary["wiring"].get("prior"):
@@ -675,9 +678,49 @@ def overlay_run(eid: int, mode: str, changes: dict, valuation_date: str | None, 
         if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", v):
             v = ovmod.serial(ovmod.date.fromisoformat(v))
         elif isinstance(v, str):
-            v = float(v.replace(",", ""))
+            v = float(v.replace(",", "").rstrip("%")) / (100 if v.strip().endswith("%") else 1)
         clean[cell] = v
+    return sess, summary, clean
+
+
+def overlay_run(eid: int, mode: str, changes: dict, valuation_date: str | None, months: int | None) -> dict:
+    import overlay as ovmod
+    sess, summary, clean = _live(eid, mode, changes)
     return ovmod.deep(ovmod.scenario, sess, summary, mode, clean, valuation_date, months)
+
+
+def overlay_valuation(eid: int, cell: str | None) -> dict:
+    """The Model Desk's Validate step on the overlay: a DCF found in the workbook, recomputed step by step from the
+    values Excel saved."""
+    import overlay as ovmod
+    import valuation
+    _, summary = overlay_session(eid)
+    anchors = ovmod.dcf_anchors(summary)
+    usable = [a for a in anchors if a.get("ok")]
+    if not usable:
+        return {"anchors": valuation._listing(anchors), "selected": None}
+    pick = next((a for a in usable if a["cell"] == cell), usable[0])
+    v = valuation.validation(summary["wiring"]["overlay"]["db_path"], pick["cell"])
+    v["anchors"] = valuation._listing(anchors)
+    return v
+
+
+def overlay_dcf(eid: int, mode: str = "workbook", changes: dict | None = None, valuation_date: str | None = None,
+                months: int | None = None, **method) -> dict:
+    """A DCF on the live module (feed + changes) and under another discounting method: overlay.dcf_live()."""
+    import overlay as ovmod
+    sess, summary, clean = _live(eid, mode, changes)
+    return ovmod.deep(ovmod.dcf_live, sess, summary, mode, clean, valuation_date, months, **method)
+
+
+def overlay_ask(eid: int, question: str, model: str | None, history: list | None, session: str | None = None):
+    """The chat on the Python overlay step (overlay_chat.py): a generator of UI events."""
+    import overlay_chat
+    e = _q("SELECT model FROM engagements WHERE id=?", eid)
+    if not e:
+        raise ValueError("no such engagement")
+    log = lambda m, u: usage.record(m, u, "chat", None, _session(eid))
+    yield from overlay_chat.ask(eid, question, model or e[0]["model"] or DEFAULT_MODEL, history, _session(eid), log)
 
 
 def overlay_module(eid: int) -> Path:

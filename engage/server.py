@@ -230,6 +230,62 @@ async def overlay_run(eid: int, body: OverlayRun):
     return await _run(engagement.overlay_run, eid, body.mode, body.changes, body.valuation_date, body.months)
 
 
+class OverlayDcf(BaseModel):
+    mode: str = "workbook"
+    changes: dict = {}
+    valuation_date: str | None = None
+    months: int | None = None
+    cell: str | None = None
+    rate: float | None = None
+    dcf_valuation_date: str | None = None
+    timing: str | None = None
+    day_count: str | None = None
+    cutoff: str | None = "model"
+    include: list[bool] | None = None
+    low: float | None = None
+    high: float | None = None
+
+
+@app.get("/api/engagements/{eid}/overlay/valuation")
+async def overlay_valuation(eid: int, cell: str | None = None):
+    """The Model Desk's Validate step on the overlay's saved values."""
+    return await _run(engagement.overlay_valuation, eid, cell)
+
+
+@app.post("/api/engagements/{eid}/overlay/dcf")
+async def overlay_dcf(eid: int, body: OverlayDcf):
+    """A DCF on the live module (feed + changes), checked against the module, and under another method."""
+    b = body.model_dump()
+    return await _run(engagement.overlay_dcf, eid, b.pop("mode"), b.pop("changes"), b.pop("valuation_date"),
+                      b.pop("months"), **b)
+
+
+class Ask(BaseModel):
+    question: str
+    model: str | None = None
+    history: list[dict] = []
+    session: str | None = None
+
+
+@app.post("/api/engagements/{eid}/overlay/ask")
+def overlay_ask(eid: int, req: Ask):
+    """Chat about the engagement with the Model Desk's tools and the Python overlay's (NDJSON events)."""
+    import json
+    from fastapi.responses import StreamingResponse
+    from starlette.concurrency import iterate_in_threadpool
+    if req.model and req.model not in MODELS:
+        raise HTTPException(400, f"unknown model {req.model}")
+
+    def events():
+        try:
+            yield from engagement.overlay_ask(eid, req.question, req.model, req.history, req.session)
+        except Exception as e:  # sign-in and other failures show in the chat, not as a broken stream
+            yield {"type": "error", "text": engagement.friendly(e)}
+
+    return StreamingResponse(iterate_in_threadpool(json.dumps(e, default=str) + "\n" for e in events()),
+                             media_type="application/x-ndjson")
+
+
 @app.get("/api/engagements/{eid}/overlay/module.py")
 async def overlay_module(eid: int):
     path = await _run(engagement.overlay_module, eid)

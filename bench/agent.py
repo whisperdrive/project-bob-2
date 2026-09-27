@@ -152,24 +152,43 @@ def _run_tool(name: str, args: dict) -> str:
         return f"error: {type(e).__name__}: {e}"
 
 
+def _show_chart(spec: dict, question: str, file_id, session, interactive):
+    """Review a chart before it's shown (render on the server, vision-model check, apply fixes). Yields the UI
+    events and returns the spec as shown."""
+    yield {"type": "chart_review", "title": spec.get("title")}
+    try:
+        spec = chartreview.apply(spec, chartreview.review(spec, question, file_id, session, interactive))
+    except Exception as e:
+        spec["review"] = {"verdict": "skipped", "changed": [], "model": None,
+                          "issues": [f"Review unavailable: {type(e).__name__}"]}
+    yield {"type": "chart", "spec": spec}
+    return spec
+
+
 def ask(question: str, db_path: str, model: str, history: list | None = None, interactive: bool = True,
-        context: str = "", on_usage=None, file_id: int | None = None, session: str | None = None):
+        context: str = "", on_usage=None, file_id: int | None = None, session: str | None = None,
+        system: str | None = None, tool_specs: list | None = None, extra=None, db_for=None):
     """history: earlier [{"role": "user"|"assistant", "content": str}] turns of this conversation.
     context: extra text for the instructions (e.g. confirmed target / valuation date, changes vs last version).
-    on_usage(model, usage): called after every model response, so tokens are logged even if a later call fails."""
+    on_usage(model, usage): called after every model response, so tokens are logged even if a later call fails.
+    For another app's agent (the Valuation Desk's): system and tool_specs replace SYSTEM and TOOLS (the workbook
+    overview is still appended); extra(name, args) runs a tool this module doesn't know and returns (text for the
+    model, [UI events]) or None, a {"type": "chart"} event being reviewed like the chart tool's; db_for(args)
+    picks the model.db a workbook tool reads (it may pop its own argument from args)."""
     # Each tool call runs inside tools.using(), so concurrent questions on different workbooks don't clash.
     with tools.using(db_path):
-        instructions = SYSTEM + tools.overview() + (f"\n\n{context}" if context else "")
+        instructions = (system or SYSTEM) + tools.overview() + (f"\n\n{context}" if context else "")
+    specs = tool_specs or TOOLS
     items: list = [*(history or []), {"role": "user", "content": question}]
     usage = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0, "calls": 0}
     llm = client(interactive)
     for _ in range(MAX_STEPS):
-        wait = ratelimit.wait_needed(model, ratelimit.estimate_tokens(instructions, items, TOOLS))
+        wait = ratelimit.wait_needed(model, ratelimit.estimate_tokens(instructions, items, specs))
         if wait:
             lim = ratelimit.limits(model)
             yield {"type": "waiting", "seconds": round(wait), "model": model,
                    "tpm_budget": lim["tpm_budget"], "rpm_budget": lim["rpm_budget"]}
-        r = create(llm, model, instructions=instructions, input=items, tools=TOOLS)
+        r = create(llm, model, instructions=instructions, input=items, tools=specs)
         usage["calls"] += 1
         if on_usage and r.usage:
             on_usage(model, r.usage)
@@ -187,7 +206,24 @@ def ask(question: str, db_path: str, model: str, history: list | None = None, in
         for c in calls:
             args = json.loads(c.arguments or "{}")
             yield {"type": "tool_call", "name": c.name, "args": args}
-            with tools.using(db_path):
+            handled = None
+            if extra:
+                try:
+                    handled = extra(c.name, dict(args))
+                except Exception as e:  # back to the model so it can correct itself
+                    handled = (f"error: {type(e).__name__}: {e}", [])
+            if handled is not None:
+                out, events = handled
+                for ev in events:
+                    if ev.get("type") == "chart":
+                        shown = yield from _show_chart(ev["spec"], question, file_id, session, interactive)
+                        out += "\n" + chartreview.describe(shown)
+                    else:
+                        yield ev
+                yield {"type": "tool_result", "name": c.name, "output": out, "chars": len(out)}
+                items.append({"type": "function_call_output", "call_id": c.call_id, "output": out})
+                continue
+            with tools.using(db_for(args) if db_for else db_path):
                 if c.name == "chart":
                     try:
                         partial_ok = bool(args.pop("partial_ok", False))
@@ -198,15 +234,7 @@ def ask(question: str, db_path: str, model: str, history: list | None = None, in
                             raise _HeldBack(note + "\nThis chart was NOT shown to the user. Chart the full-timeline "
                                                    "rows instead, or call chart again with partial_ok=true if the "
                                                    "user asked for this part of the timeline only.")
-                        # Review before showing: render on the server, vision-model check, apply fixes.
-                        yield {"type": "chart_review", "title": spec.get("title")}
-                        try:
-                            spec = chartreview.apply(spec, chartreview.review(
-                                spec, question, file_id, session, interactive))
-                        except Exception as e:
-                            spec["review"] = {"verdict": "skipped", "changed": [], "model": None,
-                                              "issues": [f"Review unavailable: {type(e).__name__}"]}
-                        yield {"type": "chart", "spec": spec}
+                        spec = yield from _show_chart(spec, question, file_id, session, interactive)
                         out = tools.chart_note(spec) + "\n" + chartreview.describe(spec)
                     except _HeldBack as e:
                         out = str(e)

@@ -356,10 +356,11 @@ def _pick(cat, cell):
     return next((b for b in usable if b["cell"] == cell), usable[0] if usable else None)
 
 
-def _chart(db, db_path, cf_range, runs: list[tuple[str, dict]], cumulative: bool = False) -> dict:
+def _chart(db, db_path, cf_range, runs: list[tuple], cumulative: bool = False) -> dict:
     """The workbook's cash flows and each run's present value per period; or, with cumulative, only each run's
     running total of present value (how the value builds up; the last point is the PV of cash flows), which
-    shows where runs diverge. runs: [(series name, compute() result)]."""
+    shows where runs diverge. runs: [(series name, compute() result)], or (name, result, flows, ends) for a run
+    with its own cash flows and period ends by column (the Python overlay's, on another feed)."""
     import chartdata
     import tools
     with tools.using(db_path):
@@ -370,10 +371,12 @@ def _chart(db, db_path, cf_range, runs: list[tuple[str, dict]], cumulative: bool
     cols = spec.get("columns") or []
     cfd = spec["series"][0]["data"]
     live = set()
-    for name, r in runs:
-        f = dcf.factors(ends, r["valuation_date"], r["rate"], r["timing"], r["day_count"], r["terminal_date"])
+    for name, r, *own in runs:
+        flows, run_ends = (own + [None, None])[:2]
+        f = dcf.factors(run_ends or ends, r["valuation_date"], r["rate"], r["timing"], r["day_count"], r["terminal_date"])
         live |= {i for i, c in enumerate(cols) if f.get(c)}
-        pv = [(v * f[c]) if isinstance(v, (int, float)) and f.get(c) else None for v, c in zip(cfd, cols)]
+        data = [flows.get(c) for c in cols] if flows is not None else cfd
+        pv = [(v * f[c]) if isinstance(v, (int, float)) and f.get(c) else None for v, c in zip(data, cols)]
         if cumulative:
             run, acc, started = [], 0.0, False
             for x in pv:

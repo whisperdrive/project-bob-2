@@ -264,8 +264,8 @@ class Session:
 
     # evaluation
     def value(self, s, r, c):
-        fn = self.B.rows.get((s, r))
-        return fn(c) if fn else self.B.input(s, r, c)
+        """A cell as the module sees it: overlay sheets computed, other sheets from the feed."""
+        return self.B.get("", s, r, c)
 
     def values(self, cells):
         return deep(lambda: [self.value(*k) for k in cells])
@@ -469,6 +469,19 @@ def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: boo
     return 12
 
 
+def _feed(summary: dict, mode: str, valuation_date: str | None, months: int | None) -> tuple[dict, dict | None, int]:
+    """A feed's own settings, the base that a person's changes go on top of: rolled forward, the months to roll
+    and the new valuation date on its lever. -> (overrides, roll info or None, months)."""
+    if mode != "current":
+        return {}, None, 0
+    roll = summary.get("roll") or {}
+    months = months if months is not None else roll.get("months", 12)
+    valuation_date = valuation_date or roll.get("current_valuation_date")
+    vd_cell = roll.get("valuation_date_cell")
+    defaults = {parse_a1(vd_cell): serial(date.fromisoformat(valuation_date[:10]))} if valuation_date and vd_cell else {}
+    return defaults, {"months": months, "valuation_date": valuation_date, "valuation_date_cell": vd_cell}, months
+
+
 def scenario(sess: Session, summary: dict, mode: str, changes: dict, valuation_date: str | None = None,
              months: int | None = None) -> dict:
     """Run the overlay with lever / cell changes ({"Sheet!A1": value}) on a feed. Returns outputs against the base
@@ -476,15 +489,7 @@ def scenario(sess: Session, summary: dict, mode: str, changes: dict, valuation_d
     outputs = summary["outputs"]
     cells = [parse_a1(o["cell"]) for o in outputs]
     extra = {parse_a1(k): v for k, v in changes.items()}
-    roll_info, defaults = None, {}
-    if mode == "current":
-        roll = summary.get("roll") or {}
-        months = months if months is not None else roll.get("months", 12)
-        valuation_date = valuation_date or roll.get("current_valuation_date")
-        vd_cell = roll.get("valuation_date_cell")
-        if valuation_date and vd_cell:  # the roll-forward's own settings are the base; the person's changes go on top
-            defaults[parse_a1(vd_cell)] = serial(date.fromisoformat(valuation_date[:10]))
-        roll_info = {"months": months, "valuation_date": valuation_date, "valuation_date_cell": vd_cell}
+    defaults, roll_info, months = _feed(summary, mode, valuation_date, months)
     sess.configure(mode, defaults, months or 0)
     base = sess.values(cells)
     base_unmatched = dict(sess.unmatched)
@@ -507,6 +512,198 @@ def scenario(sess: Session, summary: dict, mode: str, changes: dict, valuation_d
     return {"mode": mode, "changes": changes, "outputs": rows, "roll": roll_info,
             "unmatched": [{"cell": _a1(*k), "why": w} for k, w in list(unmatched.items())[:100]],
             "n_unmatched": len(unmatched)}
+
+
+# ---- the DCF on the live module ----------------------------------------------------------------------------
+# The Model Desk's Valuation tab (valuation.py) on the Python overlay's own numbers. valuation.py finds each DCF's
+# structure in the workbook (cash-flow rows, discount rate, valuation date, convention, cut-off, bridge); dcf.py
+# then recomputes it from the cash flows, dates and bridge amounts the module computes on the chosen feed, with
+# the person's changes. The module and dcf.py are separate calculations, so their agreeing on the anchor value is
+# a check of both. dcf.py reads a model.db, so the module's values reach it through rodb.patched().
+
+def _dcf_cells(db, inputs: dict) -> set[tuple]:
+    """Every cell a DCF's inputs read: cash-flow rows, their period-end dates, the rate, valuation date and
+    cut-off cells, bridge cells or rows, and the anchor cell itself."""
+    import dcf
+    cells: set[tuple] = set()
+
+    def one(ref):
+        if ref is None or isinstance(ref, (int, float)) or dcf._as_date(str(ref)):
+            return
+        t = str(ref).strip()
+        named = db.execute("SELECT ref FROM names WHERE lower(name)=lower(?)", (t,)).fetchone()
+        t = named[0] if named else t
+        m = dcf._REF.match(t.replace(" ", "") if "'" not in t else t)
+        if m and (not m["c2"] or (m["c2"], m["r2"]) == (m["c1"], m["r1"])):
+            cells.add((m["sheet"].strip("'"), int(m["r1"]), dcf._col(m["c1"])))
+
+    def row(ref):
+        sheet, r, cols = dcf._row_range(db, ref)
+        cells.update((sheet, r, c) for c in cols)
+        _, src = dcf.period_ends(db, sheet, cols)
+        m = re.match(r"^(.+?)!r(\d+)\b", src)
+        if m:
+            cells.update((m[1], int(m[2]), c) for c in cols)
+        return sheet, cols
+
+    for ref in inputs["cashflow"]:
+        row(ref)
+    for k in ("rate", "valuation_date", "terminal_date", "compare_to"):
+        one(inputs.get(k))
+    for a in inputs.get("adjustments") or []:
+        v = a.get("value") if isinstance(a, dict) else a
+        if isinstance(a, dict) and a.get("at_valuation_date"):
+            try:
+                row(str(v))
+                continue
+            except ValueError:
+                pass
+        one(v)
+    return cells
+
+
+def _module_values(db, sess: Session, cells: set[tuple]) -> dict:
+    """The module's value for each cell, stored the way model.db stores it (dates as ISO text) so dcf.py reads it."""
+    keys = sorted(cells)
+    got = sess.values(keys)
+    out = {}
+    for k, v in zip(keys, got):
+        saved = db.execute("SELECT value FROM main.cells WHERE sheet=? AND row=? AND col=?", k).fetchone()
+        saved = saved[0] if saved else None
+        if isinstance(v, xlruntime.XLError):
+            v = v.code
+        elif isinstance(v, float) and isinstance(saved, str) and xlruntime._DATE.match(saved) and 0 < v < 2958466:
+            v = to_date(v).isoformat()
+        out[k] = v
+    return out
+
+
+def _flows(db, inputs: dict) -> tuple[dict, dict]:
+    """(cash flow by column, summed over the cash-flow rows; period end date by column) as db holds them."""
+    import dcf
+    flows, sheet0, cols0 = {}, None, None
+    for ref in inputs["cashflow"]:
+        sheet, r, cols = dcf._row_range(db, ref)
+        sheet0, cols0 = sheet0 or sheet, cols0 or cols
+        for c, v in db.execute("SELECT col, value FROM cells WHERE sheet=? AND row=? AND col BETWEEN ? AND ?",
+                               (sheet, r, cols[0], cols[-1])):
+            if dcf._num(v) is not None:
+                flows[c] = flows.get(c, 0.0) + dcf._num(v)
+    return flows, dcf.period_ends(db, sheet0, cols0)[0]
+
+
+def _brief(r: dict) -> dict:
+    iso = lambda d: d.isoformat() if d else None
+    return {"rate": r["rate"], "pv": r["pv"], "total": r["total"], "anchor": r["compare_to"],
+            "valuation_date": iso(r["valuation_date"]), "timing": r["timing"], "day_count": r["day_count"],
+            "terminal_date": iso(r["terminal_date"]), "bridge": r["bridge"], "periods": r["periods"],
+            "first_period": iso(r["first_period"]), "last_period": iso(r["last_period"]), "undiscounted": r["undiscounted"]}
+
+
+def dcf_anchors(summary: dict) -> list[dict]:
+    """The DCFs valuation.py finds on the overlay sheets (all of the workbook's if none are there)."""
+    import valuation
+    cat = valuation.catalogue(summary["wiring"]["overlay"]["db_path"])
+    mine = [a for a in cat if a["cell"].split("!")[0].strip("'") in set(summary["sheets"])]
+    return mine or cat
+
+
+FEED_WORDS = {"workbook": "the values saved in the overlay", "prior": "the prior client model",
+              "current": "the current client model, rolled forward"}
+
+
+def dcf_live(sess: Session, summary: dict, mode: str = "workbook", changes: dict | None = None,
+             valuation_date: str | None = None, months: int | None = None, cell: str | None = None,
+             rate: float | None = None, timing: str | None = None, day_count: str | None = None,
+             cutoff: str | None = "model", include: list[bool] | None = None, low: float | None = None,
+             high: float | None = None, dcf_valuation_date: str | None = None) -> dict:
+    """One of the overlay's DCFs three ways: from the values Excel saved, from the module on a feed with the
+    person's changes (checked against the module's own anchor cell), and that again under another discounting
+    method (rate, valuation date, end / mid period, day count, cut-off, bridge items), with low / high rates.
+    cutoff: "model", "" (none) or YYYY-MM-DD. include: which bridge items to keep."""
+    import dcf
+    import valuation
+    cat = dcf_anchors(summary)
+    pick = valuation._pick(cat, cell)
+    if not pick:
+        return {"anchors": valuation._listing(cat), "selected": None}
+    path = summary["wiring"]["overlay"]["db_path"]
+    inputs = pick["inputs"]
+    db0 = rodb.connect(path)
+    cells = _dcf_cells(db0, inputs)
+    defaults, roll, months = _feed(summary, mode, valuation_date, months)
+    extra = {parse_a1(k): v for k, v in (changes or {}).items()}
+    sess.configure(mode, {**defaults, **extra}, months)
+    live_vals = _module_values(db0, sess, cells)
+    unmatched = len(sess.unmatched)
+    sess.configure("workbook")
+    live_db = rodb.patched(path, live_vals)
+    saved = dcf.compute(db0, **inputs, fix=False)
+    live = dcf.compute(live_db, **inputs, fix=False)
+
+    s_in = dict(inputs)
+    if rate is not None and rate == rate:
+        s_in["rate"] = rate
+    if dcf_valuation_date:
+        s_in["valuation_date"] = dcf_valuation_date
+    if timing in dcf.TIMINGS:
+        s_in["timing"] = timing
+    if day_count in dcf.DAY_COUNTS:
+        s_in["day_count"] = day_count
+    if cutoff != "model":
+        s_in["terminal_date"] = cutoff or None
+    keep = list(include or []) + [True] * len(inputs["adjustments"])
+    s_in["adjustments"] = [a for a, k in zip(inputs["adjustments"], keep) if k]
+    lo = live["rate"] + 0.01 if low is None or low != low else low
+    hi = max(live["rate"] - 0.01, 0.0) if high is None or high != high else high
+    sc = dcf.compute(live_db, **{**s_in, "compare_to": None}, rates=[lo, hi], fix=False)
+    words = {"end": "end of period", "mid": "mid-period", "actual/actual": "actual/actual (YEARFRAC)",
+             "actual/365": "actual/365 (XNPV)"}
+    method = []
+    if not dcf._close(sc["rate"], live["rate"]):
+        method.append(f"discount rate {live['rate']:.2%} → {sc['rate']:.2%}")
+    if sc["valuation_date"] != live["valuation_date"]:
+        method.append(f"valuation date {live['valuation_date']} → {sc['valuation_date']}")
+    if sc["timing"] != live["timing"]:
+        method.append(f"discounted at {words[live['timing']]} → {words[sc['timing']]}")
+    if sc["day_count"] != live["day_count"]:
+        method.append(f"time measured by {words[live['day_count']]} → {words[sc['day_count']]}")
+    if sc["terminal_date"] != live["terminal_date"]:
+        method.append(f"cut-off {live['terminal_date'] or 'none'} → {sc['terminal_date'] or 'none'}")
+    dropped = [b["label"] for b, k in zip(live["bridge"], keep) if not k]
+    if dropped:
+        method.append("bridge without " + ", ".join(dropped))
+    adj = sum(b["value"] for b in sc["bridge"])
+
+    label = pick["label"] or pick["cell"]
+    ok_saved = saved["compare_to"] is not None and dcf._close(saved["total"], saved["compare_to"])
+    ok_live = live["compare_to"] is not None and dcf._close(live["total"], live["compare_to"])
+    checks = [
+        {"step": "Workbook", "what": f"{label} recomputed from the values Excel saved", "ours": saved["total"],
+         "theirs": saved["compare_to"], "where": pick["cell"], "ok": ok_saved},
+        {"step": "Python overlay", "what": f"the module's {label} on {FEED_WORDS[mode]}"
+                                           + (f", with {len(extra)} change(s)" if extra else "")
+                                           + ", against the DCF recomputed from the module's own cash flows",
+         "ours": live["total"], "theirs": live["compare_to"], "where": pick["cell"], "ok": ok_live}]
+    f0, e0 = _flows(db0, inputs)
+    f1, e1 = _flows(live_db, inputs)
+    runs = [("Cumulative PV (as saved in Excel)", saved, f0, e0)]
+    if mode != "workbook" or extra:
+        runs.append(("Cumulative PV (Python overlay)", live, f1, e1))
+    if method:
+        runs.append(("Cumulative PV (scenario method)", sc, f1, e1))
+    chart = valuation._chart(db0, path, inputs["cashflow"][0], runs, cumulative=True)
+    if mode == "current":
+        chart["note"] = (chart.get("note") or "") + (f" Periods are labelled with last year's dates; rolled forward "
+                                                     f"they each move on {months} months.")
+    return {"anchors": valuation._listing(cat), "selected": pick["cell"], "label": label,
+            "feed": {"mode": mode, "words": FEED_WORDS[mode], "roll": roll, "changes": changes or {}, "unmatched": unmatched},
+            "workbook": _brief(saved), "live": _brief(live), "scenario": _brief(sc), "method_changes": method,
+            "checks": checks, "agrees": ok_live, "units": sc.get("units") or [],
+            "sensitivity": [{"case": "low", "rate": lo, "total": sc["sensitivity"][0]["total"], "pv": sc["sensitivity"][0]["total"] - adj},
+                            {"case": "scenario", "rate": sc["rate"], "total": sc["total"], "pv": sc["pv"]},
+                            {"case": "high", "rate": hi, "total": sc["sensitivity"][1]["total"], "pv": sc["sensitivity"][1]["total"] - adj}],
+            "chart": chart}
 
 
 def inputs_list(sess: Session, q: str = "", limit: int = 80) -> list[dict]:

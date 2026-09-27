@@ -123,7 +123,7 @@ def review(spec: dict, question: str, file_id: int | None = None, session: str |
     spec = dict(spec)
     changes, issues, verdict = {}, [], "ok"
     for _ in range(rounds):
-        view = {k: changes[k] for k in ("x_start", "x_end", "y_min", "y_max") if k in changes}
+        view = {**(spec.get("view") or {}), **{k: changes[k] for k in ("x_start", "x_end", "y_min", "y_max") if k in changes}}
         out = _ask(llm, spec, view, question, file_id, session)
         issues += [i for i in out.get("issues", []) if i not in issues]
         if out.get("verdict") == "ok" or not out["changes"]:
@@ -153,7 +153,9 @@ def apply(spec: dict, res: dict) -> dict:
         spec["kind"] = ch["kind"]
     if ch.get("note"):
         spec["note"] = ch["note"]
-    spec["view"] = {k: ch.get(k) for k in ("x_start", "x_end", "y_min", "y_max") if ch.get(k) is not None}
+    # the reviewer's framing on top of any the chart came with (e.g. a terminal value left out of view)
+    spec["view"] = {**(spec.get("view") or {}),
+                    **{k: ch.get(k) for k in ("x_start", "x_end", "y_min", "y_max") if ch.get(k) is not None}}
     spec["title"] = _fix_title_years(spec)
     spec["review"] = {"verdict": res.get("verdict"), "issues": res.get("issues", []), "changed": list(ch),
                       "model": res.get("model")}
