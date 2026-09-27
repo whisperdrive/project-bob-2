@@ -197,6 +197,18 @@ async def put_roles(eid: int, body: Roles):
     return await _run(engagement.confirm_roles, eid, body.roles)
 
 
+@app.get("/api/engagements/{eid}/models/{fid}")
+async def model_dashboard(eid: int, fid: int):
+    """The Map step's dashboard for one of the engagement's workbooks."""
+    return await _run(engagement.model_dashboard, eid, fid)
+
+
+@app.get("/api/engagements/{eid}/models/{fid}/rows")
+async def model_rows(eid: int, fid: int, sheet: str | None = None, q: str | None = None, mapped: bool = False,
+                     limit: int = 200):
+    return await _run(engagement.model_rows, eid, fid, sheet, q, mapped, limit)
+
+
 @app.post("/api/engagements/{eid}/{kind}")
 async def start_step(eid: int, kind: str):
     if kind not in ("compare", "map", "overlay"):

@@ -521,6 +521,86 @@ def _map(eid: int) -> None:
          updated_at=time.time())
 
 
+# ---- model dashboards (map step) ----------------------------------------------------------------------------
+
+_ROW_REF = re.compile(r"^'?(.+?)'?!r(\d+)$")
+_CELL_REF = re.compile(r"^'?(.+?)'?!\$?[A-Z]{1,3}\$?(\d+)$")
+
+
+def _engagement_wb(eid: int, fid: int) -> dict:
+    w = next((w for w in workbooks(eid) if w["id"] == fid), None)
+    if not w:
+        raise ValueError("that workbook isn't in this engagement")
+    if w["status"] != "done" or not w["db_path"] or not Path(w["db_path"]).exists():
+        raise ValueError(f"{w['filename']} hasn't finished processing")
+    return w
+
+
+def model_marks(eid: int, fid: int) -> dict[tuple[str, int], list[str]]:
+    """What the map and the Python overlay say about this workbook's rows: report figures found there, overlay rows
+    reading the client model, client rows the overlay reads, this year's matches, levers and outputs."""
+    rl = roles(eid)
+    has = lambda role: (rl.get(role) or {}).get("kind") == "workbook" and rl[role]["id"] == fid
+    e = _q("SELECT map_json, overlay_json FROM engagements WHERE id=?", eid)[0]
+    m = json.loads(e["map_json"] or "null") or {}
+    o = json.loads(e["overlay_json"] or "null") or {}
+    marks: dict[tuple[str, int], list[str]] = {}
+
+    def mark(ref, pattern, text):
+        hit = pattern.match(ref or "")
+        if hit:
+            tags = marks.setdefault((hit[1], int(hit[2])), [])
+            if text not in tags:
+                tags.append(text)
+
+    chain = m.get("chain") or []
+    if has("prior_overlay"):
+        for x in m.get("report_overlay") or []:
+            if x["matches"]:
+                b = x["matches"][0]
+                mark(f"{b['sheet']}!r{b['row']}", _ROW_REF, f"report: {x.get('label') or x['key']} {x['value_text']}")
+        for c in chain:
+            mark(c["overlay"], _ROW_REF, f"reads client {c['client']}")
+        for lv in o.get("levers") or []:
+            mark(lv["cell"], _CELL_REF, f"lever: {lv['label']}")
+        for x in o.get("outputs") or []:
+            mark(x["cell"], _CELL_REF, f"output: {x['label']}")
+    if has("prior_model"):
+        for c in chain:
+            mark(c["client"], _ROW_REF, f"read by overlay {c['overlay']}")
+    if has("current_model"):
+        for c in chain:
+            if c.get("current"):
+                mark(c["current"], _ROW_REF, f"this year's {c['client']} (read by overlay {c['overlay']})")
+    return marks
+
+
+def model_dashboard(eid: int, fid: int) -> dict:
+    import modeldash
+    w = _engagement_wb(eid, fid)
+    rl = roles(eid)
+    as_roles = [k for k, r in rl.items() if r["kind"] == "workbook" and r["id"] == fid]
+    ov = rl.get("prior_overlay") or {}
+    marks = model_marks(eid, fid)
+    per_sheet: dict[str, int] = {}
+    for s, _ in marks:
+        per_sheet[s] = per_sheet.get(s, 0) + 1
+    return {**modeldash.summary(w["db_path"]), "id": fid, "filename": w["filename"], "roles": as_roles,
+            "target_name": w["target_name"], "valuation_date": w["valuation_date"],
+            "overlay_sheets": (ov.get("sheets") or []) if ov.get("id") == fid else [],
+            "marked": {"rows": len(marks), "by_sheet": per_sheet}}
+
+
+def model_rows(eid: int, fid: int, sheet: str | None, q: str | None, mapped: bool, limit: int = 200) -> list[dict]:
+    import modeldash
+    w = _engagement_wb(eid, fid)
+    marks = model_marks(eid, fid)
+    out = modeldash.rows(w["db_path"], sheet or None, q or None, list(marks) if mapped else None, limit)
+    for r in out:
+        r["marks"] = marks.get((r["sheet"], r["row"]), [])
+    return out
+
+
 # ---- the Python overlay -------------------------------------------------------------------------------------
 
 _SESSIONS: dict[int, tuple] = {}  # engagement -> (overlay.Session, summary): the compiled module, loaded and wired

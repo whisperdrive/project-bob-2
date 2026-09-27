@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@300;400;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 /* Palette: off-black #2e2e38 / #1a1a24, ground #f6f6fa, greys #c4c4cd / #747480, yellow #ffe600, blue #1a9afa. */
 :root {
@@ -16,6 +17,8 @@
   --on-yellow: #2e2e38; --link: #1270c2; --blue: #1a9afa;
   --ok-bg: #e5f3ea; --ok: #16692f; --warn-bg: #fff3cc; --warn: #7a5200; --bad-bg: #fbe7e5; --bad: #a3261c;
   --info-bg: #e3f1fd; --info: #0f5a9c; --code-bg: #f0f0f4;
+  --s1: #1a9afa; --s2: #747480; --s3: #2e2e38;
+  --q1: #d6ebfd; --q2: #aed6fb; --q3: #7fbef8; --q4: #4ea5f5; --q5: #1a8ae6; --q6: #126cb8; --q7: #0b4f8a;
   --sans: "Noto Sans", system-ui, -apple-system, sans-serif; --mono: "Noto Sans Mono", ui-monospace, Menlo, monospace;
   color-scheme: light;
 }
@@ -25,6 +28,8 @@
     --rule-strong: #4a4a57; --bar: #121219; --link: #4bb0fb; --blue: #1a9afa;
     --ok-bg: #173323; --ok: #7fd49a; --warn-bg: #3a3012; --warn: #f3cf62; --bad-bg: #3d1d1b; --bad: #f4a39b;
     --info-bg: #15304a; --info: #8cc8f7; --code-bg: #2e2e38; color-scheme: dark;
+    --s1: #1a9afa; --s2: #9a9aa8; --s3: #f0f0f5;
+    --q1: #0b2e4f; --q2: #0f3d69; --q3: #154f87; --q4: #1a63a8; --q5: #1a7fd6; --q6: #4ba3f0; --q7: #8cc8f7;
   }
 }
 :root[data-theme="dark"] {
@@ -32,6 +37,8 @@
   --rule-strong: #4a4a57; --bar: #121219; --link: #4bb0fb; --blue: #1a9afa;
   --ok-bg: #173323; --ok: #7fd49a; --warn-bg: #3a3012; --warn: #f3cf62; --bad-bg: #3d1d1b; --bad: #f4a39b;
   --info-bg: #15304a; --info: #8cc8f7; --code-bg: #2e2e38; color-scheme: dark;
+  --s1: #1a9afa; --s2: #9a9aa8; --s3: #f0f0f5;
+  --q1: #0b2e4f; --q2: #0f3d69; --q3: #154f87; --q4: #1a63a8; --q5: #1a7fd6; --q6: #4ba3f0; --q7: #8cc8f7;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -160,6 +167,28 @@ details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 13.5px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }
+/* model dashboards (map step) and charts */
+.seg { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: 4px; overflow: hidden; flex-wrap: wrap; }
+.seg button { background: var(--surface); border: 0; border-right: 1px solid var(--rule-strong); padding: 5px 12px; font-size: 13px; cursor: pointer; }
+.seg button:last-child { border-right: 0; }
+.seg button.on { background: var(--bar); color: #fff; font-weight: 600; box-shadow: inset 0 -3px 0 var(--yellow); }
+.seg button:disabled { opacity: .45; cursor: not-allowed; }
+.chart { position: relative; height: 280px; }
+.heat { border-collapse: separate; border-spacing: 2px; width: auto; font-size: 12px; }
+.heat th { border: 0; padding: 2px 6px; font-weight: 400; color: var(--ink); }
+.heat th.col { writing-mode: vertical-rl; transform: rotate(180deg); text-align: left; padding: 6px 2px; }
+.heat th.ov { font-weight: 600; box-shadow: inset 3px 0 0 var(--yellow); }
+.heat th.col.ov { box-shadow: inset 0 -3px 0 var(--yellow); }
+.heat td { border: 0; width: 34px; height: 26px; padding: 0; text-align: center; border-radius: 3px; font-variant-numeric: tabular-nums; }
+.heat td.z { background: var(--raised); }
+.heat td:not(.z):hover { outline: 2px solid var(--ink); }
+.legend { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 10px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 22px; height: 10px; border-radius: 2px; }
+.hbar-cell { height: 8px; border-radius: 0 4px 4px 0; background: var(--s1); min-width: 2px; }
+.tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 3px; background: var(--warn-bg); color: var(--warn); margin: 1px 3px 1px 0; white-space: nowrap; }
+.tag.lever { background: var(--info-bg); color: var(--info); }
+.tag.out { background: var(--ok-bg); color: var(--ok); }
+#tip { position: fixed; pointer-events: none; background: var(--bar); color: #fff; font-size: 12.5px; padding: 6px 9px; border-radius: 4px; z-index: 40; max-width: 320px; display: none; border-left: 3px solid var(--yellow); }
 @media (max-width: 640px) { .hbar, nav.steps, main { padding-left: 16px; padding-right: 16px; } }
 </style>
 </head>
@@ -182,6 +211,7 @@ details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
   <div class="yellow-rule"></div>
 </header>
 <main id="main"></main>
+<div id="tip"></div>
 <input type="file" id="picker" multiple accept=".pdf,.pptx,.xlsx,.xlsm" hidden>
 
 <script>
@@ -612,6 +642,9 @@ bind.compare = () => { $("#runCompare")?.addEventListener("click", () => act(() 
 function viewMap() {
   const head = `<div class="lede"><div><h1><b>The map</b></h1><p>Report → overlay: where each approved figure sits in the overlay. Overlay → prior client model: which client rows the overlay reads, through external links or references inside the workbook. Prior → current client model: the same line items this year. The overlay's DCFs are recomputed in Python as the start of the live valuation module.</p></div></div>`;
   if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in step 3 first.</div>`;
+  return viewMapBody(head) + modelsCard();
+}
+function viewMapBody(head) {
   const run = `<div class="row"><button class="btn ${E.map_status === "done" ? "" : "primary"}" id="runMap" ${busy(E.map_status) ? "disabled" : ""}>${E.map_status === "done" ? "Rebuild the map" : "Build the map"}</button>
     ${busy(E.map_status) ? `<span class="pill info">${esc(E.map_step || "Working")}</span>` : ""}${E.map_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.map_error)}</span>` : ""}
     ${!Object.values(E.roles).every(r => r.confirmed) ? `<span class="small muted">Roles aren't all confirmed yet; the map uses the current assignment.</span>` : ""}</div>`;
@@ -648,7 +681,159 @@ function viewMap() {
     <td class="small">${(c.periods || []).map(esc).join("<br>")}</td>
     <td class="num small">${(c.prior_values || []).map(v => esc(fmt(v))).join("<br>")}</td><td class="num small">${(c.current_values || []).map(v => esc(fmt(v))).join("<br>")}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted small">No links found from the overlay sheets into the client model.</p>`}</div>`;
 }
-bind.map = () => { $("#runMap")?.addEventListener("click", () => act(() => api(`/api/engagements/${E.id}/map`, {method: "POST"}))); };
+bind.map = () => { $("#runMap")?.addEventListener("click", () => act(() => api(`/api/engagements/${E.id}/map`, {method: "POST"}))); bindModels(); };
+
+// ---- the model dashboards (inside the map step) ---------------------------------------------------------------
+const MD = {eid: null, fid: null, data: {}, rows: null, rowsKey: null, q: "", sheet: "", mapped: false, chart: null, seq: 0};
+const kfmt = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n ?? 0);
+const nfmt = n => (n ?? 0).toLocaleString();
+const tok = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const ROLE_NAME = {prior_overlay: "Prior overlay", prior_model: "Prior client model", current_model: "Current client model"};
+// the tags come from the map and the overlay build, so a rebuild of either refetches
+const mdKey = (fid = MD.fid) => `${fid}|${E.map_status}|${E.overlay_status}|${E.updated_at}`;
+function modelChoices() {
+  const out = [];
+  for (const role of ["prior_overlay", "prior_model", "current_model"]) {
+    const r = E.roles[role];
+    if (!r || r.kind !== "workbook") continue;
+    const w = E.workbooks.find(x => x.id === r.id);
+    const have = out.find(o => o.fid === r.id);
+    if (have) { have.roles.push(role); continue; }
+    out.push({fid: r.id, roles: [role], filename: w?.filename || "", ready: w?.status === "done"});
+  }
+  return out;
+}
+function modelsCard() {
+  const ch = modelChoices();
+  if (!ch.length) return "";
+  if (MD.eid !== E.id) Object.assign(MD, {eid: E.id, fid: null, data: {}, rows: null, rowsKey: null, q: "", sheet: "", mapped: false});
+  if (!ch.some(c => c.fid === MD.fid)) MD.fid = (ch.find(c => c.ready) || ch[0]).fid;
+  return `<div class="card" id="modelsCard"><div class="row" style="justify-content:space-between;align-items:flex-start">
+    <div><h2>Inside each model</h2><p class="sub" style="max-width:760px">Each workbook's structure, read from its row map: formula cells and inputs by sheet, which sheets feed which, the rows most depended on, and every line item. Rows the map or the Python overlay uses are tagged.</p></div>
+    <div class="seg" role="tablist" aria-label="Model">${ch.map(c => `<button role="tab" data-md="${c.fid}" class="${c.fid === MD.fid ? "on" : ""}" aria-selected="${c.fid === MD.fid}" ${c.ready ? "" : "disabled"} title="${esc(c.filename)}">${esc(c.roles.map(r => ROLE_NAME[r]).join(" + "))}</button>`).join("")}</div></div>
+    <div id="mdBody">${MD.data[mdKey()] ? modelBody(MD.data[mdKey()]) : `<p class="muted small">Loading…</p>`}</div></div>`;
+}
+function modelBody(d) {
+  const t = d.totals, e = d.edges;
+  const pct = t.formulas + t.consts ? Math.round(100 * t.formulas / (t.formulas + t.consts)) : 0;
+  const liveEdges = e.kinds.filter(k => k.kind !== "inactive").reduce((a, k) => a + k.n, 0);
+  const ov = new Set(d.overlay_sheets || []);
+  const sheetName = s => `${esc(s)}${ov.has(s) ? ` <span class="pill warn">overlay</span>` : ""}`;
+  const tl = s => s.layout.periods ? `${s.layout.periods} ${esc(s.layout.periodicity || "")} · ${esc(s.layout.period_start || "")} → ${esc(s.layout.period_end || "")}` : `<span class="muted">none</span>`;
+  const top = (rows, what) => rows.length ? `<div class="scroll"><table><thead><tr><th>Row</th><th>Label</th><th class="num">${what}</th><th class="num">Sheets</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td class="mono nowrap">${esc(r.sheet)}!r${r.row}</td><td>${esc(r.label) || `<span class="muted">${esc(r.units) || "unlabelled"}</span>`}</td><td class="num">${nfmt(r.n)}</td><td class="num">${nfmt(r.sheets)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted small">No links recorded.</p>`;
+  return `<p class="small muted" style="margin:0 0 10px"><b style="color:var(--ink)">${esc(d.filename)}</b>${d.target_name ? " · " + esc(d.target_name) : ""}${d.valuation_date ? " · valued at " + esc(d.valuation_date) : ""}${ov.size ? ` · overlay sheets: ${esc([...ov].join(", "))}` : ""}</p>
+  <div class="tiles">
+    <div class="tile"><b>${nfmt(t.sheets)}</b><span>sheets</span></div>
+    <div class="tile"><b>${nfmt(t.rows)}</b><span>line items</span></div>
+    <div class="tile"><b>${kfmt(t.formulas)}</b><span>formula cells (${pct}%)</span></div>
+    <div class="tile"><b>${kfmt(t.consts)}</b><span>inputs / constants</span></div>
+    <div class="tile"><b>${nfmt(liveEdges)}</b><span>row links in use${t.edges > liveEdges ? ` (+${nfmt(t.edges - liveEdges)} unused)` : ""}</span></div>
+    <div class="tile"><b>${nfmt(d.marked.rows)}</b><span>rows the map uses</span></div>
+  </div>
+  <div class="grid2" style="margin-top:14px">
+    <div><h3 style="font-size:14px;margin:0 0 2px">Cells by sheet</h3><p class="small muted" style="margin:0 0 8px">Formula cells and hard-coded inputs in each sheet's line items.</p><div class="chart" id="mdChartBox"><canvas id="mdChart" aria-label="Formula cells and inputs by sheet"></canvas></div></div>
+    <div><h3 style="font-size:14px;margin:0 0 2px">Which sheets feed which</h3><p class="small muted" style="margin:0 0 8px">Row links from the sheet on the left (reads) to the sheet across the top (is read), in the scenario the model is set to. Overlay sheets are marked in yellow.</p><div class="scroll" id="mdHeat"></div></div>
+  </div>
+  <div class="grid2" style="margin-top:14px">
+    <div><h3 style="font-size:14px;margin:0 0 6px">Most-read rows</h3>${top(e.most_read, "Read by")}</div>
+    <div><h3 style="font-size:14px;margin:0 0 6px">Rows reading the most</h3>${top(e.most_reading, "Reads")}</div>
+  </div>
+  <h3 style="font-size:14px;margin:16px 0 6px">Sheets</h3>
+  <div class="scroll"><table><thead><tr><th class="num">#</th><th>Sheet</th><th>State</th><th>Timeline</th><th class="num">Line items</th><th class="num">Formulas</th><th class="num">Inputs</th><th class="num">In the map</th></tr></thead><tbody>
+  ${d.sheets.map(s => `<tr class="click" data-mdsheet="${esc(s.sheet)}"><td class="num">${s.pos}</td><td>${sheetName(s.sheet)}</td><td class="small">${s.state === "visible" ? "visible" : `<span class="pill">${esc(s.state)}</span>`}</td><td class="small">${tl(s)}</td><td class="num">${nfmt(s.rows)}</td><td class="num">${nfmt(s.formulas)}</td><td class="num">${nfmt(s.consts)}</td><td class="num">${d.marked.by_sheet[s.sheet] ? nfmt(d.marked.by_sheet[s.sheet]) : ""}</td></tr>`).join("")}</tbody></table></div>
+  <h3 style="font-size:14px;margin:16px 0 6px">Line items</h3>
+  <div class="row small" style="margin-bottom:8px"><input type="text" id="mdQ" placeholder="Search labels and sections, e.g. revenue" value="${esc(MD.q)}" style="flex:1;min-width:200px" aria-label="Search line items">
+    <select class="in" id="mdSheet" aria-label="Sheet"><option value="">All sheets</option>${d.sheets.filter(s => s.rows).map(s => `<option ${s.sheet === MD.sheet ? "selected" : ""}>${esc(s.sheet)}</option>`).join("")}</select>
+    <label><input type="checkbox" id="mdMapped" ${MD.mapped ? "checked" : ""}> Only rows the map uses</label></div>
+  <div id="mdRows">${rowsTable()}</div>
+  ${d.names.length ? `<details style="margin-top:12px"><summary>Named ranges (${nfmt(d.names.length)})</summary><div class="scroll" style="max-height:320px;overflow-y:auto;margin-top:6px"><table><tbody>${d.names.map(n => `<tr><td class="mono small">${esc(n.name)}</td><td class="mono small">${esc(n.ref)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}`;
+}
+function markTags(ms) {
+  return ms.map(m => `<span class="tag ${m.startsWith("lever") ? "lever" : m.startsWith("output") ? "out" : ""}">${esc(m)}</span>`).join("");
+}
+function rowsTable() {
+  if (!MD.rows) return `<p class="muted small">Loading…</p>`;
+  if (!MD.rows.length) return `<p class="muted small">${MD.mapped ? "The map doesn't use any rows here yet. Build the map above." : "No line items match."}</p>`;
+  return `${MD.rows.length === 200 ? `<p class="small muted" style="margin:0 0 6px">Showing the first 200. Narrow the search to see the rest.</p>` : ""}<div class="scroll" style="max-height:520px;overflow-y:auto"><table><thead><tr><th>Row</th><th>Section</th><th>Label</th><th>Units</th><th class="num">Formulas</th><th class="num">Inputs</th><th class="num">Reads</th><th class="num">Read by</th><th>In the map</th></tr></thead><tbody>
+  ${MD.rows.map(r => `<tr><td class="mono nowrap">${esc(r.sheet)}!r${r.row}</td><td class="small">${esc(r.section)}</td><td>${esc(r.label)}</td><td class="small">${esc(r.units)}</td><td class="num">${nfmt(r.n_formula)}</td><td class="num">${nfmt(r.n_const)}</td><td class="num">${nfmt(r.reads)}</td><td class="num">${nfmt(r.read_by)}</td><td>${markTags(r.marks || [])}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function mdAxes(stacked) {
+  const tick = {color: tok("--muted"), font: {family: tok("--sans"), size: 12}};
+  return {x: {stacked, ticks: {...tick, callback: v => kfmt(v)}, grid: {color: tok("--rule")}, border: {display: false}},
+          y: {stacked, ticks: tick, grid: {display: false}, border: {color: tok("--rule")}}};
+}
+function mountModel() {
+  const d = MD.data[mdKey()]; if (!d || !$("#mdChart")) return;
+  if (MD.chart) { MD.chart.destroy(); MD.chart = null; }
+  const sh = d.sheets.filter(s => s.rows);
+  $("#mdChartBox").style.height = Math.max(160, 60 + sh.length * 26) + "px";
+  const ds = (label, data, color) => ({label, data, backgroundColor: tok(color), borderColor: tok("--surface"), borderWidth: 1, borderRadius: 3, borderSkipped: "start", maxBarThickness: 26});
+  MD.chart = new Chart($("#mdChart"), {type: "bar",
+    data: {labels: sh.map(s => s.sheet), datasets: [ds("Formula cells", sh.map(s => s.formulas), "--s1"), ds("Inputs", sh.map(s => s.consts), "--s2")]},
+    options: {indexAxis: "y", responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", axis: "y", intersect: false},
+      plugins: {legend: {position: "top", align: "start", labels: {color: tok("--ink"), boxWidth: 12, boxHeight: 12, font: {family: tok("--sans"), size: 12}}},
+        tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${nfmt(c.raw)}`}}}, scales: mdAxes(true)}});
+  heatmap($("#mdHeat"), d.edges.flows, d.sheets.map(s => s.sheet), new Set(d.overlay_sheets || []));
+}
+function heatmap(box, flows, order, ov) {
+  const live = flows.filter(f => f.live > 0);
+  if (!live.length) { box.innerHTML = `<p class="muted small" style="margin:0">No links between sheets.</p>`; return; }
+  const src = order.filter(s => live.some(f => f.src_sheet === s)), dst = order.filter(s => live.some(f => f.dst_sheet === s));
+  const n = Object.fromEntries(live.map(f => [f.src_sheet + "\u0000" + f.dst_sheet, f.live]));
+  const max = Math.max(...live.map(f => f.live));
+  // seven log-spaced steps of one blue ramp: few (light) to many (dark)
+  const step = v => Math.min(7, 1 + Math.floor(6 * Math.log(v) / Math.log(Math.max(max, 2))));
+  const whiteText = tok("color-scheme") === "dark" ? [1, 2, 3, 4, 5] : [5, 6, 7];
+  box.innerHTML = `<table class="heat"><thead><tr><th></th>${dst.map(s => `<th class="col ${ov.has(s) ? "ov" : ""}">${esc(s)}</th>`).join("")}</tr></thead><tbody>
+    ${src.map(a => `<tr><th style="text-align:right" class="${ov.has(a) ? "ov" : ""}">${esc(a)}</th>${dst.map(b => {
+      const v = n[a + "\u0000" + b];
+      if (!v) return `<td class="z"></td>`;
+      const k = step(v);
+      return `<td style="background:var(--q${k});color:${whiteText.includes(k) ? "#fff" : "#1a1a24"}" data-tip="<b>${esc(a)}</b> reads <b>${esc(b)}</b><br>${nfmt(v)} row link${v > 1 ? "s" : ""}">${v >= 1000 ? kfmt(v) : v}</td>`;
+    }).join("")}</tr>`).join("")}</tbody></table>
+    <div class="legend">Fewer ${[1, 2, 3, 4, 5, 6, 7].map(k => `<i style="background:var(--q${k})"></i>`).join("")} more links (log scale, up to ${nfmt(max)})</div>`;
+  const tip = $("#tip");
+  box.onmousemove = ev => {
+    const td = ev.target.closest("td[data-tip]");
+    if (!td) { tip.style.display = "none"; return; }
+    tip.innerHTML = td.dataset.tip; tip.style.display = "block";
+    tip.style.left = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px"; tip.style.top = (ev.clientY + 14) + "px";
+  };
+  box.onmouseleave = () => tip.style.display = "none";
+}
+async function loadModelRows(force = false) {
+  const key = JSON.stringify([MD.fid, MD.q, MD.sheet, MD.mapped, E.map_status, E.overlay_status]);
+  if (!force && key === MD.rowsKey && MD.rows) return;
+  const seq = ++MD.seq, p = new URLSearchParams();
+  if (MD.q) p.set("q", MD.q); if (MD.sheet) p.set("sheet", MD.sheet); if (MD.mapped) p.set("mapped", "true");
+  try {
+    const rows = await api(`/api/engagements/${E.id}/models/${MD.fid}/rows?${p}`);
+    if (seq !== MD.seq) return;
+    MD.rows = rows; MD.rowsKey = key;
+  } catch (err) { if (seq === MD.seq) MD.rows = []; toast(err.message, 6000); }
+  const box = $("#mdRows"); if (box) box.innerHTML = rowsTable();
+}
+async function bindModels() {
+  if (!$("#modelsCard")) return;
+  document.querySelectorAll("#modelsCard [data-md]").forEach(b => b.onclick = () => {
+    MD.fid = +b.dataset.md; MD.rows = null; MD.sheet = ""; $("#modelsCard").outerHTML = modelsCard(); bindModels(); });
+  const key = mdKey();
+  if (!MD.data[key]) {
+    try { MD.data[key] = await api(`/api/engagements/${E.id}/models/${MD.fid}`); }
+    catch (err) { const b = $("#mdBody"); if (b) b.innerHTML = `<div class="callout warn">${esc(err.message)}</div>`; return; }
+    if (mdKey() !== key || !$("#mdBody")) return;
+    $("#mdBody").innerHTML = modelBody(MD.data[key]);
+  }
+  mountModel();
+  let t = null;
+  $("#mdQ").oninput = e => { MD.q = e.target.value.trim(); clearTimeout(t); t = setTimeout(() => loadModelRows(), 250); };
+  $("#mdSheet").onchange = e => { MD.sheet = e.target.value; loadModelRows(); };
+  $("#mdMapped").onchange = e => { MD.mapped = e.target.checked; loadModelRows(); };
+  document.querySelectorAll("#modelsCard [data-mdsheet]").forEach(r => r.onclick = () => {
+    MD.sheet = r.dataset.mdsheet; $("#mdSheet").value = MD.sheet; loadModelRows(); $("#mdQ").scrollIntoView({behavior: "smooth", block: "center"}); });
+  loadModelRows();
+}
 
 // ---- step 6: python overlay ------------------------------------------------------------------------------
 const OV = {mode: "workbook", changes: {}, vd: null, months: null, result: null, running: false, trace: null, q: "", found: [], eid: null};
