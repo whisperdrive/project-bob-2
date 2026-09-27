@@ -495,7 +495,7 @@ def process(path: str, out_dir: str | Path, model: str = "gpt-6-luna", reviewer_
         doc = _pptx(path, out_dir, reader, progress)
     else:
         raise ValueError(f"{Path(path).name}: reports must be .pdf or .pptx (save .ppt / .docx as PDF first)")
-    (out_dir / "document.md").write_text(render(doc))
+    (out_dir / "document.md").write_text(render(doc), encoding="utf-8")
     progress(1.0, "Document read")
     return doc
 

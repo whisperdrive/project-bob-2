@@ -60,7 +60,7 @@ def main(path: str) -> None:
     }
     out = os.path.join("out", os.path.splitext(os.path.basename(path))[0])
     os.makedirs(out, exist_ok=True)
-    with open(os.path.join(out, "census.json"), "w") as f:
+    with open(os.path.join(out, "census.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, default=str)
     print(json.dumps({k: v for k, v in result.items() if k != "sheets"}))
 

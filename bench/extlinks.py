@@ -22,6 +22,8 @@ from xml.etree import ElementTree as ET
 
 from openpyxl.utils import column_index_from_string
 
+import rodb
+
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
       "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
       "p": "http://schemas.openxmlformats.org/package/2006/relationships"}
@@ -132,7 +134,7 @@ def ensure(path: str, db_path: str) -> None:
 
 def summary(db_path: str) -> list[dict]:
     """Per linked file: its sheets, which of this workbook's sheets read it, and how many line items."""
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    db = rodb.connect(db_path)
     out = []
     for idx, target, filename, sheets, n_cached in db.execute("SELECT * FROM extbooks ORDER BY idx"):
         by_sheet = db.execute("""SELECT sheet, COUNT(DISTINCT row), COUNT(DISTINCT ext_sheet) FROM extrefs

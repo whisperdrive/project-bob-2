@@ -26,6 +26,7 @@ from openpyxl.formula import Tokenizer
 from openpyxl.formula.tokenizer import Token
 from openpyxl.utils import column_index_from_string, get_column_letter
 
+import rodb
 import xlruntime
 
 KNOWN = {n for n in dir(xlruntime.xl) if n.isupper() and not n.startswith("_")} - {"ERR", "MISSING", "INDEX_REF", "ISECT", "RANGE"}
@@ -444,7 +445,7 @@ def _comment(text: str, n: int = 110) -> str:
 def compile_overlay(db_path: str, sheets: list[str], title: str = "", progress=None) -> tuple[str, dict]:
     """(module source, stats) for the formula cells on `sheets` of the workbook behind model.db."""
     progress = progress or (lambda f, m: None)
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    db = rodb.connect(db_path)
     wb_sheets = [s for (s,) in db.execute("SELECT sheet FROM sheets ORDER BY rowid")]
     overlay = [s for s in wb_sheets if s in set(sheets)]
     have = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}

@@ -17,6 +17,7 @@ from collections import defaultdict
 import tiktoken
 
 sys.path.insert(0, "bench")
+import rodb  # noqa: E402
 import tools  # noqa: E402
 
 ENC = tiktoken.get_encoding("cl100k_base")
@@ -71,7 +72,7 @@ def m_openpyxl(path):
 
 def top_output() -> tuple[str, int, str]:
     """The line item nothing depends on with the largest upstream tree - usually the model's headline output."""
-    db = sqlite3.connect(f"file:{tools.DB}?mode=ro", uri=True)
+    db = rodb.connect(tools.DB)
     up = defaultdict(list)
     has_dependents = set()
     for ss, sr, ds, dr in db.execute("SELECT src_sheet, src_row, dst_sheet, dst_row FROM edges"):
@@ -117,7 +118,7 @@ def main(paths: list[str]) -> None:
                             "content": kind, "tokens": tok(text)})
             print(json.dumps(results[-1]), flush=True)
 
-    full_map = open(os.path.join(out, "map.txt")).read()
+    full_map = open(os.path.join(out, "map.txt"), encoding="utf-8").read()
     results.append({"method": "row map - full (map.txt)", "secs": "build once",
                     "content": "formulas as R1C1 patterns + sample values", "tokens": tok(full_map)})
 
@@ -136,7 +137,7 @@ def main(paths: list[str]) -> None:
                     "tokens": sum(st["tokens"] for st in steps), "steps": steps})
     print(json.dumps(results[-2:], indent=1))
 
-    with open(os.path.join(out, "compare.json"), "w") as f:
+    with open(os.path.join(out, "compare.json"), "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
 

@@ -15,6 +15,7 @@ import re
 import sqlite3
 
 import linkmap
+import rodb
 
 ROLES = {"prior_report": "Prior report", "prior_model": "Prior client model", "prior_overlay": "Prior overlay",
          "current_model": "Current client model"}
@@ -26,7 +27,7 @@ NAME_HINT = re.compile(r"val|dcf|wacc|overlay|sensitiv", re.I)
 def profile(wb: dict, fact_matches: list[dict]) -> dict:
     """Per-sheet evidence for one workbook: {"sheets": {sheet: {...}}, "timeline_start"}."""
     import valuation
-    db = sqlite3.connect(f"file:{wb['db_path']}?mode=ro", uri=True)
+    db = rodb.connect(wb["db_path"])
     sheets = {}
     for s, layout in db.execute("SELECT sheet, layout FROM sheets"):
         lay = json.loads(layout or "{}")

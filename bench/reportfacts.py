@@ -233,7 +233,7 @@ def run(markdown: str, model: str = "gpt-6-luna", reviewer_model: str = "gpt-6-s
 if __name__ == "__main__":
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent))
-    md = Path(sys.argv[1]).read_text()
+    md = Path(sys.argv[1]).read_text(encoding="utf-8")
     model = sys.argv[2] if len(sys.argv) > 2 else "gpt-6-luna"
     res = run(md, model, progress=lambda f, m: print(f"{f:4.0%} {m}"))
     for f in res["facts"]:

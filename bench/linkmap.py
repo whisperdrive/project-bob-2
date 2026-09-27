@@ -14,13 +14,14 @@ import sqlite3
 from collections import defaultdict
 
 import extlinks
+import rodb
 
 LIVE = ("direct", "offset", "active")  # edge kinds the current scenario uses (edges.py)
 STOP = {"the", "of", "and", "a", "at", "to", "in", "on", "value", "rate", "less", "total", "text"}
 
 
 def _ro(path: str) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    return rodb.connect(path)
 
 
 def _tokens(s: str) -> set[str]:
@@ -218,8 +219,8 @@ def align_rows(prior_db: str, current_db: str, refs: list[tuple[str, int]]) -> d
             out[(s, r)] = (*k, seen[k])
         return out
 
-    db = sqlite3.connect(f"file:{current_db}?mode=ro", uri=True)
-    db.execute("ATTACH DATABASE ? AS o", (f"file:{prior_db}?mode=ro",))
+    db = rodb.connect(current_db)
+    db.execute("ATTACH DATABASE ? AS o", (rodb.uri(prior_db),))
     with _ro(prior_db) as p, _ro(current_db) as c:
         po, co = occurrences(p), occurrences(c)
     back = {v: k for k, v in co.items()}

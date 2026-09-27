@@ -301,7 +301,7 @@ def main(path: str, out: str | None = None, progress=None) -> dict:
     edge_stats = edgemod.build(db)
     db.commit()
 
-    with open(os.path.join(out, "map.txt"), "w") as f:
+    with open(os.path.join(out, "map.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     n_rows = sum(len(v) for v in sheet_rows.values())
     print(f"{out}: line items={n_rows} edges={edge_stats['edges']} names={len(name_rows)} secs={time.time() - t0:.1f}")

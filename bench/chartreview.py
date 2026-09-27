@@ -36,7 +36,7 @@ Data summary: {summary}
 def rules_text() -> str:
     """Read the rules fresh on every review, so edits take effect on the next chart."""
     try:
-        return RULES_FILE.read_text()
+        return RULES_FILE.read_text(encoding="utf-8")
     except OSError:
         return "(docs/chart_rules.md is missing: use careful judgement and say so in an issue)"
 

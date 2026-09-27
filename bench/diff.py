@@ -13,6 +13,8 @@ from collections import Counter, defaultdict
 
 from openpyxl.utils import get_column_letter
 
+import rodb
+
 LIST_CAP = 150
 COORDS = re.compile(r" \(\$?[A-Z]{1,3}\$?\d+(?:\.\.\$?[A-Z]{1,3}\$?\d+)?\)")  # "(K12..HX12)" in patterns
 EXT_LINK = re.compile(r"\[\d+\]")  # external-workbook index, e.g. [5]Summary!; Excel renumbers these on save
@@ -53,8 +55,8 @@ def timeline(db, schema: str, sheet: str) -> dict[int, str]:
 
 
 def diff(old_db: str, new_db: str) -> dict:
-    db = sqlite3.connect(f"file:{new_db}?mode=ro", uri=True)
-    db.execute("ATTACH DATABASE ? AS o", (f"file:{old_db}?mode=ro",))
+    db = rodb.connect(new_db)
+    db.execute("ATTACH DATABASE ? AS o", (rodb.uri(old_db),))
 
     old_sheets = dict(db.execute("SELECT sheet, state FROM o.sheets"))
     new_sheets = dict(db.execute("SELECT sheet, state FROM main.sheets"))

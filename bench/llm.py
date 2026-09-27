@@ -17,7 +17,7 @@ from openai import OpenAI
 def _load_env(path: Path = Path(__file__).resolve().parent.parent / ".env") -> None:
     """Minimal .env reader (KEY=value lines); real environment variables take precedence."""
     if path.exists():
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             key, sep, value = line.strip().partition("=")
             if sep and key and not key.startswith("#"):
                 os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
@@ -43,7 +43,7 @@ def _show_code(verification_uri, user_code, expires_on):
 
 def credential(interactive: bool = True) -> DeviceCodeCredential:
     """interactive=False raises AuthenticationRequiredError instead of printing a new device code."""
-    record = AuthenticationRecord.deserialize(RECORD.read_text()) if RECORD.exists() else None
+    record = AuthenticationRecord.deserialize(RECORD.read_text(encoding="utf-8")) if RECORD.exists() else None
     cred = DeviceCodeCredential(tenant_id=TENANT_ID or None, prompt_callback=_show_code, timeout=900,
                                 cache_persistence_options=CACHE, authentication_record=record,
                                 disable_automatic_authentication=not interactive)
@@ -51,7 +51,7 @@ def credential(interactive: bool = True) -> DeviceCodeCredential:
         if not interactive:
             raise AuthenticationRequiredError(scopes=[SCOPE], message="not signed in")
         RECORD.parent.mkdir(exist_ok=True)
-        RECORD.write_text(cred.authenticate(scopes=[SCOPE]).serialize())
+        RECORD.write_text(cred.authenticate(scopes=[SCOPE]).serialize(), encoding="utf-8")
     return cred
 
 

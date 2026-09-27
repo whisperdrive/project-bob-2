@@ -10,6 +10,8 @@ import threading
 from collections import deque
 from contextlib import contextmanager
 
+import rodb
+
 DB = None
 _local = threading.local()  # per-thread override set by using(), so concurrent requests don't clash
 _JUNK_NAME = re.compile(r"^(_|EV__|CIQ|IQ_|Cell)", re.I)
@@ -51,7 +53,7 @@ def _squash(text) -> str:
 
 
 def _db() -> sqlite3.Connection:
-    db = sqlite3.connect(f"file:{_path()}?mode=ro", uri=True)
+    db = rodb.connect(_path())
     db.create_function("squash", 1, _squash, deterministic=True)
     return db
 

@@ -10,6 +10,8 @@ import sqlite3
 import sys
 from collections import Counter
 
+import rodb
+
 DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 VAL_DATE_NAME = re.compile(r"val.*date|valuation|as_?at", re.I)
 TARGET_NAME = re.compile(r"name|company|target|asset|entity|project|client|borrower|issuer|deal", re.I)
@@ -38,7 +40,7 @@ def _resolve(db, ref: str):
 
 
 def candidates(db_path: str) -> dict:
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    db = rodb.connect(db_path)
     dates, texts, other_dates = [], [], []
     for name, ref in db.execute("SELECT name, ref FROM names"):
         hit = _resolve(db, ref)

@@ -32,6 +32,7 @@ import extlinks
 import library
 import linkmap
 import reportfacts
+import rodb
 import roles as rolesmod
 import usage
 
@@ -146,7 +147,7 @@ def workbooks(eid: int) -> list[dict]:
                                          "db_path", "source_path", "identity")}
             w["sheet_names"] = []
             if w["status"] == "done" and w["db_path"] and Path(w["db_path"]).exists():
-                with sqlite3.connect(f"file:{w['db_path']}?mode=ro", uri=True) as m:
+                with rodb.connect(w["db_path"]) as m:
                     w["sheet_names"] = [r[0] for r in m.execute("SELECT sheet FROM sheets ORDER BY rowid")]
             out.append(w)
     return out
@@ -324,7 +325,7 @@ def settle_table(did: int, tid: str, action: str, markdown: str | None = None) -
 def _save_doc(did: int, doc: dict) -> None:
     md = docingest.render(doc)
     d = _doc(did)
-    Path(d["out_dir"], "document.md").write_text(md)
+    Path(d["out_dir"], "document.md").write_text(md, encoding="utf-8")
     flagged = sum(t.get("status") in ("flagged", "error", "unread") for t in doc["tables"])
     _set("documents", did, doc_json=json.dumps(doc, default=str), n_flagged=flagged,
          n_tables=sum(t.get("status") != "figure" for t in doc["tables"]), pages=len(doc["pages"]))

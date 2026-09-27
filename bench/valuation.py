@@ -18,6 +18,7 @@ import threading
 from datetime import date
 
 import dcf
+import rodb
 
 _CACHE: dict = {}
 _LOCK = threading.Lock()
@@ -322,7 +323,7 @@ def catalogue(db_path: str) -> list[dict]:
     with _LOCK:
         if key in _CACHE:
             return _CACHE[key]
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    db = rodb.connect(db_path)
     out = []
     for v in find(db):
         b = build(db, v)
@@ -426,7 +427,7 @@ def validation(db_path: str, cell: str | None = None) -> dict:
     pick = _pick(cat, cell)
     if not pick:
         return {"anchors": _listing(cat), "selected": None}
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    db = rodb.connect(db_path)
     r = dcf.compute(db, **pick["inputs"], fix=False)
     sheet, row, cols = dcf._row_range(db, pick["inputs"]["cashflow"][0])
     ends, _ = dcf.period_ends(db, sheet, cols)
@@ -492,7 +493,7 @@ def scenario(db_path: str, cell: str | None = None, rate: float | None = None, v
     pick = _pick(cat, cell)
     if not pick:
         return {"selected": None}
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    db = rodb.connect(db_path)
     base_in = pick["inputs"]
     model = dcf.compute(db, **base_in, fix=False)
     s_in = dict(base_in)

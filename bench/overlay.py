@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
+import rodb
 import xlcompile
 import xlruntime
 from xlruntime import from_db, same, serial, to_date
@@ -38,17 +39,19 @@ LEVER_KEYS = re.compile(r"discount|wacc|terminal|growth|multiple|rab|valuation_d
                         r"inflation|beta|premium", re.I)
 
 sys.setrecursionlimit(1_000_000)
+STACK = 256 * 1024 * 1024
 _EXEC = None
 
 
 def deep(fn, *args, **kw):
-    """Run fn on a thread with a 1 GB stack: a timeline recurrence can nest thousands of cells deep. One thread,
-    so runs don't interleave (a Session's settings belong to the run that set them)."""
+    """Run fn on a thread with a 256 MB stack: a timeline recurrence can nest thousands of cells deep. (Windows
+    commits a thread's whole stack up front, so it isn't larger.) One thread, so runs don't interleave: a
+    Session's settings belong to the run that set them."""
     global _EXEC
     if threading.current_thread().name.startswith("overlay-eval"):
         return fn(*args, **kw)
     if _EXEC is None:
-        old = threading.stack_size(1024 * 1024 * 1024)
+        old = threading.stack_size(STACK)
         try:
             _EXEC = ThreadPoolExecutor(1, thread_name_prefix="overlay-eval")
             _EXEC.submit(lambda: None).result()  # create the thread while the big stack size is set
@@ -58,7 +61,7 @@ def deep(fn, *args, **kw):
 
 
 def _ro(path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+    return rodb.connect(path, check_same_thread=False)
 
 
 def _a1(sheet, row, col) -> str:
@@ -165,7 +168,7 @@ class Session:
 
     def __init__(self, module_path: str, overlay_db: str, sheets: list[str], prior_db: str | None = None,
                  current_db: str | None = None, client_link: int | None = None, client_sheets: list[str] | None = None):
-        src = Path(module_path).read_text()
+        src = Path(module_path).read_text(encoding="utf-8")
         self.g = {"__name__": "overlay"}
         exec(compile(src, str(module_path), "exec"), self.g)
         self.B = self.g["B"]
@@ -404,7 +407,7 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
     src, stats = deep(xlcompile.compile_overlay, overlay["db_path"], sheets, title,
                       lambda f, m: progress(0.05 + 0.3 * f, m))
     module = out_dir / "overlay.py"
-    module.write_text(src)
+    module.write_text(src, encoding="utf-8")
     progress(0.4, "Loading the module")
     same_file = prior is not None and prior["db_path"] == overlay["db_path"]
     sess = Session(str(module), overlay["db_path"], sheets, None if same_file else (prior or {}).get("db_path"),
@@ -449,7 +452,7 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
                "feeds": feeds, "sensitivities": points, "roll": roll, "sheets": sheets,
                "files": {k: (v or {}).get("filename") for k, v in (("overlay", overlay), ("prior", prior), ("current", current))},
                "client_link": client_link, "same_file": same_file}
-    (out_dir / "overlay.json").write_text(json.dumps(summary, default=str, indent=1))
+    (out_dir / "overlay.json").write_text(json.dumps(summary, default=str, indent=1), encoding="utf-8")
     progress(1.0, "Done")
     return summary, sess
 
