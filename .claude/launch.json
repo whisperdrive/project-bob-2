@@ -6,6 +6,12 @@
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "uvicorn", "app.server:app", "--port", "8000"],
       "port": 8000
+    },
+    {
+      "name": "valuation-desk",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "uvicorn", "engage.server:app", "--port", "8002"],
+      "port": 8002
     }
   ]
 }

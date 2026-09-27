@@ -39,6 +39,19 @@ def _num(v):
         return None
 
 
+DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def timeline(db, schema: str, sheet: str) -> dict[int, str]:
+    """col -> period date (YYYY-MM-DD) from the sheet's timeline row (layout header_row), dates only."""
+    lay = db.execute(f"SELECT layout FROM {schema}.sheets WHERE sheet=?", (sheet,)).fetchone()
+    hr = json.loads(lay[0] or "{}").get("header_row") if lay else None
+    if not hr:
+        return {}
+    return {c: str(v)[:10] for c, v in db.execute(f"SELECT col, value FROM {schema}.cells WHERE sheet=? AND row=?",
+                                                 (sheet, hr)) if DATE.match(str(v or ""))}
+
+
 def diff(old_db: str, new_db: str) -> dict:
     db = sqlite3.connect(f"file:{new_db}?mode=ro", uri=True)
     db.execute("ATTACH DATABASE ? AS o", (f"file:{old_db}?mode=ro",))
@@ -92,15 +105,46 @@ def diff(old_db: str, new_db: str) -> dict:
             headers[s] = {c: str(v)[:10] for c, v in db.execute(
                 "SELECT col, value FROM main.cells WHERE sheet=? AND row=?", (s, hr))}
 
+    # A model rolled forward (next year's version) has the same timeline shifted along: compare each period with
+    # the same period, matched by the timeline row's dates, not with the same column. Columns outside the
+    # timeline (labels, units, totals) match as they are. Periods only in one version aren't compared.
+    rolled, colmap = [], []
+    for sh in [x for x in new_sheets if x in old_sheets]:
+        ot, nt = timeline(db, "o", sh), timeline(db, "main", sh)
+        by_date = {d: c for c, d in nt.items()}
+        common = [(c, by_date[d]) for c, d in ot.items() if d in by_date]
+        if not common or all(a == b for a, b in common):
+            continue
+        rolled.append({"sheet": sh, "shift": common[0][1] - common[0][0],
+                       "dropped": sorted(d for d in ot.values() if d not in by_date),
+                       "added": sorted(d for d in nt.values() if d not in set(ot.values()))})
+        tl_new = set(nt)
+        for (c,) in db.execute("SELECT DISTINCT col FROM o.cells WHERE sheet=?", (sh,)):
+            if c in ot:
+                if ot[c] in by_date:
+                    colmap.append((sh, c, by_date[ot[c]]))
+            elif c not in tl_new:
+                colmap.append((sh, c, c))
+    db.execute("CREATE TEMP TABLE cm(sheet, ocol, ncol)")
+    db.executemany("INSERT INTO cm VALUES (?,?,?)", colmap)
+    db.execute("CREATE INDEX temp.ix_cm ON cm(sheet, ocol)")
+    rolled_sheets = ",".join("'" + r["sheet"].replace("'", "''") + "'" for r in rolled) or "''"
+
     renamed_rows = {(r["ref"].split("!r")[0], int(r["ref"].split("!r")[1])) for r in renamed}
     inputs, kind_changes, outputs = [], [], defaultdict(list)
     n_inputs = n_kind = n_outputs = n_blanked = 0
     out_by_sheet = Counter()
-    for s, lab, units, nrow, col, addr, ov, nv, of, nf in db.execute("""
-            SELECT m.sheet, m.label, m.units, m.nrow, nc.col, nc.addr, oc.value, nc.value, oc.formula, nc.formula
-            FROM m JOIN o.cells oc ON oc.sheet = m.sheet AND oc.row = m.orow
+    cols = "m.sheet, m.label, m.units, m.nrow, nc.col, nc.addr, oc.value, nc.value, oc.formula, nc.formula"
+    changed = "oc.value IS NOT nc.value OR (oc.formula IS NULL) != (nc.formula IS NULL)"
+    for s, lab, units, nrow, col, addr, ov, nv, of, nf in db.execute(f"""
+            SELECT {cols} FROM m JOIN o.cells oc ON oc.sheet = m.sheet AND oc.row = m.orow
             JOIN main.cells nc ON nc.sheet = m.sheet AND nc.row = m.nrow AND nc.col = oc.col
-            WHERE oc.value IS NOT nc.value OR (oc.formula IS NULL) != (nc.formula IS NULL)"""):
+            WHERE m.sheet NOT IN ({rolled_sheets}) AND ({changed})
+            UNION ALL
+            SELECT {cols} FROM m JOIN o.cells oc ON oc.sheet = m.sheet AND oc.row = m.orow
+            JOIN cm ON cm.sheet = m.sheet AND cm.ocol = oc.col
+            JOIN main.cells nc ON nc.sheet = m.sheet AND nc.row = m.nrow AND nc.col = cm.ncol
+            WHERE m.sheet IN ({rolled_sheets}) AND ({changed})"""):
         item = {"ref": f"{s}!{addr}", "label": lab, "units": units, "period": headers.get(s, {}).get(col),
                 "old": ov, "new": nv}
         if (of is None) != (nf is None):
@@ -148,6 +192,7 @@ def diff(old_db: str, new_db: str) -> dict:
                    "calculated_now_blank": n_blanked,
                    "names_changed": len(names_changed)},
         "sheets": sheets,
+        "timeline_rolled": rolled,
         "inputs": inputs,
         "key_outputs": key_outputs,
         "calculated_by_sheet": dict(out_by_sheet.most_common()),

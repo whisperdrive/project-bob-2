@@ -18,3 +18,4 @@ out/
 
 # The generated test workbook is safe to keep
 !tests/sample_model.xlsx
+tests/engagement_pack/

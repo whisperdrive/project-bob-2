@@ -48,8 +48,10 @@ Drop .xlsx/.xlsm files on the page. Each file is:
    valuation date and cites the cell. Shown as "Check" until the user confirms or corrects it.
 4. **Compared** (`bench/diff.py`) with the latest earlier file for the same target (or, failing that, the
    same file name without dates/v2/final). Line items are aligned per sheet like a text diff, so inserted,
-   removed and renamed rows don't shift everything else. Reports inputs changed (with timeline period),
-   key outputs that moved, formula changes, hard-code/formula swaps, sheets and named ranges, plus
+   removed and renamed rows don't shift everything else. When the timeline has moved (next year's model), each
+   period is compared with the same period, matched by the timeline row's dates, instead of the same column.
+   Reports inputs changed (with timeline period), key outputs that moved, formula changes, hard-code/formula
+   swaps, sheets and named ranges, plus
    warnings when a file looks un-recalculated (inputs changed but no results moved, the valuation-date input
    disagrees with the calculated date, or formula results are blank). gpt-4o writes a short summary.
 
@@ -112,6 +114,79 @@ chat shows the pause. The app offers gpt-4o (default), gpt-6-sol, gpt-6-luna, gp
 o3-mini and DeepSeek-V4-Flash were dropped because their capacities (8k-20k TPM) were too low for tool use.
 Registry: `out/registry.db`; uploaded originals: `uploads/<sha12>/`. `bench/library.py` runs the pipeline on
 one background worker thread and re-queues anything interrupted by a restart.
+
+## Valuation Desk (recurring valuation engagements)
+```bash
+uv run python tests/make_engagement_pack.py         # optional: a synthetic 4-file pack in tests/engagement_pack/
+uv run uvicorn engage.server:app --port 8002        # then open http://localhost:8002
+```
+One engagement per asset and year, built from last year's final report, last year's client model, last year's
+overlay (the workings that take the client model to the report's conclusions) and this year's client model. The
+steps, each checked by a person before the next relies on it:
+1. **Files.** Workbooks go through the Model Desk pipeline and library (`bench/library.py`), so a model uploaded in
+   either app is built once. Reports (PDF, PPTX) are read by `bench/docingest.py` into Markdown with page markers.
+   Every table is cropped, rendered at 200 dpi and transcribed by a vision model, then checked. A table with a text
+   layer must match it (every number on the page, each row's numbers on one line in order, the same label words,
+   so "$m" for "A$m" is caught). A picture-only table gets a second, independent read by the reviewer model,
+   compared number by number. PPTX tables and chart data are read from the file. Anything that fails is "Check": the
+   page shows the image beside the transcription, and the person approves, takes the reviewer's read or edits
+   it. Edits are re-checked against the page.
+2. **Report reference.** `bench/reportfacts.py` extracts the target, valuation date, conclusions (preferred value and
+   range), assumptions (discount rate and basis, terminal growth or exit / RAB multiple, ...), approach and the
+   sensitivity grid, each with a page and a verbatim quote. Code checks each one: the quote is on that page, the
+   values are in the quote, and quotes from unsettled tables are marked. A reviewer model accepts, corrects or
+   rejects each fact and lists what was missed. The person approves, takes a correction, edits or rejects.
+3. **Roles** (`bench/roles.py`). The overlay is picked as a sheet list, because it sometimes sits inside a copy of
+   the client model. An overlay sheet holds the report's conclusions or valuation-only assumptions (label and value
+   must both agree), or a DCF that `valuation.py` reproduces, or reads such a sheet. The prior client model is
+   the file the overlay's external links point to. `bench/extlinks.py` reads `xl/externalLinks` and checks the
+   link's cached values against the file. Prior vs current is decided by timeline start. The person confirms.
+4. **Compare.** `diff.py` between the client models, without the overlay sheets. When the timeline has rolled
+   forward, each period is compared with the same period (matched by the timeline row's dates), not the same
+   column.
+5. **Map** (`bench/linkmap.py`). The chain runs report figure → overlay cell (matched to the printed precision,
+   allowing for A$m vs A$ and sign), then overlay row → prior client row (external link or same-workbook
+   reference), then the same line item in the current model, with values for the same periods. The overlay's
+   DCFs are also recomputed in Python.
+
+6. **Python overlay** (`bench/overlay.py`). The overlay sheets are compiled into a Python module, and three checks
+   show it reproduces them:
+   - every formula cell is recomputed from the overlay's own inputs and compared with the value Excel saved;
+   - the module is fed from the prior client model file instead of the link's cached values, and the results must
+     not move;
+   - the results must tie to the report's conclusions at the printed precision, and each sensitivity in the report
+     (for example "WACC 7.50%, TGR 2.25%") is rerun through the discount-rate and growth levers.
+
+   The page runs the module live. Levers are the report's assumptions located in the overlay, and any other input
+   can be found by search and changed. Results update as you type. There are three feeds: the workbook as saved, the
+   prior client model, or the current client model **rolled forward**. Rolling forward moves the overlay's period
+   dates on by the roll (by default, how far the client timeline moved) and sets the valuation-date lever to the new
+   date. Client values come from the same line item (sheet and label) in the period with the rolled date. Values
+   that can't be matched are listed, not zeroed. Each output shows its Python function and the client values it
+   reads. The module is saved as `out/overlays/e<id>/overlay.py`; open it from the page, or run it from a terminal:
+   `uv run python bench/overlay.py <id> --mode current --set Val_Inputs!C5=0.075`.
+
+All model calls run on Azure Foundry through `bench/llm.py`: gpt-6-luna extracts and reads tables, gpt-6-sol reviews
+(second reads of picture tables, fact review), and both can be changed per engagement in the header. Calls are logged
+to the usage table with session `engagement-<id>`. State lives in `out/engage.db`, report reads in `out/docs/` and
+compiled overlays in `out/overlays/` (all git-ignored).
+
+### Excel formulas as Python (bench/xlcompile.py, bench/xlruntime.py)
+`xlcompile.py` turns a workbook's formulas into one Python function per line item. Cells in a row whose formulas differ
+only by a column shift share one branch, with the Excel formula and the inputs it uses written beside it.
+IF / IFERROR / IFNA / CHOOSE branches are lambdas, so only the branch taken is computed. Ranges are lazy, so
+`INDEX(range, MATCH(...))` evaluates one cell. Defined names, whole-row and whole-column references and ISFORMULA are
+resolved at compile time. Workbook text enters the code only through `repr()`.
+
+`xlruntime.py` has Excel's values, operators and about 100 functions: lookups, conditional sums, MMULT, OFFSET,
+dates, YEARFRAC, XNPV / XIRR, text. It also follows Excel's rules for blanks, errors, comparisons across types and
+implicit intersection. Evaluation runs column by column on a thread with a large stack, because a timeline
+recurrence can nest thousands of cells deep. Circular references fall back to the saved value and are listed.
+
+On the reference workbook (20 sheets, about 422k formulas) the compiled module reproduces 422,332 of 422,335 formula
+cells. The other 3 are TODAY() and NOW(). Compiling takes about 11 seconds and a full recalculation about 4. One Excel
+quirk is copied on purpose: XIRR with a zero first cash flow returns 2.98E-09 instead of the rate, and the workbook
+carries that value.
 
 ## Results (tokens are tiktoken approximations, not Claude's tokenizer)
 | Method | Load | Content | Tokens |

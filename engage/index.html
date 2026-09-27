@@ -1,0 +1,821 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valuation Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@300;400;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<style>
+/* Palette: off-black #2e2e38 / #1a1a24, ground #f6f6fa, greys #c4c4cd / #747480, yellow #ffe600, blue #1a9afa. */
+:root {
+  --ground: #f6f6fa; --surface: #ffffff; --raised: #fbfbfd; --ink: #2e2e38; --muted: #6b6b78; --rule: #e1e1e6;
+  --rule-strong: #c4c4cd; --bar: #1a1a24; --bar-ink: #ffffff; --bar-muted: #c4c4cd; --yellow: #ffe600;
+  --on-yellow: #2e2e38; --link: #1270c2; --blue: #1a9afa;
+  --ok-bg: #e5f3ea; --ok: #16692f; --warn-bg: #fff3cc; --warn: #7a5200; --bad-bg: #fbe7e5; --bad: #a3261c;
+  --info-bg: #e3f1fd; --info: #0f5a9c; --code-bg: #f0f0f4;
+  --sans: "Noto Sans", system-ui, -apple-system, sans-serif; --mono: "Noto Sans Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #1a1a24; --surface: #23232f; --raised: #2a2a36; --ink: #f0f0f5; --muted: #a8a8b5; --rule: #34343f;
+    --rule-strong: #4a4a57; --bar: #121219; --link: #4bb0fb; --blue: #1a9afa;
+    --ok-bg: #173323; --ok: #7fd49a; --warn-bg: #3a3012; --warn: #f3cf62; --bad-bg: #3d1d1b; --bad: #f4a39b;
+    --info-bg: #15304a; --info: #8cc8f7; --code-bg: #2e2e38; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #1a1a24; --surface: #23232f; --raised: #2a2a36; --ink: #f0f0f5; --muted: #a8a8b5; --rule: #34343f;
+  --rule-strong: #4a4a57; --bar: #121219; --link: #4bb0fb; --blue: #1a9afa;
+  --ok-bg: #173323; --ok: #7fd49a; --warn-bg: #3a3012; --warn: #f3cf62; --bad-bg: #3d1d1b; --bad: #f4a39b;
+  --info-bg: #15304a; --info: #8cc8f7; --code-bg: #2e2e38; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: 300 15px/1.55 var(--sans); }
+b, strong, th, h1, h2, h3 { font-weight: 600; }
+a { color: var(--link); }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.small { font-size: 13px; }
+.nowrap { white-space: nowrap; }
+
+/* header */
+header { background: var(--bar); color: var(--bar-ink); position: sticky; top: 0; z-index: 10; }
+.hbar { display: flex; align-items: center; gap: 14px; padding: 10px 24px; max-width: 1360px; margin: 0 auto; flex-wrap: wrap; }
+.brand { display: flex; align-items: flex-end; gap: 10px; text-decoration: none; color: inherit; }
+.brand .mark { width: 5px; align-self: stretch; background: var(--yellow); border-radius: 1px; }
+.brand .name { font-size: 18px; font-weight: 600; letter-spacing: .1px; line-height: 1; }
+.brand .sub { font-size: 12px; color: var(--bar-muted); font-weight: 400; line-height: 1; margin-left: 2px; }
+.hsp { flex: 1; }
+.hctl { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--bar-muted); flex-wrap: wrap; }
+.hctl select { background: #2e2e38; color: #fff; border: 1px solid #4a4a57; border-radius: 4px; padding: 4px 8px; font-size: 13px; max-width: 280px; }
+.chip { background: #2e2e38; border: 1px solid #4a4a57; color: #fff; border-radius: 99px; padding: 3px 10px; font-size: 12.5px; cursor: default; white-space: nowrap; }
+.yellow-rule { height: 3px; background: var(--yellow); }
+
+/* steps */
+nav.steps { display: flex; gap: 0; max-width: 1360px; margin: 0 auto; padding: 0 24px; overflow-x: auto; }
+nav.steps button { background: none; border: 0; border-bottom: 3px solid transparent; color: var(--bar-muted); padding: 10px 16px 9px;
+  cursor: pointer; font-size: 14px; white-space: nowrap; display: flex; gap: 8px; align-items: center; }
+nav.steps button:hover { color: #fff; }
+nav.steps button.on { color: #fff; border-bottom-color: var(--yellow); font-weight: 600; }
+nav.steps button:disabled { opacity: .45; cursor: not-allowed; }
+.dot { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #74747f; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; }
+.dot.done { background: var(--yellow); border-color: var(--yellow); color: #2e2e38; }
+.dot.work { border-color: var(--blue); color: var(--blue); }
+
+main { max-width: 1360px; margin: 0 auto; padding: 22px 24px 60px; display: grid; gap: 18px; }
+.lede { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.lede h1 { font-size: 24px !important; margin: 0; font-weight: 300; }
+.lede h1 b { font-weight: 600; }
+.lede p { margin: 4px 0 0; color: var(--muted); max-width: 820px; }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; min-width: 0; }
+.card > h2, .card h2, .lede h1, .node .small b { font-size: 16px; margin: 0 0 2px; overflow-wrap: anywhere; }
+.card > .sub { font-size: 13.5px; color: var(--muted); margin: 0 0 12px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 18px; }
+.stack { display: grid; gap: 18px; }
+.grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 14px; }
+
+.btn { background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 4px; padding: 6px 14px; cursor: pointer; font-size: 14px; font-weight: 400; }
+.btn:hover { border-color: var(--ink); }
+.btn.primary { background: var(--yellow); border-color: var(--yellow); color: var(--on-yellow); font-weight: 600; }
+.btn.primary:hover { filter: brightness(.95); }
+.btn.small { padding: 3px 9px; font-size: 12.5px; }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--link); padding-left: 4px; padding-right: 4px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+input[type=text], select.in, textarea { background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 4px; padding: 6px 9px; font-size: 14px; }
+textarea { width: 100%; font-family: var(--mono); font-size: 12.5px; min-height: 160px; }
+
+.pill { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 99px; background: var(--code-bg); color: var(--muted); white-space: nowrap; letter-spacing: .1px; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.pill.info { background: var(--info-bg); color: var(--info); }
+.callout { border-radius: 4px; padding: 10px 14px; font-size: 14px; border-left: 4px solid; }
+.callout.warn { background: var(--warn-bg); color: var(--warn); border-color: #e0b400; }
+.callout.bad { background: var(--bad-bg); color: var(--bad); border-color: var(--bad); }
+.callout.info { background: var(--info-bg); color: var(--info); border-color: var(--blue); }
+
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th { text-align: left; font-size: 12px; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid var(--rule-strong); white-space: nowrap; font-weight: 600; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+tr.sel td { background: var(--raised); }
+tr.click { cursor: pointer; }
+tr.click:hover td { background: var(--raised); }
+.bar { height: 5px; border-radius: 3px; background: var(--rule); overflow: hidden; margin-top: 5px; min-width: 120px; }
+.bar i { display: block; height: 100%; background: var(--blue); transition: width .4s; }
+
+.drop { border: 2px dashed var(--rule-strong); border-radius: 6px; padding: 26px; text-align: center; background: var(--raised); cursor: pointer; }
+.drop.over { border-color: var(--yellow); background: var(--warn-bg); }
+.drop b { font-size: 16px; }
+.slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 10px; margin-top: 14px; text-align: left; }
+.slot { border: 1px solid var(--rule); border-radius: 4px; padding: 9px 12px; background: var(--surface); font-size: 13px; }
+.slot b { display: block; font-size: 13.5px; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.tile { border: 1px solid var(--rule); border-radius: 4px; padding: 10px 14px; background: var(--surface); }
+.tile b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.tile span { font-size: 12.5px; color: var(--muted); }
+
+.md { font-size: 14px; }
+.md table { width: auto; margin: 8px 0; }
+.md td, .md th { border: 1px solid var(--rule); padding: 4px 8px; }
+.md h2 { font-size: 15px; border-top: 1px solid var(--rule); padding-top: 12px; margin-top: 18px; }
+.md h3 { font-size: 14px; }
+.review { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 900px) { .review { grid-template-columns: 1fr; } }
+.review img { max-width: 100%; border: 1px solid var(--rule); background: #fff; border-radius: 3px; }
+.checks { list-style: none; padding: 0; margin: 0; font-size: 12.5px; }
+.checks li::before { content: "✓ "; color: var(--ok); font-weight: 700; }
+.checks li.no::before { content: "✗ "; color: var(--bad); }
+details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
+.quote { font-size: 12.5px; color: var(--muted); border-left: 3px solid var(--rule-strong); padding-left: 8px; margin-top: 4px; }
+.why { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+.why li { margin: 2px 0; }
+
+/* roles */
+.flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; align-items: stretch; }
+@media (max-width: 900px) { .flow { grid-template-columns: 1fr; } }
+.node { border: 1px solid var(--rule-strong); border-top: 4px solid var(--yellow); border-radius: 4px; padding: 12px 14px; background: var(--surface); position: relative; margin-right: 26px; }
+.node:last-child { margin-right: 0; }
+.node::after { content: "→"; position: absolute; right: -22px; top: 40%; color: var(--muted); font-size: 18px; }
+.node:last-child::after { content: none; }
+@media (max-width: 900px) { .node { margin-right: 0; margin-bottom: 22px; } .node::after { content: "↓"; right: 45%; top: auto; bottom: -24px; } }
+.node h3 { margin: 0 0 6px; font-size: 14px; }
+.node .small b { font-size: 13px; }
+.node select { width: 100%; }
+.sheets { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 12.5px; }
+.sheets label { display: flex; gap: 4px; align-items: center; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--bar); color: #fff; padding: 9px 16px; border-radius: 4px; font-size: 14px; z-index: 30; border-left: 4px solid var(--yellow); max-width: 90vw; }
+.empty { text-align: center; padding: 40px 20px; color: var(--muted); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 13.5px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; }
+@media (max-width: 640px) { .hbar, nav.steps, main { padding-left: 16px; padding-right: 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="hbar">
+    <a class="brand" href="#" id="brand"><span class="mark" aria-hidden="true"></span><span><span class="name">Valuation Desk</span><br><span class="sub">Recurring valuation workbench</span></span></a>
+    <div class="hsp"></div>
+    <div class="hctl">
+      <label for="engSel">Engagement</label><select id="engSel"></select>
+      <button class="btn small" id="newEng" style="background:#2e2e38;color:#fff;border-color:#4a4a57">New</button>
+    </div>
+    <div class="hctl" id="modelCtl" hidden>
+      <label for="mSel">Model</label><select id="mSel"></select>
+      <label for="rSel">Reviewer</label><select id="rSel"></select>
+      <span class="chip" id="spend" title="Azure model spend for this engagement">$0.00</span>
+    </div>
+  </div>
+  <nav class="steps" id="steps"></nav>
+  <div class="yellow-rule"></div>
+</header>
+<main id="main"></main>
+<input type="file" id="picker" multiple accept=".pdf,.pptx,.xlsx,.xlsm" hidden>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const md = s => DOMPurify.sanitize(marked.parse(s || ""));
+const fmt = (v, d = 1) => v == null || v === "" ? "" : (typeof v === "number" ? v.toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: Math.abs(v) < 10 && d ? Math.min(d, 2) : 0}) : String(v));
+const size = b => b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1e3)) + " KB";
+const busy = s => ["queued", "processing", "running"].includes(s);
+function toast(msg, ms = 3500) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.append(t); setTimeout(() => t.remove(), ms); }
+async function api(path, opts = {}) {
+  const r = await fetch(path, {headers: opts.body && !(opts.body instanceof FormData) ? {"Content-Type": "application/json"} : {}, ...opts,
+    body: opts.body && !(opts.body instanceof FormData) ? JSON.stringify(opts.body) : opts.body});
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m } catch {} throw new Error(m); }
+  return r.json();
+}
+
+const STEPS = [
+  {id: "files", name: "Files"}, {id: "reference", name: "Report reference"}, {id: "roles", name: "Roles"},
+  {id: "compare", name: "Compare models"}, {id: "map", name: "Map"}, {id: "python", name: "Python overlay"}];
+const ROLE_HELP = {
+  prior_report: "Last year's final report: conclusions and assumptions.",
+  prior_model: "The client's model behind last year's valuation.",
+  prior_overlay: "Our workings linking the client model to the report: a separate workbook, or sheets inside the client model.",
+  current_model: "This year's client model, to roll the valuation forward.",
+};
+let CFG, E = null, state = {step: "files", doc: null, table: null, tableFilter: "flagged", factEdit: null, docView: null};
+let uploads = [], pollTimer = null;
+
+// ---- boot / navigation -------------------------------------------------------------------------------------
+async function boot() {
+  CFG = await api("/api/config");
+  for (const id of ["mSel", "rSel"]) $("#" + id).innerHTML = CFG.models.map(m => `<option>${esc(m)}</option>`).join("");
+  const h = new URLSearchParams(location.hash.slice(1));
+  state.step = h.get("s") || "files";
+  await loadList(+h.get("e") || null);
+}
+async function loadList(select) {
+  const list = await api("/api/engagements");
+  $("#engSel").innerHTML = list.length ? list.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join("") : `<option value="">No engagements yet</option>`;
+  const id = select && list.some(e => e.id === select) ? select : list[0]?.id;
+  if (id) { $("#engSel").value = id; await open(id); } else { E = null; render(); }
+}
+async function open(id) { E = await api(`/api/engagements/${id}`); state.doc = null; state.table = null; render(); schedule(); spend(); }
+// While someone is typing (a fact or table edit, or any focused field), polling updates the data and the step
+// dots but doesn't rebuild the page, so the edit isn't lost.
+function editing() {
+  const a = document.activeElement;
+  return state.factEdit != null || state.editingTable || !!(a && a.closest("main") && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+}
+async function refresh(force = false) {
+  if (!E) return;
+  E = await api(`/api/engagements/${E.id}`);
+  if (!force && editing()) renderSteps(); else render();
+  schedule();
+}
+function schedule() {
+  clearTimeout(pollTimer);
+  if (!E) return;
+  const working = E.documents.some(d => busy(d.status) || busy(d.facts_status)) || E.workbooks.some(w => busy(w.status))
+    || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || uploads.some(u => !u.done);
+  if (working) pollTimer = setTimeout(async () => { await refresh(); spend(); }, 1500);
+}
+async function spend() {
+  if (!E) return;
+  try { const u = await api(`/api/usage?session=${encodeURIComponent(E.session)}`); const s = u.session || {};
+    $("#spend").textContent = `$${(s.cost_usd || 0).toFixed(3)} · ${((s.input_tokens || 0) + (s.output_tokens || 0)).toLocaleString()} tokens`;
+    $("#spend").title = `Azure model spend for this engagement: ${s.calls || 0} calls (list prices)`; } catch {}
+}
+$("#engSel").onchange = e => { if (e.target.value) { go(state.step, +e.target.value); open(+e.target.value); } };
+$("#newEng").onclick = () => { E = null; state.step = "files"; render(true); };
+$("#mSel").onchange = async e => { E = {...E, ...await api(`/api/engagements/${E.id}`, {method: "PATCH", body: {model: e.target.value}})}; toast(`Extraction model: ${e.target.value}`); };
+$("#rSel").onchange = async e => { E = {...E, ...await api(`/api/engagements/${E.id}`, {method: "PATCH", body: {reviewer_model: e.target.value}})}; toast(`Reviewer model: ${e.target.value}`); };
+function go(step, eid = E?.id) { state.step = step; history.replaceState(null, "", `#e=${eid || ""}&s=${step}`); render(); }
+
+// ---- progress of each step ---------------------------------------------------------------------------------
+function progress() {
+  if (!E) return {};
+  const report = E.documents.find(d => d.id === E.roles.prior_report?.id) || E.documents[0];
+  const f = E.facts, approved = f.filter(x => x.status === "approved").length;
+  const r = E.roles, nConf = Object.values(r).filter(x => x.confirmed).length;
+  return {
+    files: E.documents.length && E.workbooks.length >= 2 && !E.documents.some(d => busy(d.status)) && !E.workbooks.some(w => busy(w.status)) ? "done" : (E.documents.length + E.workbooks.length ? "work" : ""),
+    reference: approved && !f.some(x => x.status === "pending") ? "done" : (f.length || report?.facts_status ? "work" : ""),
+    roles: nConf === 4 ? "done" : (Object.keys(r).length ? "work" : ""),
+    compare: E.compare_status === "done" ? "done" : (E.compare_status ? "work" : ""),
+    map: E.map_status === "done" ? "done" : (E.map_status ? "work" : ""),
+    python: E.overlay_status === "done" ? "done" : (E.overlay_status ? "work" : ""),
+  };
+}
+function renderSteps() {
+  const p = progress();
+  $("#steps").innerHTML = STEPS.map((s, i) => `<button data-s="${s.id}" class="${state.step === s.id ? "on" : ""}" ${!E ? "disabled" : ""}>
+      <span class="dot ${p[s.id] || ""}">${p[s.id] === "done" ? "✓" : i + 1}</span>${esc(s.name)}</button>`).join("");
+  $("#steps").querySelectorAll("button").forEach(b => b.onclick = () => go(b.dataset.s));
+}
+
+function render(creating = false) {
+  $("#modelCtl").hidden = !E;
+  if (E) { $("#mSel").value = E.model || CFG.default_model; $("#rSel").value = E.reviewer_model || CFG.default_reviewer; }
+  renderSteps();
+  const m = $("#main");
+  if (!E || creating) { m.innerHTML = viewNew(); bindNew(); return; }
+  const views = {files: viewFiles, reference: viewReference, roles: viewRoles, compare: viewCompare, map: viewMap, python: viewPython};
+  m.innerHTML = (views[state.step] || viewFiles)();
+  bind[state.step]?.();
+}
+
+// ---- new engagement ----------------------------------------------------------------------------------------
+function viewNew() {
+  return `<div class="lede"><div><h1><b>Start an engagement</b></h1><p>One engagement per asset and year. You'll upload last year's report, last year's client model and overlay, and this year's client model; then check the report's key figures, confirm which file is which, compare the models and map them together.</p></div></div>
+  <div class="card" style="max-width:640px"><h2>Engagement name</h2><p class="sub">For example the asset and the valuation year.</p>
+  <form class="row" id="newForm"><input type="text" id="newName" placeholder="Asset name, FY26 valuation" style="flex:1;min-width:240px" required>
+  <button class="btn primary">Create</button>${E ? `<button type="button" class="btn" id="cancelNew">Cancel</button>` : ""}</form></div>`;
+}
+function bindNew() {
+  $("#newForm").onsubmit = async ev => { ev.preventDefault(); const e = await api("/api/engagements", {method: "POST", body: {name: $("#newName").value}}); state.step = "files"; await loadList(e.id); go("files", e.id); };
+  $("#cancelNew")?.addEventListener("click", () => render());
+  $("#newName").focus();
+}
+
+// ---- step 1: files -----------------------------------------------------------------------------------------
+function statusCell(s, step, pct, err) {
+  if (s === "error") return `<span class="pill bad">Failed</span><div class="small" style="color:var(--bad)">${esc(err)}</div>`;
+  if (s === "done") return `<span class="pill ok">Ready</span>${err ? `<div class="small" style="color:var(--warn)">${esc(err)}</div>` : ""}`;
+  return `<span class="pill info">${s === "queued" ? "Queued" : "Processing"}</span><div class="small muted">${esc(step || "")}</div><div class="bar"><i style="width:${Math.round((pct || 0) * 100)}%"></i></div>`;
+}
+function viewFiles() {
+  const docs = E.documents, wbs = E.workbooks;
+  const up = uploads.filter(u => !u.done || u.error);
+  return `<div class="lede"><div><h1><b>${esc(E.name)}</b> · files</h1><p>Drop the engagement's files. Reports are converted to Markdown, with every table read from an image of it and checked; models go through the workbook pipeline (row map, dependencies, target and valuation date). You'll say which file is which in step 3.</p></div></div>
+  <div class="card"><div class="drop" id="drop" tabindex="0" role="button" aria-label="Upload files"><b>Drop files here</b> or click to choose<div class="muted small">PDF or PPTX reports · XLSX or XLSM models</div>
+    <div class="slots">${Object.entries(CFG.roles).map(([k, v]) => `<div class="slot"><b>${esc(v)}</b><span class="muted">${esc(ROLE_HELP[k])}</span></div>`).join("")}</div></div>
+    ${up.length ? `<div style="margin-top:10px">${up.map(u => `<div class="small">${u.error ? `<span class="pill bad">Failed</span> ${esc(u.name)}: ${esc(u.error)}` : `<span class="pill info">Uploading</span> ${esc(u.name)}`}</div>`).join("")}</div>` : ""}
+  </div>
+  <div class="stack">
+    <div class="card"><h2>Reports</h2><p class="sub">Read into Markdown; tables checked against the text layer or by a second, independent read.</p>
+    ${docs.length ? `<div class="scroll"><table><thead><tr><th>File</th><th>Pages</th><th>Tables</th><th>Status</th><th></th></tr></thead><tbody>
+    ${docs.map(d => `<tr><td><b>${esc(d.filename)}</b><div class="small muted">${d.kind.toUpperCase()} · ${size(d.size)}</div></td>
+      <td class="num">${d.pages ?? ""}</td><td class="num">${d.n_tables ?? ""}${d.n_flagged ? ` <span class="pill warn">${d.n_flagged} to check</span>` : (d.status === "done" && d.n_tables ? ` <span class="pill ok">checked</span>` : "")}</td>
+      <td>${statusCell(d.status, d.step, d.pct, d.error)}</td>
+      <td class="nowrap">${d.status === "done" ? `<button class="btn small" data-view="${d.id}">Review</button>` : ""}
+      ${d.status === "error" || (d.status === "done" && d.error) ? `<button class="btn small" data-retry="${d.id}">Retry</button>` : ""}
+      ${!busy(d.status) ? `<button class="btn small ghost" data-rmdoc="${d.id}" title="Remove">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No report yet.</p>`}</div>
+    <div class="card"><h2>Models</h2><p class="sub">Shared with Model Desk: a workbook uploaded in either app is processed once.</p>
+    ${wbs.length ? `<div class="scroll"><table><thead><tr><th>File</th><th>Sheets</th><th>Target · valuation date</th><th>Status</th><th></th></tr></thead><tbody>
+    ${wbs.map(w => `<tr><td><b>${esc(w.filename)}</b><div class="small muted">${size(w.size || 0)}${w.line_items ? ` · ${w.line_items.toLocaleString()} line items` : ""}</div></td>
+      <td class="num">${w.sheets ?? ""}</td><td class="small">${esc(w.target_name || "")}${w.valuation_date ? `<div class="muted">${esc(w.valuation_date)}</div>` : ""}</td>
+      <td>${statusCell(w.status, w.step, w.pct, w.error)}</td>
+      <td>${!busy(w.status) ? `<button class="btn small ghost" data-rmwb="${w.id}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No models yet.</p>`}</div>
+  </div>
+  ${docs.some(d => d.status === "done") && wbs.filter(w => w.status === "done").length >= 2 ? `<div class="row"><button class="btn primary" id="toRef">Next: check the report</button></div>` : ""}`;
+}
+const bind = {
+  files() {
+    const drop = $("#drop");
+    drop.onclick = () => $("#picker").click();
+    drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#picker").click(); } };
+    drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+    drop.ondragleave = () => drop.classList.remove("over");
+    drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); send([...e.dataTransfer.files]); };
+    document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { state.doc = +b.dataset.view; go("reference"); });
+    document.querySelectorAll("[data-retry]").forEach(b => b.onclick = async () => { await api(`/api/documents/${b.dataset.retry}/retry`, {method: "POST"}); refresh(); });
+    document.querySelectorAll("[data-rmdoc]").forEach(b => b.onclick = async () => { if (!confirm("Remove this report and its extracted facts?")) return; await act(() => api(`/api/documents/${b.dataset.rmdoc}`, {method: "DELETE"})); });
+    document.querySelectorAll("[data-rmwb]").forEach(b => b.onclick = async () => { if (!confirm("Remove this model from the engagement? (It stays in the shared library.)")) return; await act(() => api(`/api/engagements/${E.id}/workbooks/${b.dataset.rmwb}`, {method: "DELETE"})); });
+    $("#toRef")?.addEventListener("click", () => go("reference"));
+  },
+};
+$("#picker").onchange = e => { send([...e.target.files]); e.target.value = ""; };
+async function act(fn) { try { await fn(); } catch (err) { toast(err.message, 6000); } await refresh(true); }
+async function send(files) {
+  for (const f of files) {
+    const u = {name: f.name, done: false}; uploads.push(u); render();
+    const fd = new FormData(); fd.append("file", f);
+    try { const r = await api(`/api/engagements/${E.id}/files`, {method: "POST", body: fd}); u.done = true;
+      if (r.status === "duplicate") toast(`${f.name} was already uploaded; using the existing copy.`); }
+    catch (err) { u.done = true; u.error = err.message; }
+    await refresh();
+  }
+  uploads = uploads.filter(u => u.error);
+}
+
+// ---- step 2: report reference -------------------------------------------------------------------------------
+let DOC = null;
+function viewReference() {
+  const ready = E.documents.filter(d => d.status === "done");
+  if (!ready.length) return `<div class="card empty">Upload last year's report (PDF or PPTX) in step 1 first.</div>`;
+  if (!state.doc || !ready.some(d => d.id === state.doc)) state.doc = (ready.find(d => d.id === E.roles.prior_report?.id) || ready[0]).id;
+  const d = ready.find(x => x.id === state.doc);
+  if (!DOC || DOC.id !== d.id || DOC._stamp !== `${d.n_flagged}|${d.processed_at}`) loadDoc(d);
+  return `<div class="lede"><div><h1><b>Report reference</b></h1><p>The report's conclusions and assumptions are the guide for finding the valuation in last year's overlay. Settle any table the checks flagged, extract the key facts, then approve them. Every fact shows the page and quote it came from, the automatic checks, and the reviewer's verdict.</p></div></div>
+  ${ready.length > 1 ? `<div class="row"><label class="small muted">Report</label><select class="in" id="docSel">${ready.map(x => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.filename)}</option>`).join("")}</select></div>` : ""}
+  <div class="card" id="tablesCard"><h2>Tables in ${esc(d.filename)}</h2><p class="sub">Loading…</p></div>
+  <div class="card" id="factsCard">${factsCard(d)}</div>
+  <div class="card"><details id="docMd"><summary>Read the document as Markdown (what the extraction model sees)</summary><div class="md" id="docMdBody"><p class="muted">Loading…</p></div></details></div>`;
+}
+async function loadDoc(d) {
+  DOC = {id: d.id, _stamp: `${d.n_flagged}|${d.processed_at}`, loading: true};
+  const full = await api(`/api/documents/${d.id}`);
+  DOC = {...full, _stamp: `${full.n_flagged}|${full.processed_at}`};
+  if (state.step === "reference") { $("#tablesCard") && ($("#tablesCard").innerHTML = tablesCard()); bindTables(); fillDocMd(); }
+}
+function tableStatus(t) {
+  const s = t.status;
+  return s === "verified" ? `<span class="pill ok">Verified</span>` : s === "approved" ? `<span class="pill ok">Approved</span>` : s === "edited" ? `<span class="pill ok">Edited</span>`
+    : s === "flagged" ? `<span class="pill warn">Check</span>` : s === "figure" ? `<span class="pill">Figure</span>` : s === "error" ? `<span class="pill bad">Not read</span>` : `<span class="pill">${esc(s || "")}</span>`;
+}
+function checkLine(t) {
+  const c = t.final_check || t.check, s = t.second_read;
+  if (t.status === "figure") return esc(t.description || "");
+  if (c?.method === "native") return esc(c.note);
+  if (c?.method === "text layer") {
+    const bad = [...(c.not_in_source || []).map(n => `${n} not on the page`), ...(c.not_transcribed || []).map(n => `${n} missed`),
+      ...(c.rows_not_on_one_line || []).map(r => `row "${r.row}" doesn't match a line`), ...(c.words_not_in_source || []).map(w => `"${w}" not on the page`), ...(c.words_not_transcribed || []).map(w => `"${w}" missed`)];
+    const who = t.final_check ? "Your text" : "Text layer";
+    return c.ok ? `${t.final_check ? "Your text: all" : "All"} ${c.numbers} numbers and the labels match the page's text layer` : `${who}: ${esc(bad.slice(0, 4).join("; "))}${bad.length > 4 ? "…" : ""}`;
+  }
+  if (s) return s.ok ? `Two independent reads agree on all ${s.numbers} numbers` : `Reads differ on ${s.differences.length} row(s)`;
+  return esc(t.error || "");
+}
+function tablesCard() {
+  if (!DOC || DOC.loading) return `<h2>Tables</h2><p class="sub">Loading…</p>`;
+  const ts = DOC.doc.tables, flagged = ts.filter(t => ["flagged", "error", "unread"].includes(t.status));
+  const shown = state.tableFilter === "flagged" && flagged.length ? flagged : ts;
+  const sel = ts.find(t => t.id === state.table) || (flagged[0] || null);
+  return `<div class="row" style="justify-content:space-between"><div><h2>Tables in ${esc(DOC.filename)}</h2>
+    <p class="sub">${ts.length} found · ${ts.filter(t => ["verified", "approved", "edited"].includes(t.status)).length} verified or approved · ${flagged.length ? `<b style="color:var(--warn)">${flagged.length} to check</b>` : "nothing to check"}</p></div>
+    ${flagged.length ? `<div class="row small"><label><input type="radio" name="tf" value="flagged" ${state.tableFilter === "flagged" ? "checked" : ""}> To check</label><label><input type="radio" name="tf" value="all" ${state.tableFilter !== "flagged" ? "checked" : ""}> All</label></div>` : ""}</div>
+  <div class="scroll"><table><thead><tr><th>Table</th><th>Page</th><th>Source</th><th>Status</th><th>Check</th></tr></thead><tbody>
+  ${shown.map(t => `<tr class="click ${sel && sel.id === t.id ? "sel" : ""}" data-t="${esc(t.id)}"><td>${esc(t.title || t.id)}</td><td class="num">${t.page}</td><td class="small">${esc(t.source)}</td><td>${tableStatus(t)}</td><td class="small">${checkLine(t)}</td></tr>`).join("")}</tbody></table></div>
+  ${sel ? tableReview(sel) : ""}`;
+}
+function tableReview(t) {
+  const img = t.png ? `<img src="/api/documents/${DOC.id}/tables/${encodeURIComponent(t.id)}.png?v=${encodeURIComponent(DOC._stamp)}" alt="Image of table ${esc(t.id)}">` : `<p class="muted">Read straight from the file (no image).</p>`;
+  const c = t.final_check || t.check || {}, s = t.second_read;
+  const items = [];
+  if (t.final_check) items.push([true, "Checked your settled text against the page:"]);
+  if (c.method === "text layer") {
+    items.push([!c.not_in_source?.length, c.not_in_source?.length ? `Not on the page: ${c.not_in_source.join(", ")}` : "Every number is on the page"]);
+    items.push([!c.not_transcribed?.length, c.not_transcribed?.length ? `On the page but missing: ${c.not_transcribed.join(", ")}` : "No number on the page was missed"]);
+    items.push([!c.rows_not_on_one_line?.length, c.rows_not_on_one_line?.length ? `Rows not matching a line in order: ${c.rows_not_on_one_line.map(r => r.row).join("; ")}` : "Each row's numbers are on one line, in order"]);
+    const wIn = c.words_not_in_source || [], wOut = c.words_not_transcribed || [];
+    items.push([!(wIn.length || wOut.length), wIn.length || wOut.length ? `Label text differs from the page (compare the headers and units):${wOut.length ? ` on the page but not transcribed "${wOut.join('", "')}"` : ""}${wIn.length ? ` transcribed but not on the page "${wIn.join('", "')}"` : ""}` : "Labels and units match"]);
+  }
+  if (s) items.push([s.ok, s.ok ? `The reviewer's independent read agrees (${s.numbers} numbers)` : `The reviewer's independent read differs on ${s.differences.length} row(s)`]);
+  const final = t.final_markdown;
+  return `<div style="margin-top:14px;border-top:1px solid var(--rule);padding-top:14px">
+  <div class="row" style="justify-content:space-between"><h3 style="margin:0;font-size:15px">${esc(t.title || t.id)} <span class="muted small">page ${t.page} · ${esc(t.source)}</span> ${tableStatus(t)}</h3>
+  <div class="row">${t.status !== "figure" ? `<button class="btn small primary" data-ta="approve">Approve this read</button>${t.second_markdown ? `<button class="btn small" data-ta="use_second">Use reviewer's read</button>` : ""}<button class="btn small" data-ta="edit">Edit</button>${["approved", "edited"].includes(t.status) ? `<button class="btn small ghost" data-ta="reset">Undo</button>` : ""}` : ""}</div></div>
+  ${items.length ? `<ul class="checks" style="margin:8px 0">${items.map(([ok, txt]) => `<li class="${ok ? "" : "no"}">${esc(txt)}</li>`).join("")}</ul>` : ""}
+  <div class="review"><div><div class="small muted">Source image</div>${img}</div>
+  <div><div class="small muted">${final ? "Settled text" : "Transcription"}</div><div class="md">${md(final || t.markdown)}</div>
+  ${s && !s.ok ? `<div class="small muted" style="margin-top:8px">Reviewer's independent read</div><div class="md">${md(t.second_markdown)}</div>
+    <div class="small"><b>Differences</b><ul class="why">${s.differences.map(x => `<li>${esc(x.row)}: <span class="mono">${esc(x.first)}</span> vs <span class="mono">${esc(x.second)}</span></li>`).join("")}</ul></div>` : ""}
+  <div id="tEdit" hidden><textarea id="tEditText">${esc(final || t.markdown)}</textarea><div class="row" style="margin-top:6px"><button class="btn small primary" id="tSave">Save table</button><button class="btn small" id="tCancel">Cancel</button></div></div>
+  </div></div></div>`;
+}
+function bindTables() {
+  document.querySelectorAll("#tablesCard [data-t]").forEach(r => r.onclick = () => { state.table = r.dataset.t; $("#tablesCard").innerHTML = tablesCard(); bindTables(); });
+  document.querySelectorAll("#tablesCard input[name=tf]").forEach(r => r.onchange = () => { state.tableFilter = r.value; $("#tablesCard").innerHTML = tablesCard(); bindTables(); });
+  const sel = () => DOC.doc.tables.find(t => t.id === state.table) || DOC.doc.tables.find(t => ["flagged", "error", "unread"].includes(t.status));
+  document.querySelectorAll("#tablesCard [data-ta]").forEach(b => b.onclick = async () => {
+    const t = sel(); if (!t) return;
+    if (b.dataset.ta === "edit") { state.editingTable = true; $("#tEdit").hidden = false; $("#tEditText").focus(); return; }
+    await settle(t.id, b.dataset.ta);
+  });
+  $("#tSave")?.addEventListener("click", () => { state.editingTable = false; settle(sel().id, "edit", $("#tEditText").value); });
+  $("#tCancel")?.addEventListener("click", () => { state.editingTable = false; $("#tEdit").hidden = true; });
+}
+async function settle(tid, action, markdown) {
+  try { const full = await api(`/api/documents/${DOC.id}/tables/${encodeURIComponent(tid)}`, {method: "PUT", body: {action, markdown}});
+    DOC = {...full, _stamp: `${full.n_flagged}|${full.processed_at}`}; state.table = tid; toast("Table saved; facts re-checked against it."); }
+  catch (e) { toast(e.message, 6000); }
+  await refresh(true);
+}
+function fillDocMd() { const b = $("#docMdBody"); if (b && DOC?.doc) b.innerHTML = md(DOC.doc.markdown.replace(/<!--.*?-->/g, "")); }
+
+const CAT = {identity: "Identity", conclusion: "Valuation conclusions", assumption: "Key assumptions", approach: "Approach and method", sensitivity: "Sensitivities (test points for the rebuild)"};
+function factsCard(d) {
+  const fs = E.facts.filter(f => f.document_id === d.id);
+  const running = busy(d.facts_status);
+  const head = `<div class="row" style="justify-content:space-between"><div><h2>Key facts</h2><p class="sub">Extracted by <b>${esc(E.model)}</b>, reviewed by <b>${esc(E.reviewer_model)}</b> (change them in the header). Approved facts are the reference for the next steps.</p></div>
+    <div class="row">${running ? `<span class="pill info">${esc(d.facts_step || "Working")}</span>` : `<button class="btn ${fs.length ? "" : "primary"}" id="runFacts" ${d.n_flagged ? "title='Some tables are still to check; facts quoted from them will be marked.'" : ""}>${fs.length ? "Extract again" : "Extract key facts"}</button>`}
+    ${fs.length ? `<button class="btn primary" id="approvePassed">Approve all that passed (${fs.filter(f => f.status === "pending" && f.check?.ok && f.review?.verdict === "accept").length})</button>` : ""}</div></div>`;
+  if (d.facts_status === "error") return head + `<div class="callout bad">${esc(d.facts_error)}</div>`;
+  if (!fs.length) return head + (running ? `<p class="muted">Reading the report… this takes about a minute.</p>` : (d.n_flagged ? `<div class="callout warn">${d.n_flagged} table(s) still to check. You can extract now; facts quoted from those tables will be marked until they're settled.</div>` : ""));
+  const n = {approved: 0, pending: 0, rejected: 0}; fs.forEach(f => n[f.status]++);
+  const attention = fs.filter(f => f.status === "pending" && !(f.check?.ok && f.review?.verdict === "accept")).length;
+  let html = head + `<div class="row small" style="margin-bottom:8px"><span class="pill ok">${n.approved} approved</span><span class="pill">${n.pending} to decide</span>${attention ? `<span class="pill warn">${attention} need attention</span>` : ""}${n.rejected ? `<span class="pill bad">${n.rejected} rejected</span>` : ""}</div>`;
+  if (d.review_summary) html += `<div class="callout info small" style="margin-bottom:10px"><b>Reviewer:</b> ${esc(d.review_summary)}</div>`;
+  for (const [cat, label] of Object.entries(CAT)) {
+    const rows = fs.filter(f => f.category === cat); if (!rows.length) continue;
+    const collapsed = cat === "sensitivity";
+    html += `<details ${collapsed ? "" : "open"} style="margin-top:10px"><summary style="font-size:14px;color:var(--ink);font-weight:600">${label} <span class="muted small">(${rows.length})</span></summary>
+    <div class="scroll"><table><thead><tr><th>Item</th><th>Value</th><th>Source</th><th>Checks</th><th>Reviewer</th><th>Decision</th></tr></thead><tbody>${rows.map(factRow).join("")}</tbody></table></div></details>`;
+  }
+  return html;
+}
+function factRow(f) {
+  const v = f.status === "approved" && f.final ? f.final : f;
+  const range = v.low_text || v.high_text ? `<div class="small muted">range ${esc(v.low_text)} – ${esc(v.high_text)}</div>` : "";
+  const ch = (f.status === "approved" && f.final?.check) || f.check || {items: []};
+  const rv = f.review || {};
+  const verdict = {accept: "ok", correct: "warn", reject: "bad", added: "info"}[rv.verdict] || "";
+  const sug = rv.suggestion;
+  const decision = f.status === "approved" ? `<span class="pill ok">Approved${f.final ? " (changed)" : ""}</span> <button class="btn small ghost" data-f="${f.id}" data-a="reset">Undo</button>`
+    : f.status === "rejected" ? `<span class="pill bad">Rejected</span> <button class="btn small ghost" data-f="${f.id}" data-a="reset">Undo</button>`
+    : `<div class="row" style="gap:4px"><button class="btn small" data-f="${f.id}" data-a="approve">Approve</button>${sug ? `<button class="btn small" data-f="${f.id}" data-a="use_suggestion">Use correction</button>` : ""}<button class="btn small" data-f="${f.id}" data-a="edit">Edit</button><button class="btn small ghost" data-f="${f.id}" data-a="reject">Reject</button></div>`;
+  const edit = state.factEdit === f.id ? `<tr><td colspan="6" style="background:var(--raised)"><form class="row" data-fe="${f.id}" style="align-items:flex-end">
+    ${["value_text", "low_text", "high_text", "basis"].map(k => `<label class="small">${k.replace("_text", "").replace("value", "value")}<br><input type="text" name="${k}" value="${esc(v[k] || "")}" style="width:150px"></label>`).join("")}
+    <label class="small">page<br><input type="text" name="page" value="${esc(v.page ?? "")}" style="width:60px"></label>
+    <label class="small" style="flex:1;min-width:260px">quote (verbatim)<br><input type="text" name="quote" value="${esc(v.quote || "")}" style="width:100%"></label>
+    <button class="btn small primary">Save and approve</button><button type="button" class="btn small" data-cancel>Cancel</button></form></td></tr>` : "";
+  return `<tr><td><b>${esc(v.label || f.key)}</b><div class="small muted mono">${esc(f.key)}</div>${f.origin === "reviewer" ? `<span class="pill info">added by reviewer</span>` : ""}</td>
+    <td><b>${esc(v.value_text)}</b>${range}${v.basis ? `<div class="small muted">${esc(v.basis)}</div>` : ""}</td>
+    <td class="small">p. ${esc(v.page ?? "?")}<div class="quote">${esc((v.quote || "").slice(0, 220))}</div></td>
+    <td><ul class="checks">${(ch.items || []).map(i => `<li class="${i.ok ? "" : "no"}">${esc(i.text)}</li>`).join("")}</ul></td>
+    <td class="small">${rv.verdict ? `<span class="pill ${verdict}">${esc(rv.verdict)}</span>` : ""} ${esc(rv.reason || "")}
+      ${sug ? `<div class="small" style="margin-top:4px"><b>Suggests:</b> ${esc(sug.value_text)}${sug.low_text ? ` (${esc(sug.low_text)} – ${esc(sug.high_text)})` : ""}${sug.basis ? `, ${esc(sug.basis)}` : ""}, p. ${esc(sug.page)} ${sug.check?.ok ? `<span class="pill ok">checks pass</span>` : `<span class="pill warn">checks fail</span>`}</div>` : ""}</td>
+    <td>${decision}</td></tr>${edit}`;
+}
+bind.reference = () => {
+  $("#docSel")?.addEventListener("change", e => { state.doc = +e.target.value; state.table = null; render(); });
+  if (DOC && !DOC.loading && DOC.id === state.doc) { $("#tablesCard").innerHTML = tablesCard(); bindTables(); }
+  $("#docMd").ontoggle = fillDocMd;
+  $("#runFacts")?.addEventListener("click", () => {
+    const decided = E.facts.filter(f => f.document_id === state.doc && f.status !== "pending").length;
+    if (decided && !confirm(`Extract again? This replaces the current facts, including ${decided} approval(s) or rejection(s).`)) return;
+    act(() => api(`/api/documents/${state.doc}/facts`, {method: "POST"}));
+  });
+  $("#approvePassed")?.addEventListener("click", () => act(async () => { const r = await api(`/api/engagements/${E.id}/facts/approve-passed`, {method: "POST"}); toast(`${r.approved} fact(s) approved.`); }));
+  document.querySelectorAll("#factsCard [data-f]").forEach(b => b.onclick = () => {
+    if (b.dataset.a === "edit") { state.factEdit = +b.dataset.f; render(); document.querySelector(`[data-fe="${b.dataset.f}"] input`)?.focus(); return; }
+    act(() => api(`/api/facts/${b.dataset.f}`, {method: "PUT", body: {action: b.dataset.a}}));
+  });
+  document.querySelectorAll("#factsCard [data-fe]").forEach(form => {
+    form.onsubmit = ev => { ev.preventDefault(); const fields = Object.fromEntries(new FormData(form)); fields.page = fields.page ? +fields.page : null;
+      state.factEdit = null; act(() => api(`/api/facts/${form.dataset.fe}`, {method: "PUT", body: {action: "edit", fields}})); };
+    form.querySelector("[data-cancel]").onclick = () => { state.factEdit = null; render(); };
+  });
+};
+
+// ---- step 3: roles -----------------------------------------------------------------------------------------
+let roleDraft = null;
+function viewRoles() {
+  const docs = E.documents.filter(d => d.status === "done"), wbs = E.workbooks.filter(w => w.status === "done");
+  const r = E.roles, sug = E.roles_suggested;
+  if (!roleDraft || roleDraft._eid !== E.id) roleDraft = {_eid: E.id, ...JSON.parse(JSON.stringify(r))};
+  const ov = roleDraft.prior_overlay, pm = roleDraft.prior_model;
+  const node = role => {
+    const cur = roleDraft[role], opts = role === "prior_report" ? docs.map(d => [d.id, d.filename]) : wbs.map(w => [w.id, w.filename]);
+    const saved = r[role];
+    let extra = "";
+    if ((role === "prior_overlay" || role === "prior_model") && cur) {
+      const w = wbs.find(x => x.id === cur.id); const names = w?.sheet_names || [];
+      const inside = ov && pm && ov.id === pm.id;
+      if (role === "prior_overlay") extra = `<div class="small muted" style="margin-top:6px">${inside ? "Sits inside the prior client model" : (cur.sheets ? "Separate workbook (overlay sheets below)" : "Separate workbook")}</div>`;
+      if (names.length && (inside || cur.sheets)) extra += `<div class="sheets">${names.map(s => `<label><input type="checkbox" data-role="${role}" data-sheet="${esc(s)}" ${!cur.sheets || cur.sheets.includes(s) ? "checked" : ""}>${esc(s)}</label>`).join("")}</div>`;
+    }
+    return `<div class="node"><h3>${esc(CFG.roles[role])} ${saved?.confirmed ? `<span class="pill ok">Confirmed</span>` : saved ? `<span class="pill warn">Suggested</span>` : ""}</h3>
+      <select class="in" data-pick="${role}"><option value="">Not assigned</option>${opts.map(([id, n]) => `<option value="${id}" ${cur?.id === id ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+      ${extra}${cur?.why?.length ? `<ul class="why">${cur.why.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : `<p class="small muted" style="margin:6px 0 0">${esc(ROLE_HELP[role])}</p>`}</div>`;
+  };
+  const modes = sug ? Object.entries(sug.workbooks).map(([id, x]) => { const w = wbs.find(w => w.id === +id); return w ? `<tr><td>${esc(w.filename)}</td><td>${esc(x.mode)}</td><td class="small">${esc(x.overlay.join(", "))}</td><td class="small">${esc(x.client.join(", "))}</td><td class="small">${esc(x.timeline_start || "")}</td></tr>` : ""; }).join("") : "";
+  return `<div class="lede"><div><h1><b>Who's who</b></h1><p>Which file plays which part. The overlay is chosen as a set of sheets, because it sometimes sits inside a copy of the client model and sometimes stands alone. Suggestions come from the files: where the report's figures sit, which DCFs recompute in Python, external links and their cached values, and the model timelines.</p></div></div>
+  <div class="row"><button class="btn ${Object.keys(r).length ? "" : "primary"}" id="suggest">${Object.keys(r).length ? "Suggest again" : "Suggest roles"}</button>
+  <button class="btn primary" id="confirmRoles" ${Object.keys(roleDraft).length > 1 ? "" : "disabled"}>Confirm roles</button>
+  <span class="small muted">${E.facts.some(f => f.status === "approved") ? "Using the approved report facts." : E.facts.length ? "No facts approved yet: using the ones that pass the checks." : "No report facts yet: suggestions use the workbooks' structure only."}</span></div>
+  <div class="flow">${["prior_report", "prior_overlay", "prior_model", "current_model"].map(node).join("")}</div>
+  ${modes ? `<div class="card"><h2>What each workbook looks like</h2><p class="sub">From the last suggestion.</p><div class="scroll"><table><thead><tr><th>Workbook</th><th>Looks like</th><th>Overlay sheets</th><th>Client sheets</th><th>Timeline starts</th></tr></thead><tbody>${modes}</tbody></table></div></div>` : ""}`;
+}
+bind.roles = () => {
+  $("#suggest").onclick = async () => { $("#suggest").disabled = true; $("#suggest").textContent = "Looking at the files…";
+    try { E = await api(`/api/engagements/${E.id}/roles/suggest`, {method: "POST"}); roleDraft = null; } catch (e) { toast(e.message, 6000); } render(); };
+  document.querySelectorAll("[data-pick]").forEach(s => s.onchange = () => {
+    const role = s.dataset.pick, id = +s.value;
+    if (!id) { roleDraft[role] = null; render(); return; }
+    const kind = role === "prior_report" ? "document" : "workbook";
+    const sugg = E.roles_suggested?.workbooks?.[id];
+    let sheets = null;
+    if (role === "prior_overlay" && sugg?.overlay?.length && sugg.mode !== "client model") sheets = sugg.overlay;
+    if (role === "prior_model" && roleDraft.prior_overlay?.id === id) sheets = sugg?.client?.length ? sugg.client : null;
+    roleDraft[role] = {kind, id, sheets, why: ["set by you"]};
+    if (role === "prior_overlay" && sugg?.mode === "overlay inside the client model" && !roleDraft.prior_model) roleDraft.prior_model = {kind, id, sheets: sugg.client, why: ["same workbook as the overlay"]};
+    render();
+  });
+  document.querySelectorAll("[data-sheet]").forEach(c => c.onchange = () => {
+    const role = c.dataset.role, cur = roleDraft[role], w = E.workbooks.find(x => x.id === cur.id);
+    const set = new Set(cur.sheets || w.sheet_names); c.checked ? set.add(c.dataset.sheet) : set.delete(c.dataset.sheet);
+    cur.sheets = w.sheet_names.filter(s => set.has(s));
+  });
+  $("#confirmRoles").onclick = async () => {
+    const out = {}; for (const role of Object.keys(CFG.roles)) out[role] = roleDraft[role] ? {kind: roleDraft[role].kind, id: roleDraft[role].id, sheets: roleDraft[role].sheets} : null;
+    try { E = await api(`/api/engagements/${E.id}/roles`, {method: "PUT", body: {roles: out}}); roleDraft = null; toast("Roles confirmed."); } catch (e) { toast(e.message, 6000); }
+    render();
+  };
+};
+
+// ---- step 4: compare ---------------------------------------------------------------------------------------
+function viewCompare() {
+  const pm = E.roles.prior_model, cm = E.roles.current_model;
+  const name = id => E.workbooks.find(w => w.id === id)?.filename || "?";
+  const head = `<div class="lede"><div><h1><b>Prior vs current client model</b></h1><p>${pm && cm ? `<b>${esc(name(pm.id))}</b> → <b>${esc(name(cm.id))}</b>. ` : ""}Line items are aligned by sheet and label, so inserted rows don't shift everything. Inputs changed, results that moved, formulas rewritten and rows added or removed are listed with their cells.</p></div></div>`;
+  if (!pm || !cm) return head + `<div class="card empty">Assign the prior and current client models in step 3 first.</div>`;
+  const run = `<div class="row"><button class="btn ${E.compare_status === "done" ? "" : "primary"}" id="runCompare" ${busy(E.compare_status) ? "disabled" : ""}>${E.compare_status === "done" ? "Compare again" : "Compare the models"}</button>
+    ${busy(E.compare_status) ? `<span class="pill info">${esc(E.compare_step || "Working")}</span>` : ""}${E.compare_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.compare_error)}</span>` : ""}</div>`;
+  const d = E.compare; if (!d) return head + run;
+  const c = d.counts;
+  const tbl = (rows, cols) => rows?.length ? `<div class="scroll"><table><thead><tr>${cols.map(x => `<th>${x[0]}</th>`).join("")}</tr></thead><tbody>${rows.slice(0, 60).map(r => `<tr>${cols.map(x => `<td class="${x[2] || ""}">${x[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>${rows.length > 60 ? `<p class="small muted">and ${rows.length - 60} more</p>` : ""}` : `<p class="muted small">None.</p>`;
+  return head + run + `
+  ${d.warnings?.length ? d.warnings.map(w => `<div class="callout warn">${esc(w)}</div>`).join("") : ""}
+  ${d.timeline_rolled?.length ? `<div class="callout info small">The timeline rolled forward (${esc(d.timeline_rolled.map(r => r.sheet).join(", "))}): each period is compared with the same period in the other model, matched by date${d.timeline_rolled[0].dropped.length ? `; only in the prior model: ${esc(d.timeline_rolled[0].dropped.join(", "))}` : ""}${d.timeline_rolled[0].added.length ? `; only in the current model: ${esc(d.timeline_rolled[0].added.join(", "))}` : ""}.</div>` : ""}
+  ${d.overlay_sheets_left_out?.length ? `<div class="callout info small">Overlay sheets in the prior workbook left out of the comparison: ${esc(d.overlay_sheets_left_out.join(", "))}.</div>` : ""}
+  <div class="tiles">${[["Inputs changed", c.inputs_changed], ["Calculated cells moved", c.calculated_cells_changed], ["Formula rows changed", c.formula_rows_changed], ["Line items added", c.line_items_added], ["Line items removed", c.line_items_removed], ["Line items renamed", c.line_items_renamed]].map(([k, v]) => `<div class="tile"><b>${(v || 0).toLocaleString()}</b><span>${k}</span></div>`).join("")}</div>
+  <div class="card"><h2>Summary</h2><div class="md">${E.compare_summary ? md(E.compare_summary) : `<span class="muted">Writing the summary…</span>`}</div></div>
+  <div class="grid2">
+  <div class="card"><h2>Inputs changed</h2>${tbl(d.inputs, [["Cell", r => `<span class="mono">${esc(r.ref)}</span>`], ["Line item", r => esc(r.label)], ["Period", r => esc(r.period || "")], ["Prior", r => esc(fmt(r.old, 4)), "num"], ["Current", r => esc(fmt(r.new, 4)), "num"]])}</div>
+  <div class="card"><h2>Key results that moved</h2>${tbl(d.key_outputs, [["Row", r => `<span class="mono">${esc(r.ref)}</span>`], ["Line item", r => esc(r.label)], ["Cells", r => r.cells_changed, "num"], ["First change", r => `${esc(fmt(r.old, Math.abs(r.old) < 100 ? 2 : 1))} → ${esc(fmt(r.new, Math.abs(r.new) < 100 ? 2 : 1))}`, "num"], ["%", r => r.pct == null ? "" : `${r.pct > 0 ? "+" : ""}${r.pct}%`, "num"]])}</div>
+  <div class="card"><h2>Line items added / removed</h2>${tbl([...(d.rows_added || []).map(r => ({...r, k: "added"})), ...(d.rows_removed || []).map(r => ({...r, k: "removed"}))], [["", r => `<span class="pill ${r.k === "added" ? "ok" : "bad"}">${r.k}</span>`], ["Row", r => `<span class="mono">${esc(r.ref)}</span>`], ["Line item", r => esc(r.label)], ["Units", r => esc(r.units || "")]])}</div>
+  <div class="card"><h2>Formulas rewritten</h2>${tbl(d.formula_rows, [["Row", r => `<span class="mono">${esc(r.ref)}</span>`], ["Line item", r => esc(r.label)], ["Prior", r => `<span class="mono">${esc((r.old || "").slice(0, 80))}</span>`], ["Current", r => `<span class="mono">${esc((r.new || "").slice(0, 80))}</span>`]])}</div>
+  </div>
+  ${(d.sheets.added.length || d.sheets.removed.length) ? `<div class="card"><h2>Sheets</h2><p class="small">${d.sheets.added.length ? `Added: ${esc(d.sheets.added.join(", "))}. ` : ""}${d.sheets.removed.length ? `Removed: ${esc(d.sheets.removed.join(", "))}.` : ""}</p></div>` : ""}`;
+}
+bind.compare = () => { $("#runCompare")?.addEventListener("click", () => act(() => api(`/api/engagements/${E.id}/compare`, {method: "POST"}))); };
+
+// ---- step 5: map -------------------------------------------------------------------------------------------
+function viewMap() {
+  const head = `<div class="lede"><div><h1><b>The map</b></h1><p>Report → overlay: where each approved figure sits in the overlay. Overlay → prior client model: which client rows the overlay reads, through external links or references inside the workbook. Prior → current client model: the same line items this year. The overlay's DCFs are recomputed in Python as the start of the live valuation module.</p></div></div>`;
+  if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in step 3 first.</div>`;
+  const run = `<div class="row"><button class="btn ${E.map_status === "done" ? "" : "primary"}" id="runMap" ${busy(E.map_status) ? "disabled" : ""}>${E.map_status === "done" ? "Rebuild the map" : "Build the map"}</button>
+    ${busy(E.map_status) ? `<span class="pill info">${esc(E.map_step || "Working")}</span>` : ""}${E.map_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.map_error)}</span>` : ""}
+    ${!Object.values(E.roles).every(r => r.confirmed) ? `<span class="small muted">Roles aren't all confirmed yet; the map uses the current assignment.</span>` : ""}</div>`;
+  const m = E.map; if (!m) return head + run;
+  const f = m.files;
+  const found = m.report_overlay.filter(x => x.matches.length), missing = m.report_overlay.filter(x => !x.matches.length);
+  const books = m.overlay_client.books || [];
+  return head + run + `
+  ${!m.reference_approved ? `<div class="callout warn">The report facts aren't approved yet: this map uses the facts that pass the checks. Approve them in step 2 and rebuild.</div>` : ""}
+  <div class="flow">${[["Prior report", E.documents.find(d => d.id === E.roles.prior_report?.id)?.filename, `${found.length} of ${m.report_overlay.length} figures found in the overlay`],
+    ["Prior overlay", f.overlay, `${m.python.filter(p => p.reproduced).length} DCF(s) recomputed in Python`],
+    ["Prior client model", f.prior_model, `${(m.chain || []).length} overlay row(s) read it (${esc(m.overlay_client.mode || "")})`],
+    ["Current client model", f.current_model, `${(m.chain || []).filter(c => c.current).length} of those rows found this year`]].map(([t, n, s]) => `<div class="node"><h3>${t}</h3><div class="small"><b>${esc(n || "not assigned")}</b></div><div class="small muted">${s}</div></div>`).join("")}</div>
+  <div class="card"><h2>Overlay DCFs, recomputed in Python</h2><p class="sub">valuation.py reads each DCF's cash flows and discount factors from the overlay, works out the rate, valuation date and convention, and recomputes it. A value that also appears in the report ties the three together.</p>
+  ${m.python.length ? `<div class="scroll"><table><thead><tr><th>Cell</th><th>Line item</th><th class="num">Workbook</th><th class="num">Python</th><th>Reproduced</th><th>In the report as</th></tr></thead><tbody>
+  ${m.python.map(p => `<tr><td class="mono">${esc(p.cell)}</td><td>${esc(p.label)}</td><td class="num">${esc(fmt(p.value))}</td><td class="num">${esc(fmt(p.python))}</td><td>${p.reproduced ? `<span class="pill ok">Yes</span>` : `<span class="pill warn">${p.ok ? "Differs" : "Not a DCF"}</span>`}</td><td class="small">${esc(p.report.join("; ") || "")}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted small">No SUMPRODUCT-style DCF found on the overlay sheets.</p>`}</div>
+  <div class="card"><h2>Report → overlay</h2><p class="sub">Best match first; values are matched to the report's printed precision, allowing for units (A$m vs A$) and sign.</p>
+  <div class="scroll"><table><thead><tr><th>Report figure</th><th>Overlay cell</th><th>Line item there</th><th class="num">Cell value</th><th>Other candidates</th></tr></thead><tbody>
+  ${m.report_overlay.map(x => { const b = x.matches[0]; return `<tr><td><b>${esc(x.label || x.key)}</b> ${esc(x.value_text)}</td>
+    <td class="mono">${b ? esc(`${b.sheet}!${b.addr}`) : `<span class="pill warn">not found</span>`}${b && b.part !== "value" ? ` <span class="pill">${esc(b.part)}</span>` : ""}</td>
+    <td class="small">${esc(b?.label || "")}${b && !b.label_match && !b.anchor ? ` <span class="pill warn">label differs</span>` : ""}</td>
+    <td class="num">${b ? esc(fmt(b.value, 4)) : ""}${b && b.scale > 1 ? ` <span class="small muted" title="The workbook holds this figure in smaller units than the report">×${b.scale.toLocaleString()}</span>` : ""}${b && b.sign < 0 ? ` <span class="small muted">negative</span>` : ""}</td>
+    <td class="small">${x.n > 1 ? `${x.n - 1} other cell(s) hold this value` : ""}</td></tr>`; }).join("")}</tbody></table></div>
+  ${missing.length ? `<p class="small muted">Not found in the overlay: ${esc(missing.map(x => x.label || x.key).join(", "))}. Sensitivities are often pasted from data tables and may not be in the workbook.</p>` : ""}</div>
+  ${books.length ? `<div class="card"><h2>External links in the overlay</h2><p class="sub">Each linked file, the values the overlay last read from it, and whether they match the assigned prior client model.</p>
+  <div class="scroll"><table><thead><tr><th>[n]</th><th>File</th><th>Read by</th><th>Cached values</th><th>Prior client model?</th></tr></thead><tbody>
+  ${books.map(b => `<tr><td class="mono">[${b.idx}]</td><td>${esc(b.filename || b.target || "")}</td><td class="small">${esc(b.read_by.map(r => `${r.sheet} (${r.rows})`).join(", "))}</td><td class="num">${b.cached_cells}</td>
+    <td>${b.is_client ? `<span class="pill ok">Yes</span>` : ""} ${b.cached_check ? `<span class="small">${b.cached_check.matched} of ${b.cached_check.cells} match</span>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
+  <div class="card"><h2>Overlay → prior client model → current client model</h2><p class="sub">Every overlay row that reads the client model, the client row it reads, and the same line item in this year's model (matched by sheet and label).</p>
+  ${m.chain?.length ? `<div class="scroll"><table><thead><tr><th>Overlay row</th><th>Via</th><th>Prior client row</th><th>Current client row</th><th>Periods</th><th class="num">Prior</th><th class="num">Current</th></tr></thead><tbody>
+  ${m.chain.slice(0, 200).map(c => `<tr><td><span class="mono">${esc(c.overlay)}</span><div class="small">${esc(c.overlay_label)}</div></td><td class="small">${esc(c.via)}</td>
+    <td><span class="mono">${esc(c.client)}</span><div class="small">${esc(c.client_label)}</div></td>
+    <td>${c.current ? `<span class="mono">${esc(c.current)}</span>` : `<span class="pill warn">not found</span>`}</td>
+    <td class="small">${(c.periods || []).map(esc).join("<br>")}</td>
+    <td class="num small">${(c.prior_values || []).map(v => esc(fmt(v))).join("<br>")}</td><td class="num small">${(c.current_values || []).map(v => esc(fmt(v))).join("<br>")}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted small">No links found from the overlay sheets into the client model.</p>`}</div>`;
+}
+bind.map = () => { $("#runMap")?.addEventListener("click", () => act(() => api(`/api/engagements/${E.id}/map`, {method: "POST"}))); };
+
+// ---- step 6: python overlay ------------------------------------------------------------------------------
+const OV = {mode: "workbook", changes: {}, vd: null, months: null, result: null, running: false, trace: null, q: "", found: [], eid: null};
+const serialToISO = s => new Date(Date.UTC(1899, 11, 30) + Math.round(s) * 86400000).toISOString().slice(0, 10);
+function leverShown(l, v) {
+  if (v == null || typeof v !== "number") return v ?? "";
+  if (l.unit === "date" || l.key === "valuation_date") return serialToISO(v);
+  return +(v / (l.scale || 1)).toPrecision(12);
+}
+function leverRaw(l, shown) {
+  if (l.unit === "date" || l.key === "valuation_date") return shown;
+  return +shown * (l.scale || 1);
+}
+function viewPython() {
+  const head = `<div class="lede"><div><h1><b>Python overlay</b></h1><p>Last year's overlay rebuilt as a Python module from its own formulas: every formula cell becomes Python, checked against the value Excel saved, then against the report. Run it live: change the assumptions, or feed it from the prior or the current client model to roll the valuation forward.</p></div></div>`;
+  if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in step 3 first.</div>`;
+  if (OV.eid !== E.id) Object.assign(OV, {mode: "workbook", changes: {}, vd: null, months: null, result: null, trace: null, q: "", found: [], eid: E.id});
+  const O = E.overlay;
+  const run = `<div class="row"><button class="btn ${E.overlay_status === "done" ? "" : "primary"}" id="buildOv" ${busy(E.overlay_status) ? "disabled" : ""}>${E.overlay_status === "done" ? "Rebuild the Python overlay" : "Build the Python overlay"}</button>
+    ${busy(E.overlay_status) ? `<span class="pill info">${esc(E.overlay_step || "Working")}</span>` : ""}${E.overlay_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.overlay_error)}</span>` : ""}
+    ${O ? `<a class="btn" href="/api/engagements/${E.id}/overlay/module.py" target="_blank" rel="noopener">Open the Python module</a>` : ""}
+    ${!Object.values(E.roles).every(r => r.confirmed) ? `<span class="small muted">Roles aren't all confirmed; the build uses the current assignment.</span>` : ""}</div>`;
+  if (!O) return head + run + `<div class="card"><h2>What the build does</h2><ul class="why" style="color:var(--ink);font-size:14px">
+    <li>Compiles every formula on the overlay sheets into Python, one function per line item, with the Excel formula alongside.</li>
+    <li>Recomputes every formula cell from the overlay's own inputs and compares each with the value Excel saved.</li>
+    <li>Feeds it from the prior client model and checks the results don't move, then reruns the report's conclusions and sensitivities.</li>
+    <li>Finds the levers (the report's assumptions) so you can change them and roll the valuation onto the current model.</li></ul></div>`;
+  const v = O.validation, st = O.stats;
+  const ties = O.outputs.filter(o => o.tie), tiesOk = ties.filter(o => o.tie.ok).length;
+  const sens = O.sensitivities.filter(p => p.tie), sensOk = sens.filter(p => p.tie.ok).length;
+  const pct = v.cells ? (100 * v.matched / v.cells) : 0;
+  const tiles = [[`${v.matched.toLocaleString()} / ${v.cells.toLocaleString()}`, `formula cells reproduced (${pct.toFixed(pct === 100 ? 0 : 2)}%)`],
+    [st.rows.toLocaleString(), "line items as Python functions"],
+    [ties.length ? `${tiesOk} / ${ties.length}` : "–", "report conclusions tie"],
+    [sens.length ? `${sensOk} / ${sens.length}` : "–", "report sensitivities reproduced"],
+    [O.feeds.prior ? (O.feeds.prior.same ? "unchanged" : "moves") : (O.wiring?.same_file ? "same file" : "–"), "results fed from the prior client model"]];
+  return head + run + `
+  ${!O.reference_approved ? `<div class="callout warn">Built with report facts that aren't all approved; levers and tie-out may be incomplete. Approve them in step 2 and rebuild.</div>` : ""}
+  <div class="tiles">${tiles.map(([b, t]) => `<div class="tile"><b>${esc(b)}</b><span>${esc(t)}</span></div>`).join("")}</div>
+  ${validationCard(O)}
+  ${busy(E.overlay_status) ? `<div class="card empty">Rebuilding the module… the live panel comes back when it's done.</div>` : `<div class="card" id="ovLive">${liveCard(O)}</div>`}
+  ${tieCard(O)}
+  <div class="card"><h2>The module</h2><p class="sub">${esc(O.files.overlay || "")}, sheets ${esc(O.sheets.join(", "))}: ${st.formula_cells.toLocaleString()} formula cells in ${st.rows.toLocaleString()} functions (${st.branches.toLocaleString()} branches). Each function returns its line item's value for a column; the Excel formula is in the comment beside each branch.
+  ${st.volatile?.length ? ` Volatile functions (${esc(st.volatile.join(", "))}) depend on the day or the file and won't match.` : ""}</p>
+  <div class="row"><a class="btn" href="/api/engagements/${E.id}/overlay/module.py" target="_blank" rel="noopener">Open overlay_e${E.id}.py</a><span class="small muted">Runtime: bench/xlruntime.py · compiler: bench/xlcompile.py</span></div></div>`;
+}
+function validationCard(O) {
+  const v = O.validation, st = O.stats, issues = [];
+  if (Object.keys(v.quirks || {}).length) issues.push(...Object.entries(v.quirks).map(([k, n]) => `Excel behaviour reproduced on purpose: ${k} (${n} cell(s)).`));
+  if (Object.keys(v.unsupported || {}).length) issues.push(`Functions not yet supported: ${Object.keys(v.unsupported).join(", ")}.`);
+  if (v.cycles) issues.push(`${v.cycles} circular reference(s): the saved value is used there.`);
+  if (O.not_compiled?.length) issues.push(`${O.not_compiled.length} formula(s) couldn't be compiled.`);
+  if (!v.mismatches.length && !issues.length) return "";
+  return `<div class="card"><h2>Validation details</h2>${issues.map(i => `<div class="callout info small" style="margin-bottom:6px">${esc(i)}</div>`).join("")}
+  ${v.mismatches.length ? `<div class="scroll"><table><thead><tr><th>Cell</th><th>Line item</th><th class="num">Python</th><th class="num">Excel</th><th>Formula</th></tr></thead><tbody>
+  ${v.mismatches.map(m => `<tr><td class="mono">${esc(m.cell)}</td><td class="small">${esc(m.label)}</td><td class="num">${esc(fmt(m.python, 6))}</td><td class="num">${esc(fmt(m.workbook, 6))}</td><td class="mono small">${esc((m.formula || "").slice(0, 120))}</td></tr>`).join("")}</tbody></table></div>` : ""}</div>`;
+}
+function tieCard(O) {
+  const outs = O.outputs.filter(o => o.report), sens = O.sensitivities;
+  if (!outs.length && !sens.length) return "";
+  return `<div class="card"><h2>Tie-out to the report</h2><p class="sub">The module's results rounded to the report's printed precision. Sensitivities are rerun by setting the discount rate and growth levers to the report's values.</p>
+  ${outs.length ? `<div class="scroll"><table><thead><tr><th>Conclusion</th><th>Cell</th><th class="num">Report</th><th class="num">Python</th><th></th></tr></thead><tbody>
+  ${outs.map(o => `<tr><td>${esc(o.label)}</td><td class="mono">${esc(o.cell)}</td><td class="num">${esc(o.report)}</td><td class="num">${esc(fmt(o.tie?.python, 2))}</td><td>${o.tie ? (o.tie.ok ? `<span class="pill ok">Ties</span>` : `<span class="pill bad">Differs</span>`) : ""}</td></tr>`).join("")}</tbody></table></div>` : ""}
+  ${sens.length ? `<details ${sens.some(p => p.tie && !p.tie.ok) ? "open" : ""} style="margin-top:10px"><summary>Sensitivities (${sens.filter(p => p.tie?.ok).length} of ${sens.length} reproduced)</summary><div class="scroll"><table><thead><tr><th>Scenario</th><th>Levers set</th><th class="num">Report</th><th class="num">Python</th><th></th></tr></thead><tbody>
+  ${sens.map(p => `<tr><td>${esc(p.basis)}</td><td class="mono small">${esc(Object.entries(p.set || {}).map(([k, v]) => `${k} = ${+v.toPrecision(10)}`).join(", "))}</td><td class="num">${esc(p.report)}</td><td class="num">${esc(fmt(p.tie?.python, 2))}</td>
+    <td>${p.skip ? `<span class="small muted">${esc(p.skip)}</span>` : p.tie ? (p.tie.ok ? `<span class="pill ok">Reproduced</span>` : `<span class="pill bad">Differs</span>`) : ""}</td></tr>`).join("")}</tbody></table></div></details>` : ""}</div>`;
+}
+function liveCard(O) {
+  const w = O.wiring || {}, roll = O.roll || {};
+  const modes = [["workbook", "As saved", "the client values saved in the overlay workbook"], ["prior", "Prior client model", w.prior ? "read from " + w.prior.filename : "no prior client model assigned"],
+    ["current", "Current model, rolled forward", w.current ? "read from " + w.current.filename : "no current client model assigned"]];
+  const avail = {workbook: true, prior: !!w.prior, current: !!w.current};
+  const nChanges = Object.keys(OV.changes).length;
+  return `<div class="row" style="justify-content:space-between"><div><h2>Run it live</h2><p class="sub">Change a lever or any input; results update as you type.</p></div>
+    <div class="row" role="radiogroup" aria-label="Feed">${modes.map(([m, t, why]) => `<button class="btn small ${OV.mode === m ? "primary" : ""}" data-mode="${m}" title="${esc(why)}" ${avail[m] ? "" : "disabled"} role="radio" aria-checked="${OV.mode === m}">${esc(t)}</button>`).join("")}</div></div>
+  ${OV.mode === "current" ? `<div class="row small" style="margin-bottom:10px;gap:14px"><label>New valuation date <input type="date" id="ovVd" value="${esc(OV.vd || roll.current_valuation_date || "")}"></label>
+    <label>Roll forward by <input type="text" id="ovMonths" value="${esc(OV.months ?? roll.months ?? 12)}" style="width:52px"> months</label>
+    <span class="muted">Overlay periods move on by the roll; client values come from the same line item in the period with the rolled date${roll.valuation_date_cell ? `; valuation date cell ${esc(roll.valuation_date_cell)}` : "; no valuation-date lever found, so set it below"}.</span></div>` : ""}
+  <div class="grid2">
+    <div><h3 style="font-size:14px;margin:0 0 6px">Levers <span class="muted small">(the report's assumptions, found in the overlay)</span></h3>
+    ${O.levers.length ? `<div class="scroll"><table><thead><tr><th>Assumption</th><th>Cell</th><th class="num">Report</th><th>Value</th></tr></thead><tbody>
+    ${O.levers.map(l => { const cur = OV.changes[l.cell]; const isDate = l.unit === "date" || l.key === "valuation_date";
+      const shown = cur !== undefined ? (isDate ? cur : leverShown(l, cur)) : leverShown(l, l.value);
+      return `<tr><td>${esc(l.label)}<div class="small muted">${esc(l.row_label || "")}</div></td><td class="mono small">${esc(l.cell)}${l.formula ? ` <span class="pill">formula</span>` : ""}</td><td class="num small">${esc(l.report || "")}</td>
+      <td><input type="${isDate ? "date" : "text"}" data-lever="${esc(l.cell)}" value="${esc(shown)}" style="width:${isDate ? 150 : 110}px" aria-label="${esc(l.label)}">${!isDate && l.unit === "%" ? " %" : ""}${cur !== undefined ? ` <button class="btn small ghost" data-unset="${esc(l.cell)}">reset</button>` : ""}</td></tr>`; }).join("")}</tbody></table></div>` : `<p class="small muted">No levers: approve the report's assumptions in step 2 and rebuild, or change inputs directly.</p>`}
+    <h3 style="font-size:14px;margin:14px 0 6px">Any other input</h3>
+    <div class="row"><input type="text" id="ovQ" placeholder="Search the overlay's inputs by label or cell" value="${esc(OV.q)}" style="flex:1;min-width:200px"></div>
+    <div id="ovFound">${foundList()}</div>
+    ${nChanges ? `<div class="row small" style="margin-top:10px"><b>Changes:</b> ${Object.entries(OV.changes).map(([k, v]) => `<span class="pill info">${esc(k)} = ${esc(typeof v === "number" ? +v.toPrecision(10) : v)} <a href="#" data-unset="${esc(k)}" aria-label="Remove">×</a></span>`).join(" ")} <button class="btn small ghost" id="ovClear">Clear all</button></div>` : ""}
+    </div>
+    <div><h3 style="font-size:14px;margin:0 0 6px">Results ${OV.running ? `<span class="pill info">Calculating…</span>` : ""}</h3><div id="ovResults">${resultsTable()}</div></div>
+  </div>
+  <div id="ovTrace">${traceBlock()}</div>`;
+}
+function foundList() {
+  if (!OV.found.length) return OV.q ? `<p class="small muted">No numeric inputs match.</p>` : "";
+  return `<div class="scroll" style="max-height:220px;overflow-y:auto"><table><tbody>${OV.found.map(x => `<tr><td class="mono small">${esc(x.cell)}</td><td class="small">${esc(x.label)}</td>
+    <td><input type="text" data-input="${esc(x.cell)}" value="${esc(OV.changes[x.cell] ?? +x.value.toPrecision(12))}" style="width:110px" aria-label="${esc(x.cell)}"></td></tr>`).join("")}</tbody></table></div>`;
+}
+function resultsTable() {
+  const r = OV.result;
+  if (!r) return `<p class="small muted">${OV.running ? "Calculating…" : "Choose a feed or change a value."}</p>`;
+  const label = {workbook: "As saved", prior: "Prior model", current: "Rolled forward"}[r.mode];
+  const roll = r.roll;
+  return `${roll ? `<div class="callout info small" style="margin-bottom:8px">Rolled forward ${roll.months} months to ${esc(roll.valuation_date || "?")}: periods ${esc(roll.first_period || "?")} to ${esc(roll.last_period || "?")} (${roll.periods}).</div>` : ""}
+  ${r.n_unmatched ? `<div class="callout warn small" style="margin-bottom:8px">${r.n_unmatched} client value(s) couldn't be matched in the current model and are blank: ${esc(r.unmatched.slice(0, 4).map(u => `${u.cell} (${u.why})`).join("; "))}${r.n_unmatched > 4 ? "…" : ""}</div>` : ""}
+  <div class="scroll"><table><thead><tr><th>Output</th><th class="num">Workbook</th><th class="num">${esc(label)}</th>${Object.keys(r.changes || {}).length ? `<th class="num">With changes</th><th class="num">Change</th>` : ""}<th></th></tr></thead><tbody>
+  ${r.outputs.map(o => `<tr><td>${esc(o.label)}<div class="mono small muted">${esc(o.cell)}</div></td><td class="num">${esc(fmt(o.workbook, 2))}</td><td class="num">${esc(fmt(o.base, 2))}</td>
+    ${Object.keys(r.changes || {}).length ? `<td class="num"><b>${esc(fmt(o.value, 2))}</b></td><td class="num">${o.change == null ? "" : `${o.change > 0 ? "+" : ""}${esc(fmt(o.change, 2))}`}</td>` : ""}
+    <td><button class="btn small ghost" data-trace="${esc(o.cell)}">Python</button></td></tr>`).join("")}</tbody></table></div>`;
+}
+function traceBlock() {
+  const t = OV.trace;
+  if (!t) return "";
+  return `<div style="margin-top:14px;border-top:1px solid var(--rule);padding-top:12px"><div class="row" style="justify-content:space-between"><h3 style="margin:0;font-size:14px">${esc(t.cell)} ${esc(t.label || "")} = ${esc(fmt(t.value, 4))}</h3><button class="btn small ghost" id="ovTraceClose">Close</button></div>
+  <pre class="mono" style="background:var(--code-bg);padding:10px 12px;border-radius:4px;overflow-x:auto;font-size:12px;line-height:1.5">${esc(t.source || "(an input)")}</pre>
+  ${t.n_client_reads ? `<details><summary>${t.n_client_reads} value(s) read from the client model to compute it</summary><div class="scroll"><table><tbody>${t.client_reads.slice(0, 60).map(x => `<tr><td class="small">${esc(x.source)}</td><td class="mono small">${esc(x.cell)}</td><td class="num small">${esc(fmt(x.value, 4))}</td></tr>`).join("")}</tbody></table></div></details>` : `<p class="small muted">Reads nothing from the client model directly (its inputs are the overlay's own).</p>`}</div>`;
+}
+let ovTimer = null, ovSeq = 0;
+function ovSchedule(delay = 300) { clearTimeout(ovTimer); ovTimer = setTimeout(ovRun, delay); }
+async function ovRun() {
+  const seq = ++ovSeq; OV.running = true; const box = $("#ovResults"); if (box) box.innerHTML = resultsTable();
+  try {
+    const body = {mode: OV.mode, changes: OV.changes};
+    if (OV.mode === "current") { body.valuation_date = OV.vd || E.overlay?.roll?.current_valuation_date || null; if (OV.months != null && OV.months !== "") body.months = +OV.months; }
+    const r = await api(`/api/engagements/${E.id}/overlay/run`, {method: "POST", body});
+    if (seq === ovSeq) OV.result = r;
+  } catch (e) { toast(e.message, 6000); }
+  if (seq === ovSeq) { OV.running = false; const b = $("#ovResults"); if (b) { b.innerHTML = resultsTable(); bindResults(); } }
+}
+function bindResults() {
+  document.querySelectorAll("#ovResults [data-trace]").forEach(b => b.onclick = async () => {
+    try { OV.trace = await api(`/api/engagements/${E.id}/overlay/trace?cell=${encodeURIComponent(b.dataset.trace)}`); } catch (e) { toast(e.message); }
+    $("#ovTrace").innerHTML = traceBlock(); $("#ovTraceClose")?.addEventListener("click", () => { OV.trace = null; $("#ovTrace").innerHTML = ""; });
+    $("#ovTrace").scrollIntoView({behavior: "smooth", block: "nearest"});
+  });
+}
+function rerenderLive() { const c = $("#ovLive"); if (c && E.overlay) { c.innerHTML = liveCard(E.overlay); bindLive(); } }
+function bindLive() {
+  document.querySelectorAll("#ovLive [data-mode]").forEach(b => b.onclick = () => { OV.mode = b.dataset.mode; OV.result = null; rerenderLive(); ovSchedule(0); });
+  document.querySelectorAll("#ovLive [data-lever]").forEach(inp => inp.oninput = () => {
+    const l = E.overlay.levers.find(x => x.cell === inp.dataset.lever);
+    if (inp.value === "" ) delete OV.changes[l.cell]; else if (inp.type === "date" || !isNaN(+inp.value)) OV.changes[l.cell] = leverRaw(l, inp.value); else return;
+    ovSchedule();
+  });
+  document.querySelectorAll("#ovLive [data-lever]").forEach(inp => inp.onchange = () => rerenderLive());
+  document.querySelectorAll("#ovLive [data-input]").forEach(inp => {
+    inp.oninput = () => { if (inp.value === "") delete OV.changes[inp.dataset.input]; else if (!isNaN(+inp.value)) OV.changes[inp.dataset.input] = +inp.value; else return; ovSchedule(); };
+    inp.onchange = () => rerenderLive();
+  });
+  document.querySelectorAll("#ovLive [data-unset]").forEach(b => b.onclick = ev => { ev.preventDefault(); delete OV.changes[b.dataset.unset]; rerenderLive(); ovSchedule(0); });
+  $("#ovClear")?.addEventListener("click", () => { OV.changes = {}; rerenderLive(); ovSchedule(0); });
+  $("#ovVd")?.addEventListener("change", e => { OV.vd = e.target.value; ovSchedule(0); });
+  $("#ovMonths")?.addEventListener("input", e => { OV.months = e.target.value; if (!isNaN(+e.target.value) && e.target.value !== "") ovSchedule(); });
+  let qTimer = null;
+  $("#ovQ")?.addEventListener("input", e => { OV.q = e.target.value; clearTimeout(qTimer); qTimer = setTimeout(async () => {
+    OV.found = OV.q ? await api(`/api/engagements/${E.id}/overlay/inputs?q=${encodeURIComponent(OV.q)}`) : [];
+    $("#ovFound").innerHTML = foundList(); bindLive(); }, 250); });
+  bindResults();
+  $("#ovTraceClose")?.addEventListener("click", () => { OV.trace = null; $("#ovTrace").innerHTML = ""; });
+}
+bind.python = () => {
+  $("#buildOv")?.addEventListener("click", () => { OV.result = null; act(() => api(`/api/engagements/${E.id}/overlay`, {method: "POST"})); });
+  // no runs while a rebuild is replacing the module
+  if (E.overlay && !busy(E.overlay_status)) { bindLive(); if (!OV.result && !OV.running) ovSchedule(0); }
+};
+
+boot().catch(e => { $("#main").innerHTML = `<div class="callout bad">Couldn't start: ${esc(e.message)}</div>`; });
+</script>
+</body>
+</html>

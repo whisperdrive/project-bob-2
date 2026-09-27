@@ -235,16 +235,16 @@ Comparison (lists truncated):
 {d}"""
 
 
-def summarize(d: dict, prev: dict, me: dict) -> str:
-    if d["identical_content"] and not d["identity"]:
+def summarize(d: dict, prev: dict, me: dict, model: str = SUMMARY_MODEL, session: str | None = None) -> str:
+    if d["identical_content"] and not d.get("identity"):
         return "No content changes: same sheets, line items, formulas and values. The file was re-saved."
     brief = {k: (v[:25] if isinstance(v, list) else v) for k, v in d.items()}
     try:
         from llm import client, create
-        r = create(client(interactive=False), SUMMARY_MODEL, input=SUMMARY_PROMPT.format(
+        r = create(client(interactive=False), model, input=SUMMARY_PROMPT.format(
             old=prev["filename"], new=me["filename"], d=json.dumps(brief, default=str)[:24000]))
         if r.usage:
-            usage.record(SUMMARY_MODEL, r.usage, "summary", me["id"])
+            usage.record(model, r.usage, "summary", me["id"], session)
         return r.output_text
     except Exception as e:
         c = d["counts"]
