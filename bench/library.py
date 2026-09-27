@@ -277,6 +277,18 @@ def process(fid: int) -> None:
         _update(fid, status="error", step="Failed", error=f"{type(e).__name__}: {e}")
 
 
+def retry(fid: int) -> dict:
+    """Process a failed file again (uploading the same bytes again would only find the failed record)."""
+    f = get(fid)
+    if not f:
+        raise ValueError("no such file")
+    if f["status"] != "error":
+        raise ValueError("only a file that failed can be retried")
+    _update(fid, status="queued", step="Waiting to start", pct=0, error=None)
+    _jobs.put(fid)
+    return get(fid)
+
+
 def set_identity(fid: int, target_name: str | None, project_name: str | None, valuation_date: str | None) -> dict:
     """User confirmation / correction. Target and date decide which file is the previous version, so re-link."""
     _update(fid, target_name=target_name or None, project_name=project_name or None,

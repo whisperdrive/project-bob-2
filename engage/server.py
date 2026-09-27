@@ -121,6 +121,12 @@ async def unlink_workbook(eid: int, fid: int):
     return {"ok": True}
 
 
+@app.post("/api/engagements/{eid}/workbooks/{fid}/retry")
+async def retry_workbook(eid: int, fid: int):
+    await _run(lambda: library.retry(fid) and True)
+    return {"ok": True}
+
+
 @app.get("/api/documents/{did}")
 async def get_document(did: int):
     return await _run(engagement.document, did)

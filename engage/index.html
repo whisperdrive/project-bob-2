@@ -331,7 +331,7 @@ function viewFiles() {
     ${wbs.map(w => `<tr><td><b>${esc(w.filename)}</b><div class="small muted">${size(w.size || 0)}${w.line_items ? ` · ${w.line_items.toLocaleString()} line items` : ""}</div></td>
       <td class="num">${w.sheets ?? ""}</td><td class="small">${esc(w.target_name || "")}${w.valuation_date ? `<div class="muted">${esc(w.valuation_date)}</div>` : ""}</td>
       <td>${statusCell(w.status, w.step, w.pct, w.error)}</td>
-      <td>${!busy(w.status) ? `<button class="btn small ghost" data-rmwb="${w.id}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No models yet.</p>`}</div>
+      <td class="nowrap">${w.status === "error" ? `<button class="btn small" data-retrywb="${w.id}">Retry</button>` : ""}${!busy(w.status) ? `<button class="btn small ghost" data-rmwb="${w.id}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No models yet.</p>`}</div>
   </div>
   ${docs.some(d => d.status === "done") && wbs.filter(w => w.status === "done").length >= 2 ? `<div class="row"><button class="btn primary" id="toRef">Next: check the report</button></div>` : ""}`;
 }
@@ -345,6 +345,7 @@ const bind = {
     drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); send([...e.dataTransfer.files]); };
     document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { state.doc = +b.dataset.view; go("reference"); });
     document.querySelectorAll("[data-retry]").forEach(b => b.onclick = async () => { await api(`/api/documents/${b.dataset.retry}/retry`, {method: "POST"}); refresh(); });
+    document.querySelectorAll("[data-retrywb]").forEach(b => b.onclick = () => act(() => api(`/api/engagements/${E.id}/workbooks/${b.dataset.retrywb}/retry`, {method: "POST"})));
     document.querySelectorAll("[data-rmdoc]").forEach(b => b.onclick = async () => { if (!confirm("Remove this report and its extracted facts?")) return; await act(() => api(`/api/documents/${b.dataset.rmdoc}`, {method: "DELETE"})); });
     document.querySelectorAll("[data-rmwb]").forEach(b => b.onclick = async () => { if (!confirm("Remove this model from the engagement? (It stays in the shared library.)")) return; await act(() => api(`/api/engagements/${E.id}/workbooks/${b.dataset.rmwb}`, {method: "DELETE"})); });
     $("#toRef")?.addEventListener("click", () => go("reference"));
