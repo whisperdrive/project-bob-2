@@ -464,15 +464,16 @@ async function send(files) {
 // ---- step 2: report reference -------------------------------------------------------------------------------
 let DOC = null;
 function viewReference() {
-  const ready = E.documents.filter(d => d.status === "done");
+  const ready = E.documents.filter(d => d.status === "done" || (d.processed_at && busy(d.status)));  // still shown during its table loop
   if (!ready.length) return `<div class="card empty">Upload last year's report (PDF or PPTX) in step 1 first.</div>`;
   if (!state.doc || !ready.some(d => d.id === state.doc)) state.doc = (ready.find(d => d.id === E.roles.prior_report?.id) || ready[0]).id;
   const d = ready.find(x => x.id === state.doc);
   if (!DOC || DOC.id !== d.id || DOC._stamp !== `${d.n_flagged}|${d.processed_at}`) loadDoc(d);
-  return `<div class="lede"><div><h1><b>Report reference</b></h1><p>The report's conclusions and assumptions are the guide for finding the valuation in last year's overlay. Settle any table the checks flagged, extract the key facts, then approve them. Every fact shows the page and quote it came from, the automatic checks, and the reviewer's verdict.</p></div></div>
+  return `<div class="lede"><div><h1><b>Report reference</b></h1><p>The report's conclusions and assumptions are the guide for finding the valuation in last year's overlay. Tables the checks flag and facts the reviewer disputes go through a review loop: the extractor fixes, code re-checks, the reviewer checks again, until they agree or hand it to you. Every fact shows its page, quote, checks and the loop's rounds; what the loop teaches is kept, anonymised, for next time.</p></div></div>
   ${ready.length > 1 ? `<div class="row"><label class="small muted">Report</label><select class="in" id="docSel">${ready.map(x => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.filename)}</option>`).join("")}</select></div>` : ""}
   <div class="card" id="tablesCard"><h2>Tables in ${esc(d.filename)}</h2><p class="sub">Loading…</p></div>
   <div class="card" id="factsCard">${factsCard(d)}</div>
+  <div class="card" id="lessonsCard">${lessonsCard()}</div>
   <div class="card"><details id="docMd"><summary>Read the document as Markdown (what the extraction model sees)</summary><div class="md" id="docMdBody"><p class="muted">Loading…</p></div></details></div>`;
 }
 async function loadDoc(d) {
@@ -484,6 +485,7 @@ async function loadDoc(d) {
 function tableStatus(t) {
   const s = t.status;
   return s === "verified" ? `<span class="pill ok">Verified</span>` : s === "approved" ? `<span class="pill ok">Approved</span>` : s === "edited" ? `<span class="pill ok">Edited</span>`
+    : s === "resolved" ? `<span class="pill ok" title="Settled by the review loop">Resolved by agents</span>`
     : s === "flagged" ? `<span class="pill warn">Check</span>` : s === "figure" ? `<span class="pill">Figure</span>` : s === "error" ? `<span class="pill bad">Not read</span>` : `<span class="pill">${esc(s || "")}</span>`;
 }
 function checkLine(t) {
@@ -493,11 +495,16 @@ function checkLine(t) {
   if (c?.method === "text layer") {
     const bad = [...(c.not_in_source || []).map(n => `${n} not on the page`), ...(c.not_transcribed || []).map(n => `${n} missed`),
       ...(c.rows_not_on_one_line || []).map(r => `row "${r.row}" doesn't match a line`), ...(c.words_not_in_source || []).map(w => `"${w}" not on the page`), ...(c.words_not_transcribed || []).map(w => `"${w}" missed`)];
-    const who = t.final_check ? "Your text" : "Text layer";
-    return c.ok ? `${t.final_check ? "Your text: all" : "All"} ${c.numbers} numbers and the labels match the page's text layer` : `${who}: ${esc(bad.slice(0, 4).join("; "))}${bad.length > 4 ? "…" : ""}`;
+    const mine = t.status === "resolved" ? "The agents' text" : "Your text", who = t.final_check ? mine : "Text layer";
+    return c.ok ? `${t.final_check ? mine + ": all" : "All"} ${c.numbers} numbers and the labels match the page's text layer` : `${who}: ${esc(bad.slice(0, 4).join("; "))}${bad.length > 4 ? "…" : ""}`;
   }
   if (s) return s.ok ? `Two independent reads agree on all ${s.numbers} numbers` : `Reads differ on ${s.differences.length} row(s)`;
   return esc(t.error || "");
+}
+function loopLine(t) {
+  const r = t.resolution; if (!r) return "";
+  const n = r.rounds.length;
+  return r.resolved ? ` · resolved by the agents in round ${n}` : ` · <b style="color:var(--warn)">the agents didn't settle it in ${n} round${n === 1 ? "" : "s"}</b>`;
 }
 function tablesCard() {
   if (!DOC || DOC.loading) return `<h2>Tables</h2><p class="sub">Loading…</p>`;
@@ -505,17 +512,19 @@ function tablesCard() {
   const shown = state.tableFilter === "flagged" && flagged.length ? flagged : ts;
   const sel = ts.find(t => t.id === state.table) || (flagged[0] || null);
   return `<div class="row" style="justify-content:space-between"><div><h2>Tables in ${esc(DOC.filename)}</h2>
-    <p class="sub">${ts.length} found · ${ts.filter(t => ["verified", "approved", "edited"].includes(t.status)).length} verified or approved · ${flagged.length ? `<b style="color:var(--warn)">${flagged.length} to check</b>` : "nothing to check"}</p></div>
+    <p class="sub">${ts.length} found · ${ts.filter(t => ["verified", "approved", "edited"].includes(t.status)).length} verified or approved${ts.some(t => t.status === "resolved") ? ` · ${ts.filter(t => t.status === "resolved").length} resolved by the review loop` : ""} · ${flagged.length ? `<b style="color:var(--warn)">${flagged.length} to check</b>` : "nothing to check"}</p></div>
+    <div class="row">${ts.some(t => t.status === "flagged") && !busy(E.documents.find(x => x.id === DOC.id)?.status) ? `<button class="btn small" id="loopTables" title="The extractor fixes each flagged table against the checks, code re-checks it against the page, and the reviewer checks it against the image">Run the review loop on ${ts.filter(t => t.status === "flagged").length} flagged table(s)</button>` : ""}
+    ${busy(E.documents.find(x => x.id === DOC.id)?.status) ? `<span class="pill info">${esc(E.documents.find(x => x.id === DOC.id)?.step || "Working")}</span>` : ""}</div>
     ${flagged.length ? `<div class="row small"><label><input type="radio" name="tf" value="flagged" ${state.tableFilter === "flagged" ? "checked" : ""}> To check</label><label><input type="radio" name="tf" value="all" ${state.tableFilter !== "flagged" ? "checked" : ""}> All</label></div>` : ""}</div>
   <div class="scroll"><table><thead><tr><th>Table</th><th>Page</th><th>Source</th><th>Status</th><th>Check</th></tr></thead><tbody>
-  ${shown.map(t => `<tr class="click ${sel && sel.id === t.id ? "sel" : ""}" data-t="${esc(t.id)}"><td>${esc(t.title || t.id)}</td><td class="num">${t.page}</td><td class="small">${esc(t.source)}</td><td>${tableStatus(t)}</td><td class="small">${checkLine(t)}</td></tr>`).join("")}</tbody></table></div>
+  ${shown.map(t => `<tr class="click ${sel && sel.id === t.id ? "sel" : ""}" data-t="${esc(t.id)}"><td>${esc(t.title || t.id)}</td><td class="num">${t.page}</td><td class="small">${esc(t.source)}</td><td>${tableStatus(t)}</td><td class="small">${checkLine(t)}${loopLine(t)}</td></tr>`).join("")}</tbody></table></div>
   ${sel ? tableReview(sel) : ""}`;
 }
 function tableReview(t) {
   const img = t.png ? `<img src="/api/documents/${DOC.id}/tables/${encodeURIComponent(t.id)}.png?v=${encodeURIComponent(DOC._stamp)}" alt="Image of table ${esc(t.id)}">` : `<p class="muted">Read straight from the file (no image).</p>`;
   const c = t.final_check || t.check || {}, s = t.second_read;
   const items = [];
-  if (t.final_check) items.push([true, "Checked your settled text against the page:"]);
+  if (t.final_check) items.push([true, t.status === "resolved" ? "Checked the agents' text against the page:" : "Checked your settled text against the page:"]);
   if (c.method === "text layer") {
     items.push([!c.not_in_source?.length, c.not_in_source?.length ? `Not on the page: ${c.not_in_source.join(", ")}` : "Every number is on the page"]);
     items.push([!c.not_transcribed?.length, c.not_transcribed?.length ? `On the page but missing: ${c.not_transcribed.join(", ")}` : "No number on the page was missed"]);
@@ -527,16 +536,26 @@ function tableReview(t) {
   const final = t.final_markdown;
   return `<div style="margin-top:14px;border-top:1px solid var(--rule);padding-top:14px">
   <div class="row" style="justify-content:space-between"><h3 style="margin:0;font-size:15px">${esc(t.title || t.id)} <span class="muted small">page ${t.page} · ${esc(t.source)}</span> ${tableStatus(t)}</h3>
-  <div class="row">${t.status !== "figure" ? `<button class="btn small primary" data-ta="approve">Approve this read</button>${t.second_markdown ? `<button class="btn small" data-ta="use_second">Use reviewer's read</button>` : ""}<button class="btn small" data-ta="edit">Edit</button>${["approved", "edited"].includes(t.status) ? `<button class="btn small ghost" data-ta="reset">Undo</button>` : ""}` : ""}</div></div>
+  <div class="row">${t.status !== "figure" ? `<button class="btn small primary" data-ta="approve">${t.status === "resolved" ? "Approve the agents' text" : "Approve this read"}</button>${t.second_markdown ? `<button class="btn small" data-ta="use_second">Use reviewer's read</button>` : ""}<button class="btn small" data-ta="edit">Edit</button>${["approved", "edited", "resolved"].includes(t.status) ? `<button class="btn small ghost" data-ta="reset">Undo</button>` : ""}` : ""}</div></div>
+  ${tableThread(t)}
   ${items.length ? `<ul class="checks" style="margin:8px 0">${items.map(([ok, txt]) => `<li class="${ok ? "" : "no"}">${esc(txt)}</li>`).join("")}</ul>` : ""}
   <div class="review"><div><div class="small muted">Source image</div>${img}</div>
-  <div><div class="small muted">${final ? "Settled text" : "Transcription"}</div><div class="md">${md(final || t.markdown)}</div>
+  <div><div class="small muted">${final ? (t.status === "resolved" ? "Settled by the agents" : "Settled text") : "Transcription"}</div><div class="md">${md(final || t.markdown)}</div>
   ${s && !s.ok ? `<div class="small muted" style="margin-top:8px">Reviewer's independent read</div><div class="md">${md(t.second_markdown)}</div>
     <div class="small"><b>Differences</b><ul class="why">${s.differences.map(x => `<li>${esc(x.row)}: <span class="mono">${esc(x.first)}</span> vs <span class="mono">${esc(x.second)}</span></li>`).join("")}</ul></div>` : ""}
   <div id="tEdit" hidden><textarea id="tEditText">${esc(final || t.markdown)}</textarea><div class="row" style="margin-top:6px"><button class="btn small primary" id="tSave">Save table</button><button class="btn small" id="tCancel">Cancel</button></div></div>
   </div></div></div>`;
 }
+function tableThread(t) {
+  const r = t.resolution; if (!r || !r.rounds.length) return r?.open ? `<div class="callout warn small" style="margin-top:8px">${esc(r.open.join("; "))}</div>` : "";
+  return `<details ${r.resolved ? "" : "open"} style="margin-top:8px"><summary>Review loop: ${r.resolved ? `resolved in round ${r.rounds.length}` : `not settled after ${r.rounds.length} round(s); over to you`}</summary>
+  <ol class="why" style="color:var(--ink)">${r.rounds.map(x => `<li><b>Round ${x.round}.</b> Problems: ${esc(x.problems.join("; "))}<br><span class="muted">${esc(x.fixer)} fixed:</span> ${esc(x.changes || "")}
+    ${x.check_ok != null ? `<br><span class="muted">Text-layer check:</span> ${x.check_ok ? "passes" : "still fails"}` : ""}${x.agrees_with_second_read != null ? `<br><span class="muted">Matches the independent read:</span> ${x.agrees_with_second_read ? "yes" : "no"}` : ""}
+    ${x.verdict ? `<br><span class="muted">${esc(x.verdict.by === "code" ? "Code" : x.verdict.by)}:</span> ${x.verdict.verdict === "accept" ? "accepts" : "objects"}${x.verdict.problems?.length ? ": " + esc(x.verdict.problems.join("; ")) : ""}` : ""}</li>`).join("")}</ol>
+  ${!r.resolved && r.open ? `<div class="small"><b>Still open:</b> ${esc(r.open.join("; "))}</div>` : ""}</details>`;
+}
 function bindTables() {
+  $("#loopTables")?.addEventListener("click", () => act(() => api(`/api/documents/${DOC.id}/tables/resolve`, {method: "POST"})));
   document.querySelectorAll("#tablesCard [data-t]").forEach(r => r.onclick = () => { state.table = r.dataset.t; $("#tablesCard").innerHTML = tablesCard(); bindTables(); });
   document.querySelectorAll("#tablesCard input[name=tf]").forEach(r => r.onchange = () => { state.tableFilter = r.value; $("#tablesCard").innerHTML = tablesCard(); bindTables(); });
   const sel = () => DOC.doc.tables.find(t => t.id === state.table) || DOC.doc.tables.find(t => ["flagged", "error", "unread"].includes(t.status));
@@ -556,24 +575,31 @@ async function settle(tid, action, markdown) {
 }
 function fillDocMd() { const b = $("#docMdBody"); if (b && DOC?.doc) b.innerHTML = md(DOC.doc.markdown.replace(/<!--.*?-->/g, "")); }
 
+// the agents' state for a fact: agreed (both models and the checks), withdrawn, escalated (over to you) or open
+const agreedFact = f => f.check?.ok && (f.agent ? f.agent.status === "agreed" : f.review?.verdict === "accept");
+const needsYou = f => f.status === "pending" && !agreedFact(f) && f.agent?.status !== "withdrawn";
 const CAT = {identity: "Identity", conclusion: "Valuation conclusions", assumption: "Key assumptions", approach: "Approach and method", sensitivity: "Sensitivities (test points for the rebuild)"};
 function factsCard(d) {
   const fs = E.facts.filter(f => f.document_id === d.id);
   const running = busy(d.facts_status);
   const head = `<div class="row" style="justify-content:space-between"><div><h2>Key facts</h2><p class="sub">Extracted by <b>${esc(E.model)}</b>, reviewed by <b>${esc(E.reviewer_model)}</b> (change them in the header). Approved facts are the reference for the next steps.</p></div>
     <div class="row">${running ? `<span class="pill info">${esc(d.facts_step || "Working")}</span>` : `<button class="btn ${fs.length ? "" : "primary"}" id="runFacts" ${d.n_flagged ? "title='Some tables are still to check; facts quoted from them will be marked.'" : ""}>${fs.length ? "Extract again" : "Extract key facts"}</button>`}
-    ${fs.length ? `<button class="btn primary" id="approvePassed">Approve all that passed (${fs.filter(f => f.status === "pending" && f.check?.ok && f.review?.verdict === "accept").length})</button>` : ""}</div></div>`;
+    ${!running && fs.some(needsYou) ? `<button class="btn" id="loopFacts" title="The extractor answers the reviewer's open points, code re-checks, the reviewer decides again (up to 3 rounds)">Run the review loop on the open facts</button>` : ""}
+    ${fs.length ? `<button class="btn primary" id="approvePassed" title="Every fact both models agree on and that passes the checks">Approve all the agents agreed (${fs.filter(f => f.status === "pending" && agreedFact(f)).length})</button>` : ""}</div></div>`;
   if (d.facts_status === "error") return head + `<div class="callout bad">${esc(d.facts_error)}</div>`;
   if (!fs.length) return head + (running ? `<p class="muted">Reading the report… this takes about a minute.</p>` : (d.n_flagged ? `<div class="callout warn">${d.n_flagged} table(s) still to check. You can extract now; facts quoted from those tables will be marked until they're settled.</div>` : ""));
   const n = {approved: 0, pending: 0, rejected: 0}; fs.forEach(f => n[f.status]++);
-  const attention = fs.filter(f => f.status === "pending" && !(f.check?.ok && f.review?.verdict === "accept")).length;
-  let html = head + `<div class="row small" style="margin-bottom:8px"><span class="pill ok">${n.approved} approved</span><span class="pill">${n.pending} to decide</span>${attention ? `<span class="pill warn">${attention} need attention</span>` : ""}${n.rejected ? `<span class="pill bad">${n.rejected} rejected</span>` : ""}</div>`;
-  if (d.review_summary) html += `<div class="callout info small" style="margin-bottom:10px"><b>Reviewer:</b> ${esc(d.review_summary)}</div>`;
+  const nAgreed = fs.filter(f => f.status === "pending" && agreedFact(f)).length, nYou = fs.filter(needsYou).length;
+  const nWithdrawn = fs.filter(f => f.status === "pending" && f.agent?.status === "withdrawn").length;
+  let html = head + `<div class="row small" style="margin-bottom:8px"><span class="pill ok">${n.approved} approved</span>${nAgreed ? `<span class="pill ok">${nAgreed} agreed by the agents</span>` : ""}${nYou ? `<span class="pill warn">${nYou} need you</span>` : ""}${nWithdrawn ? `<span class="pill">${nWithdrawn} withdrawn by the agents</span>` : ""}${n.rejected ? `<span class="pill bad">${n.rejected} rejected</span>` : ""}</div>`;
+  const L = d.loop || {};
+  if (L.facts) html += `<div class="callout info small" style="margin-bottom:8px"><b>Review loop:</b> ${L.facts.rounds ? `${L.facts.rounds} round(s); ${L.facts.settled_in_loop} fact(s) settled between the agents` : "the reviewer and the checks agreed with every fact at first reading"}${L.facts.escalated ? `; ${L.facts.escalated} they couldn't settle are over to you (shown first below)` : ""}.${lessonNote(L.lessons_facts)}</div>`;
+  if (d.review_summary) html += `<div class="callout info small" style="margin-bottom:10px"><b>Reviewer, first reading:</b> ${esc(d.review_summary)}</div>`;
   for (const [cat, label] of Object.entries(CAT)) {
-    const rows = fs.filter(f => f.category === cat); if (!rows.length) continue;
+    const rows = fs.filter(f => f.category === cat).sort((a, b) => needsYou(b) - needsYou(a)); if (!rows.length) continue;
     const collapsed = cat === "sensitivity";
     html += `<details ${collapsed ? "" : "open"} style="margin-top:10px"><summary style="font-size:14px;color:var(--ink);font-weight:600">${label} <span class="muted small">(${rows.length})</span></summary>
-    <div class="scroll"><table><thead><tr><th>Item</th><th>Value</th><th>Source</th><th>Checks</th><th>Reviewer</th><th>Decision</th></tr></thead><tbody>${rows.map(factRow).join("")}</tbody></table></div></details>`;
+    <div class="scroll"><table><thead><tr><th>Item</th><th>Value</th><th>Source</th><th>Checks</th><th>Review loop</th><th>Decision</th></tr></thead><tbody>${rows.map(factRow).join("")}</tbody></table></div></details>`;
   }
   return html;
 }
@@ -596,11 +622,61 @@ function factRow(f) {
     <td><b>${esc(v.value_text)}</b>${range}${v.basis ? `<div class="small muted">${esc(v.basis)}</div>` : ""}</td>
     <td class="small">p. ${esc(v.page ?? "?")}<div class="quote">${esc((v.quote || "").slice(0, 220))}</div></td>
     <td><ul class="checks">${(ch.items || []).map(i => `<li class="${i.ok ? "" : "no"}">${esc(i.text)}</li>`).join("")}</ul></td>
-    <td class="small">${rv.verdict ? `<span class="pill ${verdict}">${esc(rv.verdict)}</span>` : ""} ${esc(rv.reason || "")}
-      ${sug ? `<div class="small" style="margin-top:4px"><b>Suggests:</b> ${esc(sug.value_text)}${sug.low_text ? ` (${esc(sug.low_text)} – ${esc(sug.high_text)})` : ""}${sug.basis ? `, ${esc(sug.basis)}` : ""}, p. ${esc(sug.page)} ${sug.check?.ok ? `<span class="pill ok">checks pass</span>` : `<span class="pill warn">checks fail</span>`}</div>` : ""}</td>
+    <td class="small">${factLoop(f, rv, verdict)}
+      ${sug && !agreedFact(f) ? `<div class="small" style="margin-top:4px"><b>Reviewer suggests:</b> ${esc(sug.value_text)}${sug.low_text ? ` (${esc(sug.low_text)} – ${esc(sug.high_text)})` : ""}${sug.basis ? `, ${esc(sug.basis)}` : ""}, p. ${esc(sug.page)} ${sug.check?.ok ? `<span class="pill ok">checks pass</span>` : `<span class="pill warn">checks fail</span>`}</div>` : ""}</td>
     <td>${decision}</td></tr>${edit}`;
 }
+function factLoop(f, rv, verdict) {
+  const a = f.agent;
+  if (!a) return `${rv.verdict ? `<span class="pill ${verdict}">${esc(rv.verdict)}</span>` : ""} ${esc(rv.reason || "")}`;
+  const last = a.thread[a.thread.length - 1] || {}, st = a.status;
+  const pill = st === "agreed" ? `<span class="pill ok">Agreed${a.round ? ` in round ${a.round}` : ""}</span>` : st === "withdrawn" ? `<span class="pill">Withdrawn in round ${a.round}</span>`
+    : st === "escalated" ? `<span class="pill warn">Needs you</span>` : `<span class="pill">${esc(st)}</span>`;
+  const why = st === "escalated" ? a.open?.reason : last.reviewer?.reason;
+  const rounds = a.thread.length > 1 ? `<details style="margin-top:4px"><summary>${a.thread.length - 1} round(s)</summary><ol class="why" style="color:var(--ink)" start="0">${a.thread.map(x => `<li>${x.round === 0
+      ? `<span class="muted">First reading:</span> reviewer ${esc(x.reviewer?.verdict || "")}${x.reviewer?.reason ? ": " + esc(x.reviewer.reason) : ""}${x.checks_failed?.length ? `; checks: ${esc(x.checks_failed.join("; "))}` : ""}`
+      : `<span class="muted">Extractor</span> ${esc(x.extractor.action)}s${x.fact ? ` → <b>${esc(x.fact.value_text)}</b> p. ${esc(x.fact.page)}` : ""}: ${esc(x.extractor.reason)}<br><span class="muted">Reviewer</span> ${x.reviewer.verdict === "accept" ? "accepts" : "objects"}: ${esc(x.reviewer.reason)}${x.checks_failed?.length ? `<br><span class="muted">Checks still fail:</span> ${esc(x.checks_failed.join("; "))}` : ""}`}</li>`).join("")}</ol></details>` : "";
+  return `${pill} ${esc(why || "")}${rounds}`;
+}
+function lessonNote(l) {
+  if (!l) return "";
+  if (l.error) return ` Learning step failed: ${esc(l.error)}`;
+  const bits = [l.added?.length && `learned ${l.added.join(", ")}`, l.reinforced?.length && `confirmed ${l.reinforced.join(", ")}`, l.refined?.length && `refined ${l.refined.join(", ")}`,
+    l.dropped?.length && `dropped ${l.dropped.length} that weren't anonymous`].filter(Boolean);
+  return bits.length ? ` <b>Lessons:</b> ${bits.join("; ")} (see below).` : "";
+}
+// ---- what the agents have learned (lessons.py) ----
+let LESSONS = null, lessonsSeq = 0;
+function lessonsCard() {
+  if (!LESSONS) { loadLessons(); return `<h2>What the agents have learned</h2><p class="sub">Loading…</p>`; }
+  const cur = LESSONS.curated, learned = LESSONS.learned.slice().sort((a, b) => (a.status === "retired") - (b.status === "retired") || b.seen - a.seen || b.last - a.last);
+  const when = t => new Date(t * 1000).toLocaleDateString(undefined, {day: "numeric", month: "short"});
+  return `<h2>What the agents have learned</h2><p class="sub">Rules every report agent reads on every run: the table reader, the extractor, the reviewer and both sides of the review loop. After each loop the reviewer writes down what went wrong and how it was fixed, as method only: code rejects any lesson that names the engagement or carries a figure. Learned lessons stay on this machine (out/lessons.json); promote one to add it to <span class="mono">${esc(LESSONS.rules_file)}</span> in the repo.</p>
+  ${cur.length ? `<details><summary>${cur.length} curated rule(s) in ${esc(LESSONS.rules_file)}</summary><ul class="why" style="color:var(--ink)">${cur.map(r => `<li><b>${esc(r.id)}</b> <span class="pill">${esc(r.scope)}</span> ${esc(r.rule)}</li>`).join("")}</ul></details>` : ""}
+  ${learned.length ? `<div class="scroll" style="margin-top:8px"><table><thead><tr><th>ID</th><th>For</th><th>Lesson</th><th class="num">Seen</th><th class="num">Applied</th><th>Last</th><th></th></tr></thead><tbody>
+  ${learned.map(x => `<tr class="${x.status === "retired" ? "muted" : ""}"><td class="mono">${esc(x.id)}</td><td><span class="pill">${esc(x.scope)}</span></td><td>${esc(x.rule)}<div class="small muted">Why: ${esc(x.why)}</div>${x.promoted_to ? `<div class="small">Promoted to ${esc(x.promoted_to)}</div>` : ""}</td>
+    <td class="num" title="loops that taught or confirmed it">${x.seen}</td><td class="num" title="times an agent said it applied it">${x.applied || 0}</td><td class="small nowrap">${when(x.last)}</td>
+    <td class="nowrap">${x.status === "active" ? `<button class="btn small ghost" data-lesson="${esc(x.id)}" data-la="promote">Promote</button><button class="btn small ghost" data-lesson="${esc(x.id)}" data-la="retire">Retire</button>` : x.promoted_to ? "" : `<button class="btn small ghost" data-lesson="${esc(x.id)}" data-la="restore">Restore</button>`}</td></tr>`).join("")}</tbody></table></div>`
+    : `<p class="small muted" style="margin:8px 0 0">Nothing learned yet: lessons appear after a review loop settles something.</p>`}`;
+}
+async function loadLessons() {
+  const seq = ++lessonsSeq;
+  try { const l = await api("/api/lessons"); if (seq !== lessonsSeq) return; LESSONS = l; } catch (e) { return; }
+  const c = $("#lessonsCard"); if (c) { c.innerHTML = lessonsCard(); bindLessons(); }
+}
+function bindLessons() {
+  document.querySelectorAll("#lessonsCard [data-lesson]").forEach(b => b.onclick = async () => {
+    const a = b.dataset.la;
+    if (a === "promote" && !confirm(`Add ${b.dataset.lesson} to ${LESSONS.rules_file}? It's in the repo, so read it before committing.`)) return;
+    try { LESSONS = await api(`/api/lessons/${encodeURIComponent(b.dataset.lesson)}`, {method: "PUT", body: {action: a}}); } catch (e) { toast(e.message, 6000); }
+    $("#lessonsCard").innerHTML = lessonsCard(); bindLessons();
+  });
+}
 bind.reference = () => {
+  bindLessons();
+  const d0 = E.documents.find(x => x.id === state.doc), stamp = JSON.stringify(d0?.loop || null);
+  if (state.lessonStamp !== stamp) { state.lessonStamp = stamp; loadLessons(); }  // a loop just learned something
+  $("#loopFacts")?.addEventListener("click", () => act(() => api(`/api/documents/${state.doc}/facts/resolve`, {method: "POST"})));
   $("#docSel")?.addEventListener("change", e => { state.doc = +e.target.value; state.table = null; render(); });
   if (DOC && !DOC.loading && DOC.id === state.doc) { $("#tablesCard").innerHTML = tablesCard(); bindTables(); }
   $("#docMd").ontoggle = fillDocMd;

@@ -168,6 +168,42 @@ async def run_facts(did: int):
     return {"ok": True}
 
 
+@app.post("/api/documents/{did}/tables/resolve")
+async def resolve_tables(did: int):
+    """Run the review and remediation loop on the document's flagged tables."""
+    await _run(lambda: engagement.resolve_tables(did) or True)
+    return {"ok": True}
+
+
+@app.post("/api/documents/{did}/facts/resolve")
+async def resolve_facts(did: int):
+    """Run the review and remediation loop on the facts the agents haven't settled."""
+    await _run(lambda: engagement.resolve_facts(did) or True)
+    return {"ok": True}
+
+
+@app.get("/api/lessons")
+async def get_lessons():
+    """What the report agents have learned: curated rules (docs/report_rules.md) and learned lessons."""
+    return await _run(engagement.lessons_view)
+
+
+class LessonChange(BaseModel):
+    action: str  # retire | restore | promote
+
+
+@app.put("/api/lessons/{lid}")
+async def put_lesson(lid: str, body: LessonChange):
+    import lessons
+    if body.action == "promote":
+        await _run(lessons.promote, lid)
+    elif body.action in ("retire", "restore"):
+        await _run(lessons.set_status, lid, "retired" if body.action == "retire" else "active")
+    else:
+        raise HTTPException(400, "action must be retire, restore or promote")
+    return await _run(engagement.lessons_view)
+
+
 class FactDecision(BaseModel):
     action: str  # approve | use_suggestion | edit | reject | reset
     fields: dict | None = None

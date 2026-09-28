@@ -128,14 +128,34 @@ steps, each checked by a person before the next relies on it:
    Every table is cropped, rendered at 200 dpi and transcribed by a vision model, then checked. A table with a text
    layer must match it (every number on the page, each row's numbers on one line in order, the same label words,
    so "$m" for "A$m" is caught). A picture-only table gets a second, independent read by the reviewer model,
-   compared number by number. PPTX tables and chart data are read from the file. Anything that fails is "Check": the
-   page shows the image beside the transcription, and the person approves, takes the reviewer's read or edits
-   it. Edits are re-checked against the page.
+   compared number by number. PPTX tables and chart data are read from the file. A table that fails goes through the
+   **review loop** (below); anything the loop can't settle is "Check": the page shows the image beside the
+   transcription and every round, and the person approves, takes the reviewer's read or edits it. Edits are
+   re-checked against the page.
 2. **Report reference.** `bench/reportfacts.py` extracts the target, valuation date, conclusions (preferred value and
    range), assumptions (discount rate and basis, terminal growth or exit / RAB multiple, ...), approach and the
    sensitivity grid, each with a page and a verbatim quote. Code checks each one: the quote is on that page, the
    values are in the quote, and quotes from unsettled tables are marked. A reviewer model accepts, corrects or
-   rejects each fact and lists what was missed. The person approves, takes a correction, edits or rejects.
+   rejects each fact and lists what was missed. Every fact still open then goes through the review loop. The
+   person approves what the agents agreed in one click, and decides what they escalated (edit, take the reviewer's
+   latest correction, or reject).
+
+   **The review loop** (`docingest.resolve_tables`, `reportfacts.resolve`) lets the two models settle problems
+   between themselves, up to three rounds. The extractor (gpt-6-luna) answers each open point: it revises, keeps
+   or withdraws a fact with a reason, or corrects a table transcription. Code re-checks the answer (a table
+   against the page's text layer, a fact's quote against its page), and the reviewer (gpt-6-sol) accepts or
+   objects again. A fact is "agreed" only when the reviewer accepts and the checks pass. What the models can't
+   settle goes to the person with both positions and every round.
+
+   **What the agents learn** (`bench/lessons.py`). After each loop the reviewer turns what went wrong and how it was
+   fixed into rules about method: where to look, how to read, what to check. Code enforces the anonymity. A
+   lesson that names anything from the engagement or carries a figure is sent back once to be rewritten, then
+   dropped. That covers the target, project, client and file names, and the report's own names (words capitalised
+   mid-sentence). A lesson the loop confirms again is reinforced rather than repeated. The agents cite the rule
+   IDs they apply, so each lesson shows how often it was used. Every report prompt reads the rules fresh: the
+   table reads, extraction, review and both sides of the loop. Curated rules (R1, R2, ...) live in
+   `docs/report_rules.md` in the repo. Learned lessons (L1, L2, ...) stay on each machine in `out/lessons.json`.
+   The page lists both, and a person can retire a lesson or promote it into the rules file.
 3. **Roles** (`bench/roles.py`). The overlay is picked as a sheet list, because it sometimes sits inside a copy of
    the client model. An overlay sheet holds the report's conclusions or valuation-only assumptions (label and value
    must both agree), or a DCF that `valuation.py` reproduces, or reads such a sheet. The prior client model is
@@ -147,7 +167,11 @@ steps, each checked by a person before the next relies on it:
 5. **Map** (`bench/linkmap.py`). The chain runs report figure → overlay cell (matched to the printed precision,
    allowing for A$m vs A$ and sign), then overlay row → prior client row (external link or same-workbook
    reference), then the same line item in the current model, with values for the same periods. The overlay's
-   DCFs are also recomputed in Python.
+   DCFs are also recomputed in Python. **Inside each model** gives a dashboard for the prior overlay, the prior
+   client model and the current client model (`bench/modeldash.py`, the same views as the separate model
+   dashboard): formula cells and inputs by sheet, which sheets feed which, the most-read rows, sheets, searchable
+   line items and named ranges. Rows the map or the Python overlay uses are tagged: report figures, levers,
+   outputs, the client rows the overlay reads and this year's matches.
 
 6. **Python overlay** (`bench/overlay.py`). The overlay sheets are compiled into a Python module, and three checks
    show it reproduces them:
@@ -165,6 +189,21 @@ steps, each checked by a person before the next relies on it:
    that can't be matched are listed, not zeroed. Each output shows its Python function and the client values it
    reads. The module is saved as `out/overlays/e<id>/overlay.py`; open it from the page, or run it from a terminal:
    `uv run python bench/overlay.py <id> --mode current --set Val_Inputs!C5=0.075`.
+
+   The step has three tabs, bringing the Model Desk's tools to the live module:
+   - **Run it live**: the feeds, levers and inputs above.
+   - **Valuation (DCF)**: the Model Desk's Validate step on the overlay's saved values, then the same DCF on the
+     module's own numbers. It uses the feed and input changes from Run it live and is checked against the
+     module's anchor cell. The module and `dcf.py` are separate calculations, so their agreement checks both. It
+     can also run under another discounting method: rate, valuation date, end or mid period, day count, cut-off,
+     bridge items and low / high rates, with the cumulative PV chart. This adds the cash-flow levers (growth,
+     CPI, the roll-forward) that the Model Desk's Scenarios step couldn't reach. `rodb.patched()` shows the
+     module's values to `dcf.py` through a temporary view over model.db.
+   - **Ask**: the Model Desk's chat agent (`bench/overlay_chat.py` on `bench/agent.py`). It has the workbook tools
+     on any of the three workbooks, and tools that run the overlay: `overlay_run`, `overlay_chart` (a row saved
+     vs recomputed, several feeds on one chart), `overlay_dcf`, `overlay_formula` and `overlay_inputs`. It knows
+     the report's key facts, the levers, the outputs and the feeds. Charts go through the same chart review as
+     on the Model Desk.
 
 All model calls run on Azure Foundry through `bench/llm.py`: gpt-6-luna extracts and reads tables, gpt-6-sol reviews
 (second reads of picture tables, fact review), and both can be changed per engagement in the header. Calls are logged

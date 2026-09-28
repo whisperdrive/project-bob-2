@@ -26,6 +26,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import lessons
+
 DPI = 200
 MIN_IMAGE_PT = (150, 60)  # smaller embedded images are logos / icons
 MIN_PICTURE_PX = (300, 90)
@@ -36,10 +38,44 @@ exactly as one GitHub-flavoured Markdown table: every row and column, numbers ex
 separators, decimals, %, currency symbols and brackets for negatives), empty cells left empty, a header row
 first (repeat a merged header in each column it spans). Put the table's caption or title, if one is visible,
 in title. If it isn't a table (a chart, photo, logo or diagram), set is_table false, markdown "" and describe it
-in one sentence."""
+in one sentence.
+
+Rules learned from earlier reviews (apply where relevant):
+{rules}"""
 PAGE_PROMPT = """This is {where} of a valuation report, as an image. Transcribe it to Markdown: headings as ###,
 paragraphs as text, bullet lists as lists, and every table as a GitHub-flavoured Markdown table with numbers
-exactly as printed. Don't summarise or add commentary. Put "" in title if there's no heading."""
+exactly as printed. Don't summarise or add commentary. Put "" in title if there's no heading.
+
+Rules learned from earlier reviews (apply where relevant):
+{rules}"""
+FIX_PROMPT = """You transcribed the table in this image, cut from {where} of a valuation report, and checks found the
+problems below. Look at the image again and correct the transcription so it matches the image exactly: every
+row and column, numbers exactly as printed (thousands separators, decimals, %, currency symbols, brackets for
+negatives), headings and units as printed, empty cells left empty, a header row first. Return the whole table.
+{page_text}
+Problems:
+{problems}
+
+Your transcription:
+{markdown}
+
+Rules learned from earlier reviews (list the IDs you apply in rules_applied):
+{rules}"""
+VERIFY_PROMPT = """You are the reviewer. Another model transcribed the table in this image, cut from {where} of a
+valuation report, and has just corrected it for the problems below. Check the transcription against the image:
+for the rows and headings involved, every number, label and unit must match the image and each value must sit
+under the right column. Accept only if it does; otherwise object and list what is still wrong (the row, what the
+transcription says and what the image shows).
+
+Problems it was corrected for:
+{problems}
+
+Transcription:
+{markdown}
+
+Rules learned from earlier reviews (list the IDs you apply in rules_applied):
+{rules}"""
+MAX_ROUNDS = 3
 _S = {"type": "string"}
 _READ = {"type": "json_schema", "name": "table_read", "strict": True, "schema": {
     "type": "object", "additionalProperties": False, "required": ["is_table", "title", "markdown", "description"],
@@ -47,6 +83,15 @@ _READ = {"type": "json_schema", "name": "table_read", "strict": True, "schema": 
 _PAGE = {"type": "json_schema", "name": "page_read", "strict": True, "schema": {
     "type": "object", "additionalProperties": False, "required": ["title", "markdown"],
     "properties": {"title": _S, "markdown": _S}}}
+_IDS = {"type": "array", "items": _S}
+_FIX = {"type": "json_schema", "name": "table_fix", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False, "required": ["markdown", "changes", "rules_applied"],
+    "properties": {"markdown": _S, "changes": _S, "rules_applied": _IDS}}}
+_PROBLEM = {"type": "object", "additionalProperties": False, "required": ["row", "issue"], "properties": {"row": _S, "issue": _S}}
+_VERIFY = {"type": "json_schema", "name": "table_verify", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False, "required": ["verdict", "problems", "rules_applied"],
+    "properties": {"verdict": {"type": "string", "enum": ["accept", "object"]},
+                   "problems": {"type": "array", "items": _PROBLEM}, "rules_applied": _IDS}}}
 
 
 # ---- numbers ------------------------------------------------------------------------------------------------
@@ -166,12 +211,24 @@ class Reader:
         return json.loads(r.output_text)
 
     def table(self, png: bytes, where: str, second: bool = False) -> dict:
-        return self._call(self.reviewer_model if second else self.model, READ_PROMPT.format(where=where), png, _READ,
+        return self._call(self.reviewer_model if second else self.model,
+                          READ_PROMPT.format(where=where, rules=lessons.rules_text("tables")), png, _READ,
                           "doc-review" if second else "doc-table")
 
     def page(self, png: bytes, where: str, second: bool = False) -> dict:
-        return self._call(self.reviewer_model if second else self.model, PAGE_PROMPT.format(where=where), png, _PAGE,
+        return self._call(self.reviewer_model if second else self.model,
+                          PAGE_PROMPT.format(where=where, rules=lessons.rules_text("tables")), png, _PAGE,
                           "doc-review" if second else "doc-page")
+
+    def fix(self, png: bytes, where: str, problems: list[str], markdown: str, page_lines: list[str] | None) -> dict:
+        page_text = ("\nThe page's own text inside the table (exact characters; the reading order may differ from the "
+                     "layout):\n" + "\n".join(page_lines) + "\n") if page_lines else ""
+        return self._call(self.model, FIX_PROMPT.format(where=where, page_text=page_text, problems="\n".join(
+            f"- {p}" for p in problems), markdown=markdown, rules=lessons.rules_text("tables")), png, _FIX, "doc-fix")
+
+    def verify(self, png: bytes, where: str, problems: list[str], markdown: str) -> dict:
+        return self._call(self.reviewer_model, VERIFY_PROMPT.format(where=where, problems="\n".join(
+            f"- {p}" for p in problems), markdown=markdown, rules=lessons.rules_text("tables")), png, _VERIFY, "doc-verify")
 
 
 def _png(img) -> bytes:
@@ -194,6 +251,100 @@ def read_and_check(reader: Reader, t: dict, png: bytes, text_lines: list[str] | 
     return {**t, "is_table": True, "title": first.get("title") or None, "markdown": first["markdown"],
             "second_markdown": second["markdown"], "check": check, "second_read": agree,
             "status": "verified" if ok else "flagged"}
+
+
+# ---- the review and remediation loop for flagged tables ------------------------------------------------------
+# The first reader fixes its transcription against the problems found; code re-checks it against the page's text
+# layer where there is one (that check is the ground truth for characters); the reviewer model then checks the
+# fix against the image. Up to MAX_ROUNDS; what still fails stays flagged for a person, with every round shown.
+
+def problems(t: dict) -> list[str]:
+    """A flagged table's problems, in words for the fixer."""
+    c, s, out = t.get("final_check") or t.get("check"), t.get("second_read"), []
+    if c and c.get("method") == "text layer" and not c.get("ok"):
+        if c.get("not_in_source"):
+            out.append("numbers in your transcription that aren't on the page: " + ", ".join(c["not_in_source"]))
+        if c.get("not_transcribed"):
+            out.append("numbers on the page missing from your transcription: " + ", ".join(c["not_transcribed"]))
+        if c.get("rows_not_on_one_line"):
+            out.append("rows whose numbers don't appear, in this order, on one line of the page: "
+                       + "; ".join(r["row"] for r in c["rows_not_on_one_line"]))
+        if c.get("words_not_in_source"):
+            out.append("words in your transcription that aren't on the page: " + ", ".join(c["words_not_in_source"]))
+        if c.get("words_not_transcribed"):
+            out.append("words on the page missing from your transcription (check headings and units): "
+                       + ", ".join(c["words_not_transcribed"]))
+        if not c.get("numbers"):
+            out.append("no numbers were transcribed")
+    elif s and not s.get("ok"):
+        out.append("an independent read of the image differs on these rows; re-read them cell by cell: "
+                   + "; ".join(d["row"] for d in s["differences"]))
+    return out
+
+
+def resolve_table(reader: Reader, t: dict, png: bytes, rounds: int = MAX_ROUNDS) -> dict:
+    """Run the loop on one flagged table; updates t (status "resolved" if the agents settle it) and returns the
+    episode for the lessons."""
+    issues, md = problems(t), t.get("final_markdown") or t.get("markdown") or ""
+    lines = t.get("text_lines")
+    thread = []
+    resolved = False
+    for k in range(1, rounds + 1):
+        if not issues:
+            break
+        fix = reader.fix(png, t["where"], issues, md, lines)
+        lessons.applied(fix["rules_applied"])
+        rec = {"round": k, "problems": issues, "fixer": reader.model, "changes": fix["changes"]}
+        md = fix["markdown"]
+        chk = check_text_layer(md, lines) if lines else None
+        if chk is not None:
+            rec["check_ok"] = chk["ok"]
+            if not chk["ok"]:  # the page's text says it's still wrong: back to the fixer, no review needed
+                issues = problems({"check": chk})
+                rec["verdict"] = {"by": "code", "verdict": "object", "problems": issues}
+                thread.append(rec)
+                continue
+        elif t.get("second_markdown"):
+            rec["agrees_with_second_read"] = compare_reads(md, t["second_markdown"])["ok"]
+        ver = reader.verify(png, t["where"], issues, md)
+        lessons.applied(ver["rules_applied"])
+        rec["verdict"] = {"by": reader.reviewer_model, "verdict": ver["verdict"],
+                          "problems": [f"{p['row']}: {p['issue']}" for p in ver["problems"]]}
+        thread.append(rec)
+        if ver["verdict"] == "accept":
+            resolved = True
+            t.update(status="resolved", final_markdown=md, final_check=chk)
+            break
+        issues = rec["verdict"]["problems"] or ["the reviewer objected without saying where; re-read every row"]
+    t["resolution"] = {"resolved": resolved, "rounds": thread, "open": None if resolved else issues}
+    return {"source": t["source"], "text_layer": bool(lines), "rounds": thread, "outcome": "resolved" if resolved else "escalated"}
+
+
+def resolve_tables(doc: dict, out_dir: str | Path, model: str, reviewer_model: str, progress=None, on_usage=None) -> dict:
+    """The loop on every flagged table of a read document. Returns {"resolved", "escalated", "episodes"}."""
+    progress = progress or (lambda frac, msg: None)
+    todo = [t for t in doc["tables"] if t.get("status") == "flagged" and t.get("png")]
+    if not todo:
+        return {"resolved": 0, "escalated": 0, "episodes": []}
+    reader = Reader(model, reviewer_model, on_usage)
+    done, episodes = 0, []
+
+    def one(t):
+        try:
+            return resolve_table(reader, t, (Path(out_dir) / t["png"]).read_bytes())
+        except Exception as e:  # the table stays flagged for a person
+            t["resolution"] = {"resolved": False, "rounds": [], "open": [f"the loop failed: {type(e).__name__}: {e}"]}
+            return None
+
+    with ThreadPoolExecutor(READERS) as pool:
+        for ep in pool.map(one, todo):
+            done += 1
+            progress(done / len(todo), f"Review loop: {done} of {len(todo)} flagged tables")
+            if ep:
+                episodes.append(ep)
+    doc["markdown"] = render(doc)
+    n = sum(t.get("status") == "resolved" for t in todo)
+    return {"resolved": n, "escalated": len(todo) - n, "episodes": episodes}
 
 
 # ---- PDF ----------------------------------------------------------------------------------------------------

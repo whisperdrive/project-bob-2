@@ -3,7 +3,9 @@
   1. upload     workbooks go through the Model Desk pipeline (library.py: fingerprint, build, identify) and are
                 shared with it; reports (PDF / PPTX) are read here by docingest.py, tables checked
   2. reference  reportfacts.py extracts the report's key facts, checks them in code and has a reviewer model
-                review them; a person approves, edits or rejects each one
+                review them; flagged tables and open facts go through a review and remediation loop between the
+                two models (docingest.resolve_tables, reportfacts.resolve), whose lessons are kept anonymised
+                for next time (lessons.py); a person approves, edits or rejects each fact
   3. roles      roles.py suggests prior report / prior client model / prior overlay / current client model
                 (the overlay as a sheet list, since it can sit inside the client model); a person confirms
   4. compare    diff.py between the prior and current client models (overlay sheets left out)
@@ -30,6 +32,7 @@ import diff as diffmod
 import docingest
 import extlinks
 import library
+import lessons
 import linkmap
 import reportfacts
 import rodb
@@ -56,12 +59,12 @@ CREATE TABLE IF NOT EXISTS eng_files(engagement_id INT, file_id INT, added_at RE
 CREATE TABLE IF NOT EXISTS documents(id INTEGER PRIMARY KEY, engagement_id INT, sha256 TEXT, filename TEXT, kind TEXT,
   size INT, uploaded_at REAL, source_path TEXT, out_dir TEXT, status TEXT, step TEXT, pct REAL, error TEXT,
   pages INT, n_tables INT, n_flagged INT, doc_json TEXT, processed_at REAL,
-  facts_status TEXT, facts_step TEXT, facts_error TEXT, facts_notes TEXT, review_summary TEXT,
+  facts_status TEXT, facts_step TEXT, facts_error TEXT, facts_notes TEXT, review_summary TEXT, loop_json TEXT,
   UNIQUE(engagement_id, sha256));
 CREATE TABLE IF NOT EXISTS facts(id INTEGER PRIMARY KEY, engagement_id INT, document_id INT, n INT, category TEXT,
   key TEXT, label TEXT, value_text TEXT, low_text TEXT, high_text TEXT, value REAL, unit TEXT, basis TEXT, page INT,
   quote TEXT, origin TEXT, check_json TEXT, review_json TEXT, status TEXT DEFAULT 'pending', final_json TEXT,
-  updated_at REAL);
+  updated_at REAL, agent_json TEXT);
 CREATE TABLE IF NOT EXISTS roles(engagement_id INT, role TEXT, kind TEXT, ref_id INT, sheets_json TEXT, why_json TEXT,
   confirmed INT DEFAULT 0, PRIMARY KEY(engagement_id, role));
 """
@@ -77,6 +80,9 @@ def _conn() -> sqlite3.Connection:
     for col in ("overlay_status", "overlay_step", "overlay_error", "overlay_json"):  # databases made before step 6
         if col not in have:
             db.execute(f"ALTER TABLE engagements ADD COLUMN {col} TEXT")
+    for table, col in (("facts", "agent_json"), ("documents", "loop_json")):  # ... and before the review loop
+        if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
     return db
 
 
@@ -155,14 +161,17 @@ def workbooks(eid: int) -> list[dict]:
 
 def documents(eid: int) -> list[dict]:
     cols = ("id, engagement_id, filename, kind, size, uploaded_at, status, step, pct, error, pages, n_tables, n_flagged, "
-            "processed_at, facts_status, facts_step, facts_error, facts_notes, review_summary")
-    return _q(f"SELECT {cols} FROM documents WHERE engagement_id=? ORDER BY uploaded_at", eid)
+            "processed_at, facts_status, facts_step, facts_error, facts_notes, review_summary, loop_json")
+    out = _q(f"SELECT {cols} FROM documents WHERE engagement_id=? ORDER BY uploaded_at", eid)
+    for d in out:
+        d["loop"] = json.loads(d.pop("loop_json") or "null")
+    return out
 
 
 def facts(eid: int) -> list[dict]:
     out = []
     for f in _q("SELECT * FROM facts WHERE engagement_id=? ORDER BY document_id, n", eid):
-        for k in ("check_json", "review_json", "final_json"):
+        for k in ("check_json", "review_json", "final_json", "agent_json"):
             f[k.removesuffix("_json")] = json.loads(f.pop(k) or "null")
         out.append(f)
     return out
@@ -177,7 +186,8 @@ def reference(eid: int) -> list[dict]:
     if approved:
         return approved
     return [{**{k: f[k] for k in ("id", *FACT_FIELDS)}, "approved": False} for f in fs
-            if f["status"] != "rejected" and (f["check"] or {}).get("ok")]
+            if f["status"] != "rejected" and (f["check"] or {}).get("ok")
+            and (f["agent"] or {}).get("status") != "withdrawn"]
 
 
 def roles(eid: int) -> dict:
@@ -386,14 +396,138 @@ def set_fact(fact_id: int, action: str, fields: dict | None = None) -> dict:
     return next(x for x in facts(f["engagement_id"]) if x["id"] == fact_id)
 
 
+def agreed(f: dict) -> bool:
+    """Both models agree on the fact and the code checks pass (the review loop's outcome, or, for facts from
+    before the loop, the reviewer's accept)."""
+    a = f.get("agent")
+    ok = (f.get("check") or {}).get("ok")
+    return bool(ok and (a["status"] == "agreed" if a else (f.get("review") or {}).get("verdict") == "accept"))
+
+
 def approve_passed(eid: int) -> int:
-    """Approve every pending fact that passed the code checks and that the reviewer accepted as extracted."""
+    """Approve every pending fact the agents agreed on and that passes the code checks."""
     n = 0
     for f in facts(eid):
-        if f["status"] == "pending" and (f["check"] or {}).get("ok") and (f["review"] or {}).get("verdict") == "accept":
+        if f["status"] == "pending" and agreed(f):
             set_fact(f["id"], "approve")
             n += 1
     return n
+
+
+# ---- the review loop and its lessons --------------------------------------------------------------------------
+
+def _names(eid: int, did: int | None = None) -> list[str]:
+    """What identifies this engagement, for the lessons' anonymity check: its name, file names, targets and the
+    report's identity facts."""
+    e = _q("SELECT name FROM engagements WHERE id=?", eid)
+    out = [e[0]["name"]] if e else []
+    out += [d["filename"] for d in documents(eid)]
+    for w in workbooks(eid):
+        out += [w["filename"], w.get("target_name"), w.get("project_name")]
+    out += [f["value_text"] for f in facts(eid) if f["category"] == "identity"
+            and re.search(r"name|client|target|project|asset|company|vendor|purchaser|owner", f["key"] or "")]
+    return [x for x in out if x]
+
+
+def _learn(did: int, scope: str, episodes: list[dict]) -> dict | None:
+    """Distil a loop's episodes into lessons (reviewer model), and note the result on the document."""
+    if not episodes:
+        return None
+    d = _doc(did)
+    eid = d["engagement_id"]
+    e = _q("SELECT reviewer_model FROM engagements WHERE id=?", eid)[0]
+    md = json.loads(d["doc_json"] or "{}").get("markdown", "")
+    try:
+        got = lessons.distil(scope, episodes, _names(eid, did), md, e["reviewer_model"] or DEFAULT_REVIEWER,
+                             _logger(eid), engagement=eid)
+    except Exception as ex:  # learning is a bonus: never fail the step for it
+        traceback.print_exc()
+        got = {"error": friendly(ex)}
+    _note_loop(did, **{f"lessons_{scope}": got})
+    return got
+
+
+def _note_loop(did: int, **fields) -> None:
+    d = _q("SELECT loop_json FROM documents WHERE id=?", did)
+    loop = json.loads((d[0]["loop_json"] if d else None) or "{}")
+    loop.update(fields)
+    _set("documents", did, loop_json=json.dumps(loop, default=str))
+
+
+def resolve_tables(did: int) -> None:
+    d = _doc(did)
+    if d["status"] != "done":
+        raise ValueError("the document hasn't been read yet")
+    _set("documents", did, status="queued", step="Waiting for the review loop", pct=0)
+    _jobs.put(("resolve_tables", did))
+
+
+def resolve_facts(did: int) -> None:
+    if not [r for r in _q("SELECT agent_json FROM facts WHERE document_id=? AND status='pending'", did)
+            if (json.loads(r["agent_json"] or "null") or {}).get("status") not in ("agreed", "withdrawn")]:
+        raise ValueError("no open facts: the agents agree on every fact still waiting for a decision")
+    _set("documents", did, facts_status="queued", facts_step="Waiting for the review loop", facts_error=None)
+    _jobs.put(("resolve_facts", did))
+
+
+def _run_table_loop(did: int, doc: dict) -> None:
+    d = _doc(did)
+    eid = d["engagement_id"]
+    e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+    prog = lambda frac, msg: _set("documents", did, pct=round(frac, 3), step=msg)
+    res = docingest.resolve_tables(doc, d["out_dir"], e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER,
+                                   prog, _logger(eid))
+    _save_doc(did, doc)
+    _note_loop(did, tables={"resolved": res["resolved"], "escalated": res["escalated"], "at": time.time()})
+    _learn(did, "tables", res["episodes"])
+
+
+def _resolve_tables_job(did: int) -> None:
+    d = _doc(did)
+    _set("documents", did, status="processing", step="Review loop on the flagged tables", pct=0)
+    doc = json.loads(d["doc_json"])
+    _run_table_loop(did, doc)
+    _recheck_facts(did, doc)
+    _set("documents", did, status="done", step="Done", pct=1.0)
+
+
+def _resolve_facts_job(did: int) -> None:
+    d = _doc(did)
+    eid = d["engagement_id"]
+    e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+    md = json.loads(d["doc_json"])["markdown"]
+    rows = [r for r in _q("SELECT * FROM facts WHERE document_id=? AND status='pending' ORDER BY n", did)
+            if (json.loads(r["agent_json"] or "null") or {}).get("status") not in ("agreed", "withdrawn")]
+    if not rows:
+        _set("documents", did, facts_status="done", facts_step="Done")
+        return
+    fs = []
+    for r in rows:
+        f = {"id": r["id"], "origin": r["origin"], **{k: r[k] for k in FACT_FIELDS},
+             "check": json.loads(r["check_json"] or "null"), "review": json.loads(r["review_json"] or "null") or {}}
+        prev = json.loads(r["agent_json"] or "null")
+        if prev and prev.get("status") in ("escalated", "open") and prev.get("open"):
+            f["review"] = {**f["review"], "verdict": prev["open"].get("verdict") or "correct", "reason": prev["open"].get("reason")}
+        fs.append(f)
+    _set("documents", did, facts_status="running", facts_step="Review loop")
+    loop = reportfacts.resolve(md, fs, e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER, _logger(eid),
+                               lambda frac, msg: _set("documents", did, facts_step=msg))
+    now = time.time()
+    for f, r in zip(fs, rows):
+        prev = json.loads(r["agent_json"] or "null")
+        if prev and prev.get("thread"):  # earlier rounds stay in the thread
+            f["agent"]["thread"] = prev["thread"] + f["agent"]["thread"][1:]
+        _set("facts", f["id"], **{k: f.get(k) for k in FACT_FIELDS}, check_json=json.dumps(f["check"]),
+             review_json=json.dumps(f.get("review")), agent_json=json.dumps(f["agent"]), updated_at=now)
+    _note_loop(did, facts={**loop["summary"], "at": now})
+    _set("documents", did, facts_step="Writing down what the loop taught")
+    _learn(did, "facts", loop["episodes"])
+    _set("documents", did, facts_status="done", facts_step="Done")
+    _touch(eid)
+
+
+def lessons_view() -> dict:
+    return {"curated": lessons.curated(), "learned": lessons.load()["lessons"], "rules_file": "docs/report_rules.md"}
 
 
 # ---- roles --------------------------------------------------------------------------------------------------
@@ -759,6 +893,13 @@ def _process_doc(did: int) -> None:
         doc = docingest.process(*args, read=False)
         note = "Tables not read. " + friendly(ex)
     _save_doc(did, doc)
+    if note is None and any(t.get("status") == "flagged" for t in doc["tables"]):
+        _set("documents", did, step="Review loop on the flagged tables", pct=0.95)
+        try:
+            _run_table_loop(did, doc)
+        except Exception as ex:  # the tables stay flagged for a person
+            traceback.print_exc()
+            note = "The review loop on the flagged tables failed: " + friendly(ex)
     errors = [t for t in doc["tables"] if t.get("status") == "error"]
     if errors:
         note = f"{len(errors)} table(s) couldn't be read: {errors[0].get('error')}"
@@ -778,23 +919,30 @@ def _process_facts(did: int) -> None:
         db.execute("DELETE FROM facts WHERE document_id=?", (did,))
         for f in res["facts"]:
             db.execute(f"""INSERT INTO facts(engagement_id, document_id, n, {', '.join(FACT_FIELDS)}, origin, check_json,
-                           review_json, status, updated_at) VALUES ({', '.join('?' * (len(FACT_FIELDS) + 8))})""",
+                           review_json, status, updated_at, agent_json) VALUES ({', '.join('?' * (len(FACT_FIELDS) + 9))})""",
                        (eid, did, f["id"], *[f.get(k) for k in FACT_FIELDS], f["origin"], json.dumps(f["check"]),
-                        json.dumps(f.get("review")), "pending", now))
-    _set("documents", did, facts_status="done", facts_step="Done", facts_notes=res.get("notes"),
-         review_summary=res.get("review_summary"))
+                        json.dumps(f.get("review")), "pending", now, json.dumps(f.get("agent"))))
+    _set("documents", did, facts_notes=res.get("notes"), review_summary=res.get("review_summary"))
+    if res.get("loop"):
+        _note_loop(did, facts={**res["loop"]["summary"], "at": now})
+        _set("documents", did, facts_step="Writing down what the loop taught")
+        _learn(did, "facts", res["loop"]["episodes"])
+    _set("documents", did, facts_status="done", facts_step="Done")
     _touch(eid)
 
 
 def _run(kind: str, rid: int) -> None:
     try:
-        {"doc": _process_doc, "facts": _process_facts, "compare": _compare, "map": _map, "overlay": _overlay}[kind](rid)
+        {"doc": _process_doc, "facts": _process_facts, "compare": _compare, "map": _map, "overlay": _overlay,
+         "resolve_tables": _resolve_tables_job, "resolve_facts": _resolve_facts_job}[kind](rid)
     except Exception as e:
         traceback.print_exc()
         msg = friendly(e)
         if kind == "doc":
             _set("documents", rid, status="error", step="Failed", error=msg)
-        elif kind == "facts":
+        elif kind == "resolve_tables":  # the document itself is still fine
+            _set("documents", rid, status="done", step="Done", pct=1.0, error="The review loop failed: " + msg)
+        elif kind in ("facts", "resolve_facts"):
             _set("documents", rid, facts_status="error", facts_step="Failed", facts_error=msg)
         else:
             _set("engagements", rid, **{f"{kind}_status": "error", f"{kind}_step": "Failed", f"{kind}_error": msg})
@@ -816,10 +964,12 @@ def retry_document(did: int) -> None:
 
 def start_worker() -> None:
     """Re-queue anything a restart interrupted, then start the worker."""
-    for r in _q("SELECT id FROM documents WHERE status IN ('queued','processing')"):
-        _jobs.put(("doc", r["id"]))
+    for r in _q("SELECT id, step, doc_json IS NOT NULL AS read FROM documents WHERE status IN ('queued','processing')"):
+        # a document already read and in its table loop only needs the loop again
+        _jobs.put(("resolve_tables" if r["read"] and "review loop" in (r["step"] or "").lower() else "doc", r["id"]))
     for r in _q("SELECT id FROM documents WHERE facts_status IN ('queued','running')"):
-        _jobs.put(("facts", r["id"]))
+        # an interrupted loop reruns as a loop (on the facts saved); an interrupted extraction starts again
+        _jobs.put(("resolve_facts" if _q("SELECT 1 FROM facts WHERE document_id=?", r["id"]) else "facts", r["id"]))
     for kind in ("compare", "map", "overlay"):
         for r in _q(f"SELECT id FROM engagements WHERE {kind}_status IN ('queued','running')"):
             _jobs.put((kind, r["id"]))
