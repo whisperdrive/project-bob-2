@@ -205,6 +205,24 @@ def row_chart(eid: int, rng: str, title: str, feeds: list[str] | None = None, ch
                                "units": spec["series"][0].get("units"),
                                "data": [v if isinstance(v, float) else None for v in vals]})
     notes = []
+    # "As saved in Excel" and the prior client model are the same numbers when the overlay's saved link values are
+    # current and the Python reproduces the workbook (the overlay's own check): then draw them once. Where they
+    # differ, keep both and say where, because that is the check failing.
+    saved = spec["series"][0]
+    prior = next((x for x in spec["series"][1:] if x["name"] == ovmod.FEED_WORDS["prior"].capitalize()), None)
+    if prior:
+        same = lambda a, b: abs((a or 0.0) - (b or 0.0)) <= 1e-6 * max(1.0, abs(b or 0.0))
+        off = [i for i, (a, b) in enumerate(zip(prior["data"], saved["data"])) if not same(a, b)]
+        lab = spec.get("period_labels") or spec["labels"]
+        if not off:
+            spec["series"].remove(saved)
+            prior["name"] = "The prior client model (= as saved in Excel)"
+            notes.append("The prior client model, recomputed in Python, gives the values Excel saved in every period, "
+                         "so they are drawn as one line.")
+        else:
+            notes.append(f"The prior client model, recomputed in Python, differs from the values Excel saved in "
+                         f"{len(off)} of {len(lab)} periods (first {lab[off[0]]}): the overlay's saved link values may be "
+                         f"out of date, or the Python differs there. Both lines are drawn.")
     # chart rule F1: a last period more than 5x the next largest (a terminal value) flattens the rest, so leave it
     # out of the default view and say so ("Full range" shows it)
     size = [max((abs(x["data"][i]) for x in spec["series"] if isinstance(x["data"][i], float)), default=0.0)
