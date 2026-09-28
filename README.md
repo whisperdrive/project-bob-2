@@ -167,7 +167,7 @@ steps, each checked by a person before the next relies on it:
    report's text layer: where letters are spaced or table cells run together, a figure still counts if it's there
    once spacing is ignored, read by its own shape (so 5,223.0 is found in "5,223.05,223.0"). The sign must still
    match, and the check says it ignored spacing. Whatever the two models still can't settle goes to an **arbiter**:
-   a third model (gpt-4o by default, set in the header). It can waive a check that failed on a clerical point, with
+   a third look (gpt-6-sol by default, set in the header; it gets its own brief and the evidence afresh). It can waive a check that failed on a clerical point, with
    a note kept on the fact and shown beside the check. It can also take the reviewer's correction or keep the
    extractor's version, but only if the checks then pass. Otherwise it hands the fact to the person with its
    note. When the checks improve, existing facts are checked again once (no model calls), and facts that were held

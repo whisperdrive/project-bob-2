@@ -45,7 +45,8 @@ OUT, UPLOADS = ROOT / "out", ROOT / "uploads"
 DB, DOCS = OUT / "engage.db", OUT / "docs"
 DEFAULT_MODEL = "gpt-6-luna"      # extraction and table reads
 DEFAULT_REVIEWER = "gpt-6-sol"    # second reads and fact review: a different, stronger model than the first read
-DEFAULT_ARBITER = "gpt-4o"        # settles what the review loop can't: a third model, independent of both
+DEFAULT_ARBITER = "gpt-6-sol"     # settles what the review loop can't (the user's choice, 2026-09-28): a fresh look
+                                  # with its own brief, even where it is the reviewer's model
 REPORT_TYPES = (".pdf", ".pptx")
 
 _lock = threading.Lock()
@@ -87,6 +88,12 @@ def _conn() -> sqlite3.Connection:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
     if "arbiter_model" not in {r[1] for r in db.execute("PRAGMA table_info(engagements)")}:
         db.execute("ALTER TABLE engagements ADD COLUMN arbiter_model TEXT")
+    db.execute("CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY, at REAL)")
+    if not db.execute("SELECT 1 FROM migrations WHERE name='arbiter-sol'").fetchone():
+        # once: the arbiter's default moved from gpt-4o to gpt-6-sol, and engagements showing the old default follow
+        # it (a later choice of gpt-4o in the header sticks)
+        db.execute("UPDATE engagements SET arbiter_model=NULL WHERE arbiter_model='gpt-4o'")
+        db.execute("INSERT INTO migrations VALUES ('arbiter-sol', ?)", (time.time(),))
     for col, kind in (("tables_status", "TEXT"), ("tables_left", "INT"), ("tables_step", "TEXT"),
                       ("tables_error", "TEXT"), ("tables_started_at", "REAL"), ("tables_secs", "REAL")):  # ... and before background reading
         if col not in {r[1] for r in db.execute("PRAGMA table_info(documents)")}:
