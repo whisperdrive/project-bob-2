@@ -2,12 +2,14 @@
 
 The shapes an overlay's valuation takes that the label-based DCF finder misses, with every formula's value saved
 as Excel would:
-  Flows      quarterly equity cash flows built from parts (trust distributions + company dividends, plus the
+  Cash flows quarterly equity cash flows built from parts (trust distributions + company dividends, plus the
              franking credits used = gross credits x utilisation), a discount factor row and a PV row
-  Valuation  PV at a low and a high rate by XNPV, the mid value as their average, equity value cum-div = the
+  Valuation summary
+             PV at a low and a high rate by XNPV, the mid value as their average, equity value cum-div = the
              mid, ex-div = cum-div less the distribution payable; and checks computing the low-rate PV three
              other ways: SUMPRODUCT with the factor row, SUMPRODUCT with an inline factor expression, and the
              SUM of the PV row, plus an NPV
+Sheet names have spaces, as they often do, so every reference to them is quoted.
     uv run python tests/make_trace_workbook.py
 """
 import sys
@@ -69,7 +71,7 @@ def build(path: Path) -> dict:
         i.write(r, 1, lab)
         (i.write_datetime if isinstance(v, date) else i.write)(r, 2, v, f)
 
-    fl = wb.add_worksheet("Flows")
+    fl = wb.add_worksheet("Cash flows")
     fl.write("B3", "Period ending")
     fl.write("B11", "XNPV dates")
     fl.write_formula("C11", "=Inputs!C4", dt, serial(VD))
@@ -92,18 +94,18 @@ def build(path: Path) -> dict:
         fl.write_formula(f"{c}13", f"=1/(1+Inputs!$C$5)^(({c}3-Inputs!$C$4)/365)", None, df[k])
         fl.write_formula(f"{c}14", f"={c}10*{c}13", num, pv_row[k])
 
-    v = wb.add_worksheet("Valuation")
-    rows = [(10, "PV at low rate", f"=XNPV(Inputs!C5,Flows!C10:{last}10,Flows!C11:{last}11)", low),
-            (11, "PV at high rate", f"=XNPV(Inputs!C6,Flows!C10:{last}10,Flows!C11:{last}11)", high),
+    v = wb.add_worksheet("Valuation summary")
+    rows = [(10, "PV at low rate", f"=XNPV(Inputs!C5,'Cash flows'!C10:{last}10,'Cash flows'!C11:{last}11)", low),
+            (11, "PV at high rate", f"=XNPV(Inputs!C6,'Cash flows'!C10:{last}10,'Cash flows'!C11:{last}11)", high),
             (12, "Mid value", "=AVERAGE(F10:F11)", mid),
             (14, "Equity value (cum-div)", "=F12", mid),
             (15, "Distribution payable", "=Inputs!C8", DIST),
             (16, "Equity value (ex-div)", "=F14-F15", mid - DIST),
-            (20, "Check: PV low, factor row", f"=SUMPRODUCT(Flows!D10:{last}10,Flows!D13:{last}13)", sum(pv_row)),
+            (20, "Check: PV low, factor row", f"=SUMPRODUCT('Cash flows'!D10:{last}10,'Cash flows'!D13:{last}13)", sum(pv_row)),
             (21, "Check: PV low, inline factors",
-             f"=SUMPRODUCT(Flows!D10:{last}10,1/(1+Inputs!$C$5)^((Flows!D3:{last}3-Inputs!$C$4)/365))", sum(pv_row)),
-            (22, "Check: PV low, PV row", f"=SUM(Flows!D14:{last}14)", sum(pv_row)),
-            (23, "Check: NPV", f"=NPV(Inputs!C5,Flows!D10:{last}10)", npv)]
+             f"=SUMPRODUCT('Cash flows'!D10:{last}10,1/(1+Inputs!$C$5)^(('Cash flows'!D3:{last}3-Inputs!$C$4)/365))", sum(pv_row)),
+            (22, "Check: PV low, PV row", f"=SUM('Cash flows'!D14:{last}14)", sum(pv_row)),
+            (23, "Check: NPV", f"=NPV(Inputs!C5,'Cash flows'!D10:{last}10)", npv)]
     for r, lab, f, val in rows:
         v.write(r - 1, 1, lab)
         v.write_formula(f"F{r}", f, num, val)

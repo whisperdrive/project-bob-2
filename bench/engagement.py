@@ -1192,8 +1192,8 @@ def overlay_value_trace(eid: int, start: str | None = None) -> dict:
     def run():
         sess.configure("workbook")
         return sess.values(keys)
-    for n, v in zip(mine, ovmod.deep(run)):
-        n["python"] = v if isinstance(v, float) else None
+    for n, v in zip(mine, ovmod.deep(run)):  # numbers only: a date cell is text in model.db and a serial in Python
+        n["python"] = v if isinstance(v, float) and isinstance(n.get("value"), (int, float)) else None
     return {"starts": starts, "selected": pick["cell"], "start": pick, "tree": tree, "cores": dcftrace.cores(tree),
             "text": dcftrace.text(tree)}
 

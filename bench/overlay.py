@@ -561,7 +561,7 @@ def _dcf_cells(db, inputs: dict) -> set[tuple]:
         t = str(ref).strip()
         named = db.execute("SELECT ref FROM names WHERE lower(name)=lower(?)", (t,)).fetchone()
         t = named[0] if named else t
-        m = dcf._REF.match(t.replace(" ", "") if "'" not in t else t)
+        m = dcf._REF.match(t) or (dcf._REF.match(t.replace(" ", "")) if "'" not in t else None)
         if m and (not m["c2"] or (m["c2"], m["r2"]) == (m["c1"], m["r1"])):
             cells.add((m["sheet"].strip("'"), int(m["r1"]), dcf._col(m["c1"])))
 

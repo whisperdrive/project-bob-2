@@ -188,7 +188,7 @@ _RANGE = re.compile(r"^'?(?P<sheet>[^!]+?)'?!\$?(?P<c1>[A-Z]{1,3})\$?(?P<r1>\d+)
 def _range_cells(db, ref: str) -> tuple[str, list[tuple[int, int]]]:
     """'Valuation!L95:AO95' -> (sheet, [(row, col), ...]) for a single row or single column range."""
     from openpyxl.utils.cell import column_index_from_string
-    m = _RANGE.match(ref.strip().replace(" ", ""))
+    m = _RANGE.match(ref.strip()) or _RANGE.match(ref.strip().replace(" ", ""))  # sheet names may have spaces
     if not m:
         raise ValueError(f"not a cell range: {ref!r} (use Sheet!L95:AO95)")
     sheet, r1 = m["sheet"], int(m["r1"])

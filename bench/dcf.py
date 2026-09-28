@@ -80,7 +80,8 @@ def resolve(db, ref) -> tuple[object, str]:
         pass
     named = db.execute("SELECT ref FROM names WHERE lower(name)=lower(?)", (s,)).fetchone()
     target = named[0] if named else s
-    m = _REF.match(target.replace(" ", "") if "'" not in target else target)
+    # as written first (sheet names may have spaces); then without spaces, for a typed "DCF! D12"
+    m = _REF.match(target.strip()) or (_REF.match(target.replace(" ", "")) if "'" not in target else None)
     if not m or (m["c2"] and (m["c2"], m["r2"]) != (m["c1"], m["r1"])):
         raise ValueError(f"{ref!r}: give a number, a date (YYYY-MM-DD), a named range or one cell (Sheet!F435)")
     sheet = _check_sheet(db, m["sheet"])
