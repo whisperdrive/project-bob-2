@@ -150,7 +150,7 @@ tr.click:hover td { background: var(--raised); }
 details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
 .quote { font-size: 12.5px; color: var(--muted); border-left: 3px solid var(--rule-strong); padding-left: 8px; margin-top: 4px; }
 .why { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
-.why li { margin: 2px 0; }
+.why li { margin: 2px 0; overflow-wrap: anywhere; }
 
 /* roles */
 .flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; align-items: stretch; }
@@ -338,7 +338,7 @@ function schedule() {
   clearTimeout(pollTimer);
   if (!E) return;
   const working = E.documents.some(d => busy(d.status) || busy(d.facts_status)) || E.workbooks.some(w => busy(w.status))
-    || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || uploads.some(u => !u.done);
+    || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || E.roles_pending || uploads.some(u => !u.done);
   if (working) pollTimer = setTimeout(async () => { await refresh(); spend(); }, 1500);
 }
 async function spend() {
@@ -580,6 +580,7 @@ function fillDocMd() { const b = $("#docMdBody"); if (b && DOC?.doc) b.innerHTML
 // the agents' state for a fact: agreed (both models and the checks), withdrawn, escalated (over to you) or open
 const agreedFact = f => f.check?.ok && (f.agent ? f.agent.status === "agreed" : f.review?.verdict === "accept");
 const needsYou = f => f.status === "pending" && !agreedFact(f) && f.agent?.status !== "withdrawn";
+const byAgents = f => f.decided_by === "agents";
 const CAT = {identity: "Identity", conclusion: "Valuation conclusions", assumption: "Key assumptions", approach: "Approach and method", sensitivity: "Sensitivities (test points for the rebuild)"};
 function factsCard(d) {
   const fs = E.facts.filter(f => f.document_id === d.id);
@@ -587,15 +588,16 @@ function factsCard(d) {
   const head = `<div class="row" style="justify-content:space-between"><div><h2>Key facts</h2><p class="sub">Extracted by <b>${esc(E.model)}</b>, reviewed by <b>${esc(E.reviewer_model)}</b> (change them in the header). Approved facts are the reference for the next steps.</p></div>
     <div class="row">${running ? `<span class="pill info">${esc(d.facts_step || "Working")}</span>` : `<button class="btn ${fs.length ? "" : "primary"}" id="runFacts" ${d.n_flagged ? "title='Some tables are still to check; facts quoted from them will be marked.'" : ""}>${fs.length ? "Extract again" : "Extract key facts"}</button>`}
     ${!running && fs.some(needsYou) ? `<button class="btn" id="loopFacts" title="The extractor answers the reviewer's open points, code re-checks, the reviewer decides again (up to 3 rounds)">Run the review loop on the open facts</button>` : ""}
-    ${fs.length ? `<button class="btn primary" id="approvePassed" title="Every fact both models agree on and that passes the checks">Approve all the agents agreed (${fs.filter(f => f.status === "pending" && agreedFact(f)).length})</button>` : ""}</div></div>`;
+    ${fs.some(f => f.status === "pending" && agreedFact(f)) ? `<button class="btn primary" id="approvePassed" title="Facts both models agree on and that pass the checks, not yet approved (from before auto-approval, or undone)">Approve all the agents agreed (${fs.filter(f => f.status === "pending" && agreedFact(f)).length})</button>` : ""}</div></div>`;
   if (d.facts_status === "error") return head + `<div class="callout bad">${esc(d.facts_error)}</div>`;
   if (!fs.length) return head + (running ? `<p class="muted">Reading the report… this takes about a minute.</p>` : (d.n_flagged ? `<div class="callout warn">${d.n_flagged} table(s) still to check. You can extract now; facts quoted from those tables will be marked until they're settled.</div>` : ""));
   const n = {approved: 0, pending: 0, rejected: 0}; fs.forEach(f => n[f.status]++);
   const nAgreed = fs.filter(f => f.status === "pending" && agreedFact(f)).length, nYou = fs.filter(needsYou).length;
   const nWithdrawn = fs.filter(f => f.status === "pending" && f.agent?.status === "withdrawn").length;
-  let html = head + `<div class="row small" style="margin-bottom:8px"><span class="pill ok">${n.approved} approved</span>${nAgreed ? `<span class="pill ok">${nAgreed} agreed by the agents</span>` : ""}${nYou ? `<span class="pill warn">${nYou} need you</span>` : ""}${nWithdrawn ? `<span class="pill">${nWithdrawn} withdrawn by the agents</span>` : ""}${n.rejected ? `<span class="pill bad">${n.rejected} rejected</span>` : ""}</div>`;
+  const nAgentsOk = fs.filter(f => f.status === "approved" && byAgents(f)).length, nAgentsNo = fs.filter(f => f.status === "rejected" && byAgents(f)).length;
+  let html = head + `<div class="row small" style="margin-bottom:8px">${nAgentsOk ? `<span class="pill ok">${nAgentsOk} approved by the agents</span>` : ""}${n.approved - nAgentsOk ? `<span class="pill ok">${n.approved - nAgentsOk} approved by you</span>` : ""}${nAgreed ? `<span class="pill ok">${nAgreed} agreed, not yet approved</span>` : ""}${nYou ? `<span class="pill warn">${nYou} need you</span>` : `<span class="pill">nothing needs you</span>`}${nWithdrawn ? `<span class="pill">${nWithdrawn} withdrawn by the agents</span>` : ""}${nAgentsNo ? `<span class="pill">${nAgentsNo} rejected by the agents</span>` : ""}${n.rejected - nAgentsNo ? `<span class="pill bad">${n.rejected - nAgentsNo} rejected by you</span>` : ""}</div>`;
   const L = d.loop || {};
-  if (L.facts) html += `<div class="callout info small" style="margin-bottom:8px"><b>Review loop:</b> ${L.facts.rounds ? `${L.facts.rounds} round(s); ${L.facts.settled_in_loop} fact(s) settled between the agents` : "the reviewer and the checks agreed with every fact at first reading"}${L.facts.escalated ? `; ${L.facts.escalated} they couldn't settle are over to you (shown first below)` : ""}.${lessonNote(L.lessons_facts)}</div>`;
+  if (L.facts) html += `<div class="callout info small" style="margin-bottom:8px"><b>Review loop:</b> ${L.facts.rounds ? `${L.facts.rounds} round(s); ${L.facts.settled_in_loop} fact(s) settled between the agents` : "the reviewer and the checks agreed with every fact at first reading"}${L.facts.approved != null ? `; ${L.facts.approved} approved${L.facts.rejected ? ` and ${L.facts.rejected} rejected` : ""} automatically because both agents agree and the checks pass` : ""}${L.facts.escalated ? `; ${L.facts.escalated} they couldn't settle are over to you (shown first below)` : ""}. Undo any decision to take it over.${lessonNote(L.lessons_facts)}</div>`;
   if (d.review_summary) html += `<div class="callout info small" style="margin-bottom:10px"><b>Reviewer, first reading:</b> ${esc(d.review_summary)}</div>`;
   for (const [cat, label] of Object.entries(CAT)) {
     const rows = fs.filter(f => f.category === cat).sort((a, b) => needsYou(b) - needsYou(a)); if (!rows.length) continue;
@@ -612,8 +614,8 @@ function factRow(f) {
   const rv = f.review || {};
   const verdict = {accept: "ok", correct: "warn", reject: "bad", added: "info"}[rv.verdict] || "";
   const sug = rv.suggestion;
-  const decision = f.status === "approved" ? `<span class="pill ok">Approved${f.final ? " (changed)" : ""}</span> <button class="btn small ghost" data-f="${f.id}" data-a="reset">Undo</button>`
-    : f.status === "rejected" ? `<span class="pill bad">Rejected</span> <button class="btn small ghost" data-f="${f.id}" data-a="reset">Undo</button>`
+  const decision = f.status === "approved" ? `<span class="pill ok">Approved${byAgents(f) ? " by the agents" : f.final ? " (changed)" : ""}</span> <button class="btn small ghost" data-f="${f.id}" data-a="reset">Undo</button>`
+    : f.status === "rejected" ? `<span class="pill ${byAgents(f) ? "" : "bad"}">Rejected${byAgents(f) ? " by the agents" : ""}</span> <button class="btn small ghost" data-f="${f.id}" data-a="reset">Undo</button>`
     : `<div class="row" style="gap:4px"><button class="btn small" data-f="${f.id}" data-a="approve">Approve</button>${sug ? `<button class="btn small" data-f="${f.id}" data-a="use_suggestion">Use correction</button>` : ""}<button class="btn small" data-f="${f.id}" data-a="edit">Edit</button><button class="btn small ghost" data-f="${f.id}" data-a="reject">Reject</button></div>`;
   const edit = state.factEdit === f.id ? `<tr><td colspan="6" style="background:var(--raised)"><form class="row" data-fe="${f.id}" style="align-items:flex-end">
     ${["value_text", "low_text", "high_text", "basis"].map(k => `<label class="small">${k.replace("_text", "").replace("value", "value")}<br><input type="text" name="${k}" value="${esc(v[k] || "")}" style="width:150px"></label>`).join("")}
@@ -704,7 +706,9 @@ let roleDraft = null;
 function viewRoles() {
   const docs = E.documents.filter(d => d.status === "done"), wbs = E.workbooks.filter(w => w.status === "done");
   const r = E.roles, sug = E.roles_suggested;
-  if (!roleDraft || roleDraft._eid !== E.id) roleDraft = {_eid: E.id, ...JSON.parse(JSON.stringify(r))};
+  // the draft follows the suggestion as it updates itself, until you change something on the page
+  if (!roleDraft || roleDraft._eid !== E.id || (!roleDraft._dirty && roleDraft._at !== (sug?.at || null)))
+    roleDraft = {_eid: E.id, _at: sug?.at || null, ...JSON.parse(JSON.stringify(r))};
   const ov = roleDraft.prior_overlay, pm = roleDraft.prior_model;
   const node = role => {
     const cur = roleDraft[role], opts = role === "prior_report" ? docs.map(d => [d.id, d.filename]) : wbs.map(w => [w.id, w.filename]);
@@ -720,19 +724,62 @@ function viewRoles() {
       <select class="in" data-pick="${role}"><option value="">Not assigned</option>${opts.map(([id, n]) => `<option value="${id}" ${cur?.id === id ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
       ${extra}${cur?.why?.length ? `<ul class="why">${cur.why.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : `<p class="small muted" style="margin:6px 0 0">${esc(ROLE_HELP[role])}</p>`}</div>`;
   };
-  const modes = sug ? Object.entries(sug.workbooks).map(([id, x]) => { const w = wbs.find(w => w.id === +id); return w ? `<tr><td>${esc(w.filename)}</td><td>${esc(x.mode)}</td><td class="small">${esc(x.overlay.join(", "))}</td><td class="small">${esc(x.client.join(", "))}</td><td class="small">${esc(x.timeline_start || "")}</td></tr>` : ""; }).join("") : "";
-  return `<div class="lede"><div><h1><b>Who's who</b></h1><p>Which file plays which part. The overlay is chosen as a set of sheets, because it sometimes sits inside a copy of the client model and sometimes stands alone. Suggestions come from the files: where the report's figures sit, which DCFs recompute in Python, external links and their cached values, and the model timelines.</p></div></div>
-  <div class="row"><button class="btn ${Object.keys(r).length ? "" : "primary"}" id="suggest">${Object.keys(r).length ? "Suggest again" : "Suggest roles"}</button>
-  <button class="btn primary" id="confirmRoles" ${Object.keys(roleDraft).length > 1 ? "" : "disabled"}>Confirm roles</button>
-  <span class="small muted">${E.facts.some(f => f.status === "approved") ? "Using the approved report facts." : E.facts.length ? "No facts approved yet: using the ones that pass the checks." : "No report facts yet: suggestions use the workbooks' structure only."}</span></div>
+  const when = sug?.at ? new Date(sug.at * 1000).toLocaleString(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : null;
+  const status = E.roles_pending ? `<span class="pill info">Updating the suggestion…</span>`
+    : sug?.error ? `<span class="pill bad">Suggestion failed</span> <span class="small">${esc(sug.error)}</span>`
+    : when ? `<span class="small muted">Suggested ${esc(when)} from the ${esc(sug.evidence || "files")}. It updates by itself when files or report facts change, until you confirm.</span>`
+    : `<span class="small muted">A suggestion appears by itself once the files are read.</span>`;
+  return `<div class="lede"><div><h1><b>Who's who</b></h1><p>Which file plays which part. The first suggestion comes from the workbooks alone, as soon as they're read: how alike they are (two versions of one client model are mostly the same; a copy with extra valuation sheets holds the overlay), and what each one contains (valuation terms, charts, links to other files, the DCFs that recompute). As the report's facts come in, where its figures sit sharpens it. The overlay is a set of sheets, because it sometimes sits inside a copy of the client model.</p></div></div>
+  <div class="row"><button class="btn" id="suggest">Suggest again now</button>
+  <button class="btn primary" id="confirmRoles" ${Object.keys(CFG.roles).some(k => roleDraft[k]) ? "" : "disabled"}>Confirm roles</button>${status}</div>
   <div class="flow">${["prior_report", "prior_overlay", "prior_model", "current_model"].map(node).join("")}</div>
-  ${modes ? `<div class="card"><h2>What each workbook looks like</h2><p class="sub">From the last suggestion.</p><div class="scroll"><table><thead><tr><th>Workbook</th><th>Looks like</th><th>Overlay sheets</th><th>Client sheets</th><th>Timeline starts</th></tr></thead><tbody>${modes}</tbody></table></div></div>` : ""}`;
+  ${likenessCard(sug, wbs)}${profilesCard(sug, wbs)}`;
+}
+const shortName = n => n && n.length > 34 ? n.slice(0, 31) + "…" : (n || "");
+function likenessCard(sug, wbs) {
+  const L = sug?.likeness; if (!L || !L.pairs.length) return "";
+  const ids = Object.keys(L.profiles).map(Number).filter(id => wbs.some(w => w.id === id));
+  const name = id => wbs.find(w => w.id === id)?.filename || `#${id}`;
+  const get = (a, b) => { const p = L.pairs.find(x => x.a === a && x.b === b); if (p) return p;
+    const q = L.pairs.find(x => x.a === b && x.b === a); return q && {...q, a_in_b: q.b_in_a, b_in_a: q.a_in_b, only_a: q.only_b, only_b: q.only_a}; };
+  const cell = (a, b) => {
+    if (a === b) return `<td class="z" style="background:var(--raised)"></td>`;
+    const p = get(a, b); if (!p) return "<td></td>";
+    const k = Math.max(1, Math.min(7, Math.ceil(p.similarity / 14.3))), white = (tok("color-scheme") === "dark" ? [1, 2, 3, 4, 5] : [5, 6, 7]).includes(k);
+    const tip = `<b>${esc(shortName(name(a)))}</b> vs <b>${esc(shortName(name(b)))}</b>: ${p.similarity}% alike<br>sheets ${p.sheets}% · line items ${p.line_items}% · formulas ${p.formulas}%<br>${p.a_in_b}% of the first's line items are in the second; ${p.b_in_a}% the other way${p.only_a.length ? `<br>only in the first: ${esc(p.only_a.slice(0, 6).join(", "))}` : ""}${p.only_b.length ? `<br>only in the second: ${esc(p.only_b.slice(0, 6).join(", "))}` : ""}`;
+    return `<td style="background:var(--q${k});color:${white ? "#fff" : "#1a1a24"};width:auto;padding:4px 10px" data-tip="${esc(tip)}">${p.similarity}%</td>`;
+  };
+  return `<div class="card"><h2>How alike the workbooks are</h2><p class="sub">Sheet names, line items (sheet and label) and formula shapes they have in common, ignoring years and period labels so last year's and this year's versions of one model compare as the same. Hover a cell for the detail.</p>
+  <div class="scroll" id="likeHeat"><table class="heat"><thead><tr><th></th>${ids.map(b => `<th class="col" title="${esc(name(b))}">${esc(shortName(name(b)))}</th>`).join("")}</tr></thead>
+  <tbody>${ids.map(a => `<tr><th style="text-align:right" title="${esc(name(a))}">${esc(shortName(name(a)))}</th>${ids.map(b => cell(a, b)).join("")}</tr>`).join("")}</tbody></table></div></div>`;
+}
+function profilesCard(sug, wbs) {
+  if (!sug?.workbooks) return "";
+  const P = sug.likeness?.profiles || {}, made = p => p.props?.company || p.props?.creator || "";
+  const anyMade = Object.values(P).some(p => made(p) || Object.keys(p.markers || {}).length);
+  const rows = Object.entries(sug.workbooks).map(([id, x]) => {
+    const w = wbs.find(w => w.id === +id); if (!w) return "";
+    const p = P[id] || {}, terms = Object.keys(p.terms || {});
+    return `<tr><td><b style="font-weight:600">${esc(w.filename)}</b><div class="small muted">${(p.sheets || []).length} sheets · ${nfmt(p.formulas)} formula cells${p.timeline_start ? ` · timeline from ${esc(p.timeline_start)}` : ""}</div></td>
+      <td style="min-width:260px"><b style="font-weight:600">${esc(x.mode)}</b>${x.overlay.length ? `<div class="small muted">overlay sheets: ${esc(x.overlay.join(", "))}</div>` : ""}
+        ${(x.structure || []).length ? `<ul class="why" style="margin:4px 0 0">${x.structure.slice(0, 4).map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}</td>
+      <td class="small">${terms.length ? `${terms.length}: ${esc(terms.slice(0, 6).join(", "))}${terms.length > 6 ? "…" : ""}` : `<span class="muted">none</span>`}</td>
+      <td class="small">${Object.keys(p.charts || {}).length ? esc(Object.entries(p.charts).map(([s, n]) => `${s} (${n})`).join(", ")) : `<span class="muted">none</span>`}</td>
+      <td class="small">${(p.external_links || []).length ? esc(p.external_links.join(", ")) : `<span class="muted">none</span>`}</td>
+      ${anyMade ? `<td class="small">${esc(made(p))}${Object.keys(p.markers || {}).length ? `<div><span class="pill warn">mentions ${esc(Object.keys(p.markers).join(", "))}</span></div>` : ""}</td>` : ""}</tr>`;
+  }).join("");
+  return `<div class="card"><h2>What each workbook looks like</h2><p class="sub">Valuation terms are words like valuation range, WACC, gearing, beta, terminal value and sensitivity, found in labels and text. To also look for the adviser's name, set <span class="mono">VALUATION_DESK_OVERLAY_MARKERS</span> in <span class="mono">.env</span> (kept out of the repo).</p>
+  <div class="scroll"><table><thead><tr><th>Workbook</th><th>Looks like, and why</th><th>Valuation terms</th><th>Charts</th><th>External links</th>${anyMade ? "<th>Made by</th>" : ""}</tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 bind.roles = () => {
+  const box = $("#likeHeat"), tip = $("#tip");
+  if (box) { box.onmousemove = ev => { const td = ev.target.closest("td[data-tip]"); if (!td) { tip.style.display = "none"; return; }
+      tip.innerHTML = td.dataset.tip; tip.style.display = "block"; tip.style.left = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px"; tip.style.top = (ev.clientY + 14) + "px"; };
+    box.onmouseleave = () => tip.style.display = "none"; }
   $("#suggest").onclick = async () => { $("#suggest").disabled = true; $("#suggest").textContent = "Looking at the files…";
     try { E = await api(`/api/engagements/${E.id}/roles/suggest`, {method: "POST"}); roleDraft = null; } catch (e) { toast(e.message, 6000); } render(); };
   document.querySelectorAll("[data-pick]").forEach(s => s.onchange = () => {
-    const role = s.dataset.pick, id = +s.value;
+    const role = s.dataset.pick, id = +s.value; roleDraft._dirty = true;
     if (!id) { roleDraft[role] = null; render(); return; }
     const kind = role === "prior_report" ? "document" : "workbook";
     const sugg = E.roles_suggested?.workbooks?.[id];
@@ -744,7 +791,7 @@ bind.roles = () => {
     render();
   });
   document.querySelectorAll("[data-sheet]").forEach(c => c.onchange = () => {
-    const role = c.dataset.role, cur = roleDraft[role], w = E.workbooks.find(x => x.id === cur.id);
+    const role = c.dataset.role, cur = roleDraft[role], w = E.workbooks.find(x => x.id === cur.id); roleDraft._dirty = true;
     const set = new Set(cur.sheets || w.sheet_names); c.checked ? set.add(c.dataset.sheet) : set.delete(c.dataset.sheet);
     cur.sheets = w.sheet_names.filter(s => set.has(s));
   });

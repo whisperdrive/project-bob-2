@@ -136,9 +136,12 @@ steps, each checked by a person before the next relies on it:
    range), assumptions (discount rate and basis, terminal growth or exit / RAB multiple, ...), approach and the
    sensitivity grid, each with a page and a verbatim quote. Code checks each one: the quote is on that page, the
    values are in the quote, and quotes from unsettled tables are marked. A reviewer model accepts, corrects or
-   rejects each fact and lists what was missed. Every fact still open then goes through the review loop. The
-   person approves what the agents agreed in one click, and decides what they escalated (edit, take the reviewer's
-   latest correction, or reject).
+   rejects each fact and lists what was missed. Every fact still open then goes through the review loop. Facts the
+   two models agree on, and that pass the checks, are approved by the agents; facts they agree to withdraw are
+   rejected by them. Both are marked as the agents' decision, and a person can undo either (an undone decision
+   stays theirs). The person decides what the agents escalated: edit, take the reviewer's latest correction, or
+   reject. If a table is later changed and an agents' approval no longer passes the checks, it goes back to the
+   person.
 
    **The review loop** (`docingest.resolve_tables`, `reportfacts.resolve`) lets the two models settle problems
    between themselves, up to three rounds. The extractor (gpt-6-luna) answers each open point: it revises, keeps
@@ -157,10 +160,25 @@ steps, each checked by a person before the next relies on it:
    `docs/report_rules.md` in the repo. Learned lessons (L1, L2, ...) stay on each machine in `out/lessons.json`.
    The page lists both, and a person can retire a lesson or promote it into the rules file.
 3. **Roles** (`bench/roles.py`). The overlay is picked as a sheet list, because it sometimes sits inside a copy of
-   the client model. An overlay sheet holds the report's conclusions or valuation-only assumptions (label and value
-   must both agree), or a DCF that `valuation.py` reproduces, or reads such a sheet. The prior client model is
-   the file the overlay's external links point to. `bench/extlinks.py` reads `xl/externalLinks` and checks the
-   link's cached values against the file. Prior vs current is decided by timeline start. The person confirms.
+   the client model. The first suggestion comes from the workbooks alone, as soon as they're read
+   (`bench/likeness.py`), which compares every pair of workbooks. It measures the sheet names, line items (sheet
+   and label) and formula shapes they share, ignoring years, period labels and row shifts, so last year's and this
+   year's client model come out nearly the same. It also measures how much of each workbook the other contains.
+   - Two workbooks that are mostly alike are one client model twice.
+   - One that holds all of another plus extra sheets carrying valuation work is a client model with the overlay
+     added, and the extra sheets are the overlay.
+   - One unlike the others, with valuation vocabulary (valuation range, WACC, gearing, time-weighted average,
+     beta, terminal value, ...), charts, external links or the adviser's name, is a standalone overlay. The
+     adviser's name is searched in the text, sheet names and file properties when it's set as
+     `VALUATION_DESK_OVERLAY_MARKERS` in `.env`, so it stays out of the repo.
+
+   The report's facts then add the stronger evidence: an overlay sheet holds the report's conclusions or
+   valuation-only assumptions (label and value must both agree), or a DCF that `valuation.py` reproduces, or reads
+   such a sheet. A DCF that another version of the model also has is the client's own, not the overlay. The prior
+   client model is the file the overlay's external links point to. `bench/extlinks.py` reads `xl/externalLinks`
+   and checks the link's cached values against the file. Prior vs current is decided by timeline start, within
+   the versions of one model. The suggestion redoes itself whenever the files or the report facts change, until
+   the person confirms. The page shows the similarity of every pair of workbooks and what each one contains.
 4. **Compare.** `diff.py` between the client models, without the overlay sheets. When the timeline has rolled
    forward, each period is compared with the same period (matched by the timeline row's dates), not the same
    column.

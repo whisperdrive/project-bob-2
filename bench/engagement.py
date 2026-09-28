@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS documents(id INTEGER PRIMARY KEY, engagement_id INT, 
 CREATE TABLE IF NOT EXISTS facts(id INTEGER PRIMARY KEY, engagement_id INT, document_id INT, n INT, category TEXT,
   key TEXT, label TEXT, value_text TEXT, low_text TEXT, high_text TEXT, value REAL, unit TEXT, basis TEXT, page INT,
   quote TEXT, origin TEXT, check_json TEXT, review_json TEXT, status TEXT DEFAULT 'pending', final_json TEXT,
-  updated_at REAL, agent_json TEXT);
+  updated_at REAL, agent_json TEXT, decided_by TEXT);
 CREATE TABLE IF NOT EXISTS roles(engagement_id INT, role TEXT, kind TEXT, ref_id INT, sheets_json TEXT, why_json TEXT,
   confirmed INT DEFAULT 0, PRIMARY KEY(engagement_id, role));
 """
@@ -80,7 +80,7 @@ def _conn() -> sqlite3.Connection:
     for col in ("overlay_status", "overlay_step", "overlay_error", "overlay_json"):  # databases made before step 6
         if col not in have:
             db.execute(f"ALTER TABLE engagements ADD COLUMN {col} TEXT")
-    for table, col in (("facts", "agent_json"), ("documents", "loop_json")):  # ... and before the review loop
+    for table, col in (("facts", "agent_json"), ("documents", "loop_json"), ("facts", "decided_by")):  # ... and before the loop
         if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
     return db
@@ -211,8 +211,11 @@ def get(eid: int) -> dict | None:
         w.pop("source_path", None)
         ident = w.pop("identity", None) or {}
         w["identity_notes"] = ident.get("notes")
-    return {**e, "documents": documents(eid), "workbooks": wbs, "facts": facts(eid), "roles": roles(eid),
-            "session": _session(eid)}
+    out = {**e, "documents": documents(eid), "workbooks": wbs, "facts": facts(eid), "roles": roles(eid),
+           "session": _session(eid)}
+    _maybe_suggest(eid, out)
+    out["roles_pending"] = eid in _ROLE_JOBS
+    return out
 
 
 def delete(eid: int) -> None:
@@ -343,14 +346,22 @@ def _save_doc(did: int, doc: dict) -> None:
 
 
 def _recheck_facts(did: int, doc: dict) -> None:
-    """Table decisions change the page text facts are checked against (no model calls)."""
+    """Table decisions change the page text facts are checked against (no model calls). An approval the agents
+    made rested on the checks passing, so if they now fail the fact goes back to a person."""
     pg = reportfacts.pages(doc["markdown"])
     for f in _q("SELECT * FROM facts WHERE document_id=?", did):
         chk = reportfacts.check(f, pg)
         rv = json.loads(f["review_json"] or "null")
         if rv and rv.get("suggestion"):
             rv["suggestion"]["check"] = reportfacts.check(rv["suggestion"], pg)
-        _set("facts", f["id"], check_json=json.dumps(chk), review_json=json.dumps(rv))
+        fields = {"check_json": json.dumps(chk), "review_json": json.dumps(rv)}
+        if f["decided_by"] == "agents" and f["status"] == "approved" and not chk["ok"]:
+            a = json.loads(f["agent_json"] or "null") or {"thread": []}
+            a.update(status="escalated", open={"verdict": "object", "reason": "a table on its page changed and the checks "
+                                               "now fail: " + "; ".join(i["text"] for i in chk["items"] if not i["ok"]),
+                                               "correction": None})
+            fields.update(status="pending", decided_by=None, agent_json=json.dumps(a))
+        _set("facts", f["id"], **fields)
 
 
 # ---- facts --------------------------------------------------------------------------------------------------
@@ -368,8 +379,14 @@ def set_fact(fact_id: int, action: str, fields: dict | None = None) -> dict:
     if not rows:
         raise ValueError("no such fact")
     f = rows[0]
+    if action not in ("approve", "use_suggestion", "edit", "reject", "reset"):
+        raise ValueError(f"unknown action {action}")
     rv = json.loads(f["review_json"] or "null") or {}
     now = time.time()
+    if action == "reset" and f["decided_by"] == "agents":  # a person undid the agents' decision: it's theirs now
+        a = json.loads(f["agent_json"] or "null") or {}
+        _set("facts", fact_id, agent_json=json.dumps({**a, "held": True}))
+    _set("facts", fact_id, decided_by=None if action == "reset" else "you")
     if action == "approve":
         _set("facts", fact_id, status="approved", final_json=None, updated_at=now)
     elif action == "use_suggestion":
@@ -403,6 +420,25 @@ def agreed(f: dict) -> bool:
     a = f.get("agent")
     ok = (f.get("check") or {}).get("ok")
     return bool(ok and (a["status"] == "agreed" if a else (f.get("review") or {}).get("verdict") == "accept"))
+
+
+def auto_decide(did: int) -> dict:
+    """The agents' agreement is the decision: facts they agree on (and that pass the checks) are approved, facts
+    they agree to withdraw are rejected, both marked as decided by the agents. Facts a person has decided, or
+    whose agents' decision a person undid, are left alone."""
+    n = {"approved": 0, "rejected": 0}
+    now = time.time()
+    for f in _q("SELECT id, check_json, agent_json FROM facts WHERE document_id=? AND status='pending'", did):
+        a = json.loads(f["agent_json"] or "null") or {}
+        if a.get("held"):
+            continue
+        if a.get("status") == "agreed" and (json.loads(f["check_json"] or "null") or {}).get("ok"):
+            _set("facts", f["id"], status="approved", final_json=None, decided_by="agents", updated_at=now)
+            n["approved"] += 1
+        elif a.get("status") == "withdrawn":
+            _set("facts", f["id"], status="rejected", decided_by="agents", updated_at=now)
+            n["rejected"] += 1
+    return n
 
 
 def approve_passed(eid: int) -> int:
@@ -520,7 +556,7 @@ def _resolve_facts_job(did: int) -> None:
             f["agent"]["thread"] = prev["thread"] + f["agent"]["thread"][1:]
         _set("facts", f["id"], **{k: f.get(k) for k in FACT_FIELDS}, check_json=json.dumps(f["check"]),
              review_json=json.dumps(f.get("review")), agent_json=json.dumps(f["agent"]), updated_at=now)
-    _note_loop(did, facts={**loop["summary"], "at": now})
+    _note_loop(did, facts={**loop["summary"], **auto_decide(did), "at": now})
     _set("documents", did, facts_step="Writing down what the loop taught")
     _learn(did, "facts", loop["episodes"])
     _set("documents", did, facts_status="done", facts_step="Done")
@@ -542,11 +578,53 @@ def _wb_inputs(eid: int) -> list[dict]:
     return out
 
 
+_ROLE_JOBS: set[int] = set()  # engagements with a role suggestion queued
+
+
+def _roles_key(eid: int, wbs: list[dict], docs: list[dict]) -> str:
+    """What a suggestion depends on: the processed files and the report facts it navigates by."""
+    ref = [(f["id"], f["value_text"], f["page"], f["approved"]) for f in reference(eid)]
+    return json.dumps([sorted(w["id"] for w in wbs if w["status"] == "done"),
+                       sorted(d["id"] for d in docs if d["status"] == "done"), ref], default=str)
+
+
+def _maybe_suggest(eid: int, e: dict) -> None:
+    """Suggest roles by itself once the files are read, and again whenever the files or the report facts change,
+    until every role is confirmed: structure first, then the report's evidence as it arrives."""
+    if eid in _ROLE_JOBS or len(e["roles"]) == 4 and all(r["confirmed"] for r in e["roles"].values()):
+        return
+    wbs, docs = e["workbooks"], e["documents"]
+    if not any(w["status"] == "done" for w in wbs) or any(busy for busy in
+            [w["status"] in ("queued", "processing") for w in wbs] + [d["status"] in ("queued", "processing") for d in docs]
+            + [d["facts_status"] in ("queued", "running") for d in docs]):
+        return  # wait until nothing is being read
+    if (e.get("roles_suggested") or {}).get("key") == _roles_key(eid, wbs, docs):
+        return
+    _ROLE_JOBS.add(eid)
+    _jobs.put(("roles", eid))
+
+
+def _suggest_job(eid: int) -> None:
+    try:
+        suggest_roles(eid)
+    finally:
+        _ROLE_JOBS.discard(eid)
+
+
 def suggest_roles(eid: int) -> dict:
     """Suggest (doesn't overwrite confirmed roles). Stored so the page can show it next to what's confirmed."""
     docs = [d for d in documents(eid) if d["status"] == "done"]
     n_facts = {d["id"]: sum(1 for f in facts(eid) if f["document_id"] == d["id"]) for d in docs}
-    res = rolesmod.suggest([{**d, "n_facts": n_facts[d["id"]]} for d in docs], _wb_inputs(eid), reference(eid))
+    key = _roles_key(eid, workbooks(eid), documents(eid))
+    try:
+        res = rolesmod.suggest([{**d, "n_facts": n_facts[d["id"]]} for d in docs], _wb_inputs(eid), reference(eid))
+    except Exception as ex:  # kept with its key, so a failing suggestion isn't retried on every poll
+        traceback.print_exc()
+        prev = _q("SELECT roles_suggested FROM engagements WHERE id=?", eid)[0]["roles_suggested"]
+        _set("engagements", eid, roles_suggested=json.dumps({**(json.loads(prev or "null") or {"roles": {}, "workbooks": {}}),
+                                                             "key": key, "error": friendly(ex)}))
+        return get(eid)
+    res.update(key=key, at=time.time())
     _set("engagements", eid, roles_suggested=json.dumps(res, default=str), updated_at=time.time())
     have = roles(eid)
     with _lock, _conn() as db:
@@ -925,7 +1003,7 @@ def _process_facts(did: int) -> None:
                         json.dumps(f.get("review")), "pending", now, json.dumps(f.get("agent"))))
     _set("documents", did, facts_notes=res.get("notes"), review_summary=res.get("review_summary"))
     if res.get("loop"):
-        _note_loop(did, facts={**res["loop"]["summary"], "at": now})
+        _note_loop(did, facts={**res["loop"]["summary"], **auto_decide(did), "at": now})
         _set("documents", did, facts_step="Writing down what the loop taught")
         _learn(did, "facts", res["loop"]["episodes"])
     _set("documents", did, facts_status="done", facts_step="Done")
@@ -935,7 +1013,7 @@ def _process_facts(did: int) -> None:
 def _run(kind: str, rid: int) -> None:
     try:
         {"doc": _process_doc, "facts": _process_facts, "compare": _compare, "map": _map, "overlay": _overlay,
-         "resolve_tables": _resolve_tables_job, "resolve_facts": _resolve_facts_job}[kind](rid)
+         "resolve_tables": _resolve_tables_job, "resolve_facts": _resolve_facts_job, "roles": _suggest_job}[kind](rid)
     except Exception as e:
         traceback.print_exc()
         msg = friendly(e)
@@ -943,6 +1021,8 @@ def _run(kind: str, rid: int) -> None:
             _set("documents", rid, status="error", step="Failed", error=msg)
         elif kind == "resolve_tables":  # the document itself is still fine
             _set("documents", rid, status="done", step="Done", pct=1.0, error="The review loop failed: " + msg)
+        elif kind == "roles":
+            pass  # suggest_roles kept the error with the suggestion
         elif kind in ("facts", "resolve_facts"):
             _set("documents", rid, facts_status="error", facts_step="Failed", facts_error=msg)
         else:
