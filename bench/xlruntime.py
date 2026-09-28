@@ -112,7 +112,7 @@ class Rng:
         key = (self.src, self.sheet, self.r1, self.c1, self.r2, self.c2)
         cache = self.book.range_cache
         v = cache.get(key)
-        if v is None:
+        if v is None or self.book.rec is not None:  # while a cell's reads are recorded, read each cell again
             get = self.book.get
             v = [[get(self.src, self.sheet, r, c) for c in range(self.c1, self.c2 + 1)] for r in range(self.r1, self.r2 + 1)]
             cache[key] = v
@@ -1585,6 +1585,8 @@ class UnknownFunction:
 
     def __call__(self, *args):
         self.book.unsupported[self.name] += 1
+        if self.book.rec is not None:
+            self.book.rec_unknown.add(self.name)
         return NAME
 
 
@@ -1610,6 +1612,8 @@ class Book:
         self.ext = lambda idx, sheet, row, col: None       # another workbook, through [idx]
         self.cached = lambda sheet, row, col: None         # the workbook's saved values
         self.feed_log = None                               # set -> records each feed read (for tracing)
+        self.rec = None          # a set while one cell's formula runs again for the doctor: every cell it reads
+        self.rec_unknown = set()  # ... and the unsupported functions it called
 
     # registration, used by the compiled module
     def row(self, sheet, row, cols, label=""):
@@ -1619,6 +1623,9 @@ class Book:
 
             def cell(c):
                 k = (sheet, row, c)
+                rec = self.rec
+                if rec is not None:
+                    rec.add(("", sheet, row, c))
                 if k in overrides:
                     return overrides[k]
                 v = memo.get(k, _MISS)
@@ -1630,10 +1637,14 @@ class Book:
                     self.cycles.append(k)
                     return self.cached(sheet, row, c)
                 busy.add(k)
+                if rec is not None:  # record only the cells the traced formula reads itself, not their inputs
+                    self.rec = None
                 try:
                     v = scalar(fn(c), row, c)
                 finally:
                     busy.discard(k)
+                    if rec is not None:
+                        self.rec = rec
                 memo[k] = v
                 return v
             cell.__name__, cell.__doc__ = fn.__name__, fn.__doc__
@@ -1650,6 +1661,8 @@ class Book:
     # values
     def input(self, sheet, row, col):
         k = (sheet, row, col)
+        if self.rec is not None:
+            self.rec.add(("", sheet, row, col))
         if k in self.overrides:
             return self.overrides[k]
         return self.inputs.get(k)
@@ -1664,6 +1677,8 @@ class Book:
 
     def feed_value(self, sheet, row, col):
         k = (sheet, row, col)
+        if self.rec is not None:
+            self.rec.add(("", sheet, row, col))
         if k in self.overrides:
             return self.overrides[k]
         v = self.feed(sheet, row, col)
@@ -1673,6 +1688,8 @@ class Book:
 
     def ext_value(self, idx, sheet, row, col):
         k = (f"[{idx}]{sheet}", row, col)
+        if self.rec is not None:
+            self.rec.add((idx, sheet, row, col))
         if k in self.overrides:
             return self.overrides[k]
         v = self.ext(idx, sheet, row, col)
@@ -1685,6 +1702,23 @@ class Book:
 
     def is_formula(self, sheet, row, col):
         return any(a <= col <= b for a, b in self.formula_cols.get((sheet, row), ()))
+
+    def reads(self, sheet, row, col) -> tuple[set, set]:
+        """The cells one formula cell reads, found by running its formula again (what it reads is already worked
+        out, so this is quick), and the unsupported functions it calls: ({(src, sheet, row, col)}, {name}). src is
+        "" for this workbook, else the external link's number."""
+        fn = self.rows.get((sheet, row))
+        if not fn or not self.is_formula(sheet, row, col):
+            return set(), set()
+        self.rec, self.rec_unknown = set(), set()
+        try:
+            fn.raw(col)
+        except Exception:
+            pass
+        finally:
+            rec, unknown, self.rec = self.rec, self.rec_unknown, None
+        rec.discard(("", sheet, row, col))
+        return rec, unknown
 
     def reset(self):
         self.memo.clear()

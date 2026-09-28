@@ -132,7 +132,8 @@ the report, marked when the rebuild ties to it), this year's rolled forward, the
 them, how sure we are (report read and checked, conclusions tie, Python equals Excel, the report's charts
 match), and one **needs-you** list of everything waiting for a person: files to retry or upload, roles to
 confirm, report facts and tables the agents couldn't settle, builds to start, figures that don't tie, charts
-that don't match. The sidebar counts them by page. **Setup**: Files and Roles. **Last year**: The report (its
+that don't match. The sidebar counts them by page. **Doctor**: why a figure comes out wrong, and what to do
+(below). **Setup**: Files and Roles. **Last year**: The report (its
 tables and key facts), Rebuild in Python (step 6 below) and the Map. **This year**: Summary (step 7), the
 **Value bridge** and What changed (the client models compared). Ask is a panel beside every page, and the
 Azure models sit behind the Models button. The pipeline behind the pages is below; each step is checked by a
@@ -328,6 +329,34 @@ to this year's, carried up the figure's formulas); last year's forecast cash flo
 (each discounting redone at the new date); this year's client model (the engine's roll-forward, less the step
 before); and your changes from the Summary page's scenario. Where the formulas above a figure's discountings
 can't be recomputed, the first three steps are shown as one roll-forward step, and the page says why.
+
+**The doctor** (`bench/doctor.py`) answers "why is this figure wrong?" from evidence, then gpt-6-sol writes it up,
+held to that evidence (each finding says what was seen, the cause, the fix, and whether the fix is the app's,
+the valuer's or a code change). It asks four questions:
+- **Where does it break?** Each of the report's figures through the layers on its way to this year's value: the
+  report, the overlay as Excel saved it, Python on the overlay's saved values, Python on last year's client model,
+  Python on this year's. The first layer that disagrees with the one before is where to look. Python differing
+  from Excel on the saved values can't be the wrong file or the wrong row, since no client file is read there.
+- **Why?** From a wrong figure, the cells it reads are followed while they're wrong too, down to where it starts.
+  The runtime records what a formula reads by running it again (`Book.reads`), so names, INDEX, OFFSET and IF
+  branches are followed as Excel took them. Each starting cell gets its cause: a formula that doesn't compile, a
+  function Python doesn't have (a data provider's add-in, or a macro function in an .xlsm), a name it can't find
+  (an Excel table reference, a LET parameter, a name on another sheet), a client value that holds an error or
+  differs from what the overlay last read, or the same inputs giving a different answer. On the pages these
+  all show as #NAME?.
+- **The right file?** The overlay's external links against the file assigned, and the client values the figures
+  read against the values the overlay last saw (most differing means another version of the client model). An
+  overlay link whose name and values both differ from the assigned file is still matched by its sheet names; if
+  nothing matches, the doctor says nothing reads the client model.
+- **The right rows?** Each client line item the figures read, followed into this year's model: its history (the
+  periods up to last year's valuation date) should be the same numbers in both models, and without history the
+  same forecast periods shouldn't be wildly different, flip sign or change units.
+
+A cell Python can't compute whose value can't change between years (it reads nothing from the client model, no
+assumption and not the timeline) can be held at Excel's saved value on every feed, from the page. Holding is
+checked first by recomputing the figures on every feed, and a hold drops if the workbook is rebuilt and that cell
+changed. **Copy for a message** puts the diagnosis and its evidence on the clipboard as plain text.
+`tests/check_doctor.py` plants each kind of fault in the synthetic pack and checks the doctor finds it.
 
 A status panel at the top of every page shows where the engagement is. Each stage appears as done, running (with
 what the agents are doing now, step by step, the review loop animated), needing you, or failed. It also shows the

@@ -84,7 +84,9 @@ def _conn() -> sqlite3.Connection:
         if col not in have:
             db.execute(f"ALTER TABLE engagements ADD COLUMN {col} TEXT")
     for col, kind in (("charts_status", "TEXT"), ("charts_step", "TEXT"), ("charts_error", "TEXT"),
-                      ("charts_started_at", "REAL"), ("charts_secs", "REAL")):  # ... and before the Summary page
+                      ("charts_started_at", "REAL"), ("charts_secs", "REAL"),  # ... and before the Summary page
+                      ("doctor_status", "TEXT"), ("doctor_step", "TEXT"), ("doctor_error", "TEXT"),
+                      ("doctor_started_at", "REAL"), ("doctor_secs", "REAL")):  # ... and before the doctor
         if col not in have:
             db.execute(f"ALTER TABLE engagements ADD COLUMN {col} {kind}")
     for table, col in (("facts", "agent_json"), ("documents", "loop_json"), ("facts", "decided_by")):  # ... and before the loop
@@ -1113,6 +1115,7 @@ def _overlay(eid: int) -> None:
                                 e["name"], w["client_link"], w["prior_valuation_date"], step, client_sheets=w["client_sheets"])
     summary["wiring"] = w
     summary["reference_approved"] = all(f["approved"] for f in reference(eid)) and bool(reference(eid))
+    ovmod.deep(_load_holds, eid, sess)
     _SESSIONS[eid] = (sess, summary)
     _set("engagements", eid, overlay_json=json.dumps(summary, default=str), overlay_status="done", overlay_step="Done",
          updated_at=time.time())
@@ -1131,6 +1134,7 @@ def overlay_session(eid: int):
     sess = ovmod.Session(summary["module"], w["overlay"]["db_path"], w["overlay"]["sheets"],
                          None if w["same_file"] else (w["prior"] or {}).get("db_path"), (w["current"] or {}).get("db_path"),
                          w["client_link"], w.get("client_sheets") or ((w["prior"] or {}).get("sheets") if w["same_file"] else None))
+    ovmod.deep(_load_holds, eid, sess)
     _SESSIONS[eid] = (sess, summary)
     return _SESSIONS[eid]
 
@@ -1343,6 +1347,115 @@ def overlay_trace(eid: int, cell: str) -> dict:
 
 # ---- worker -------------------------------------------------------------------------------------------------
 
+# ---- the overlay doctor (doctor.py) ------------------------------------------------------------------------
+
+def _doctor_file(eid: int) -> Path:
+    return OUT / "overlays" / f"e{eid}" / "doctor.json"
+
+
+def _holds_file(eid: int) -> Path:
+    return OUT / "overlays" / f"e{eid}" / "holds.json"
+
+
+def _load_holds(eid: int, sess) -> None:
+    """The cells a person chose to hold at Excel's saved value, while each is still the same cell: the same
+    formula and the same saved value as when it was held (a rebuilt workbook that changed it drops the hold)."""
+    import overlay as ovmod
+    f = _holds_file(eid)
+    held = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    keep = {}
+    with rodb.connect(sess.ov.path) as db:
+        for cell, h in held.items():
+            k = ovmod.parse_a1(cell)
+            row = db.execute("SELECT formula FROM cells WHERE sheet=? AND row=? AND col=?", k).fetchone()
+            if row and row[0] == h.get("formula") and ovmod.same(sess.ov.value(*k), h.get("value")):
+                keep[k] = h["value"]
+    sess.holds = keep
+    sess.configure("workbook")
+
+
+def start_doctor(eid: int) -> dict:
+    """Queue the doctor: where each figure breaks, why, and whether the files and rows are the right ones."""
+    rows = _q("SELECT overlay_status, doctor_status FROM engagements WHERE id=?", eid)
+    if not rows:
+        raise ValueError("no such engagement")
+    if rows[0]["overlay_status"] != "done":
+        raise ValueError("rebuild in Python first: the doctor examines the Python overlay")
+    if rows[0]["doctor_status"] in ("queued", "running"):
+        return doctor_view(eid)
+    _set("engagements", eid, doctor_status="queued", doctor_step="Waiting to start", doctor_error=None)
+    _jobs.put(("doctor", eid))
+    return doctor_view(eid)
+
+
+def _doctor_job(eid: int) -> None:
+    import doctor
+    import overlay as ovmod
+    step = lambda frac, msg: _set("engagements", eid, doctor_status="running", doctor_step=msg)
+    step(0, "Loading the Python overlay")
+    sess, summary = overlay_session(eid)
+    evidence = ovmod.deep(doctor.examine, sess, summary, step)
+    step(0.9, "Writing up the diagnosis")
+    e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+    res = {"at": time.time(), "evidence": evidence, "diagnosis": None, "diagnosis_error": None}
+    try:
+        reader = docingest.Reader(e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER, _logger(eid))
+        res["diagnosis"] = doctor.diagnose(reader, evidence)
+        res["model"] = reader.reviewer_model
+    except Exception as ex:  # the evidence stands on its own
+        traceback.print_exc()
+        res["diagnosis_error"] = friendly(ex)
+    res["text"] = doctor.report_text(res)
+    f = _doctor_file(eid)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(res, default=str), encoding="utf-8")
+    _set("engagements", eid, doctor_status="done", doctor_step="Done")
+
+
+def doctor_view(eid: int) -> dict:
+    rows = _q("SELECT overlay_status, overlay_started_at, doctor_status, doctor_step, doctor_error, doctor_secs "
+              "FROM engagements WHERE id=?", eid)
+    if not rows:
+        raise ValueError("no such engagement")
+    e = rows[0]
+    f = _doctor_file(eid)
+    res = json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+    held = json.loads(_holds_file(eid).read_text(encoding="utf-8")) if _holds_file(eid).exists() else {}
+    return {"status": e["doctor_status"], "step": e["doctor_step"], "error": e["doctor_error"], "secs": e["doctor_secs"],
+            "overlay_status": e["overlay_status"], "result": res,
+            "stale": bool(res and e["overlay_started_at"] and res["at"] < e["overlay_started_at"]),
+            "held": [{"cell": c, **h} for c, h in held.items()]}
+
+
+def doctor_holds(eid: int, cells: list[str] | None, release: bool = False) -> dict:
+    """Hold the doctor's safe cells at Excel's saved value on every feed (cells: all of them when None), or
+    release every hold. Only cells the doctor found safe can be held."""
+    import overlay as ovmod
+    f = _holds_file(eid)
+    held = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    if release:
+        held = {}
+    else:
+        res = json.loads(_doctor_file(eid).read_text(encoding="utf-8")) if _doctor_file(eid).exists() else None
+        safe = {h["cell"]: h for h in ((res or {}).get("evidence", {}).get("holds") or {}).get("safe") or []}
+        if not safe:
+            raise ValueError("the doctor found nothing that can be held: run it first")
+        pick = [c for c in (cells or list(safe)) if c in safe]
+        sess, summary = overlay_session(eid)
+        with rodb.connect(sess.ov.path) as db:
+            for c in pick:
+                k = ovmod.parse_a1(c)
+                row = db.execute("SELECT formula FROM cells WHERE sheet=? AND row=? AND col=?", k).fetchone()
+                held[c] = {"value": safe[c]["value"], "formula": row[0] if row else None, "why": safe[c]["title"],
+                           "at": time.time()}
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(held, default=str), encoding="utf-8")
+    if eid in _SESSIONS:
+        import overlay as ovmod
+        ovmod.deep(_load_holds, eid, _SESSIONS[eid][0])
+    return doctor_view(eid)
+
+
 def _process_doc(did: int) -> None:
     d = _doc(did)
     eid = d["engagement_id"]
@@ -1409,12 +1522,12 @@ def _process_facts(did: int) -> None:
 
 _STEP = {"doc": "read the report", "resolve_tables": "table review loop", "facts": "key facts",
          "resolve_facts": "fact review loop", "compare": "compare models", "map": "map", "overlay": "python overlay",
-         "roles": "roles", "charts": "report charts"}
+         "roles": "roles", "charts": "report charts", "doctor": "overlay doctor"}
 # where each job's start time and duration go: (table, started column, seconds column)
 _TIMED = {"doc": ("documents", "started_at", "doc_secs"), "resolve_tables": ("documents", "started_at", "doc_secs"),
           "facts": ("documents", "facts_started_at", "facts_secs"),
           "resolve_facts": ("documents", "facts_started_at", "facts_secs"),
-          **{k: ("engagements", f"{k}_started_at", f"{k}_secs") for k in ("compare", "map", "overlay", "charts")}}
+          **{k: ("engagements", f"{k}_started_at", f"{k}_secs") for k in ("compare", "map", "overlay", "charts", "doctor")}}
 
 
 def _run(kind: str, rid: int) -> None:
@@ -1435,7 +1548,7 @@ def _run_job(kind: str, rid: int) -> bool:
     try:
         {"doc": _process_doc, "facts": _process_facts, "compare": _compare, "map": _map, "overlay": _overlay,
          "resolve_tables": _resolve_tables_job, "resolve_facts": _resolve_facts_job, "roles": _suggest_job,
-         "charts": _charts_job}[kind](rid)
+         "charts": _charts_job, "doctor": _doctor_job}[kind](rid)
         return True
     except Exception as e:
         traceback.print_exc()
@@ -1510,7 +1623,7 @@ def start_worker() -> None:
     for r in _q("SELECT id FROM documents WHERE facts_status IN ('queued','running')"):
         # an interrupted loop reruns as a loop (on the facts saved); an interrupted extraction starts again
         _jobs.put(("resolve_facts" if _q("SELECT 1 FROM facts WHERE document_id=?", r["id"]) else "facts", r["id"]))
-    for kind in ("compare", "map", "overlay", "charts"):
+    for kind in ("compare", "map", "overlay", "charts", "doctor"):
         for r in _q(f"SELECT id FROM engagements WHERE {kind}_status IN ('queued','running')"):
             _jobs.put((kind, r["id"]))
     threading.Thread(target=_worker, daemon=True, name="engagement-worker").start()

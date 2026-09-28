@@ -147,6 +147,16 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12.5px; min-height:
 .callout.warn { background: var(--warn-bg); color: var(--warn); border-color: #e0b400; }
 .callout.bad { background: var(--bad-bg); color: var(--bad); border-color: var(--bad); }
 .callout.info { background: var(--info-bg); color: var(--info); border-color: var(--blue); }
+.dx { margin: 10px 0 0; padding-left: 22px; display: grid; gap: 14px; }
+.dx p { margin: 3px 0 0; font-size: 13.5px; }
+.dx .k { color: var(--muted); }
+.dxhead { font-size: 15px; margin: 6px 0 4px; max-width: 900px; }
+td.brk { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
+pre.dr { margin: 6px 0 0; background: var(--code-bg); padding: 8px 10px; border-radius: 4px; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
+.drlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.drlist li { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: baseline; font-size: 13.5px; }
+.drlist li > .small { grid-column: 2; }
+details.work .in { padding: 0 12px 10px; }
 
 .scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
@@ -408,7 +418,7 @@ async function api(path, opts = {}) {
 }
 
 const NAV = [
-  {id: "overview", name: "Overview"},
+  {id: "overview", name: "Overview"}, {id: "doctor", name: "Doctor"},
   {sec: "Setup"}, {id: "files", name: "Files"}, {id: "roles", name: "Roles"},
   {sec: "Last year"}, {id: "reference", name: "The report"}, {id: "python", name: "Rebuild in Python"}, {id: "map", name: "Map"},
   {sec: "This year"}, {id: "summary", name: "Summary"}, {id: "bridge", name: "Value bridge"}, {id: "compare", name: "What changed"}];
@@ -454,7 +464,7 @@ function schedule() {
   clearTimeout(pollTimer);
   if (!E) return;
   const working = E.documents.some(d => busy(d.status) || busy(d.facts_status) || ["queued", "reading"].includes(d.tables_status)) || E.workbooks.some(w => busy(w.status))
-    || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || busy(E.charts_status) || E.roles_pending || uploads.some(u => !u.done);
+    || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || busy(E.charts_status) || busy(E.doctor_status) || E.roles_pending || uploads.some(u => !u.done);
   if (working) pollTimer = setTimeout(async () => { await refresh(); spend(); }, 1500);
 }
 async function spend() {
@@ -485,6 +495,7 @@ function progress() {
     python: E.overlay_status === "done" ? "done" : (E.overlay_status ? "work" : ""),
     summary: E.charts_status === "done" ? "done" : (E.charts_status ? "work" : ""),
     bridge: E.overlay_status === "done" && E.roles.current_model ? "done" : "",
+    doctor: E.doctor_status === "done" ? "done" : (E.doctor_status ? "work" : ""),
   };
 }
 function renderSteps() {
@@ -505,7 +516,7 @@ function render(creating = false) {
   const m = $("#main");
   if (!E || creating) { m.innerHTML = viewNew(); bindNew(); $("#now").hidden = true; return; }
   const views = {overview: viewOverview, files: viewFiles, reference: viewReference, roles: viewRoles, compare: viewCompare, map: viewMap,
-    python: viewPython, summary: viewSummary, bridge: viewBridge};
+    python: viewPython, summary: viewSummary, bridge: viewBridge, doctor: viewDoctor};
   keepOpen(m, () => { m.innerHTML = (views[state.step] || viewFiles)(); bind[state.step]?.(); });
 }
 // A redraw (the page refreshes every couple of seconds while work runs) mustn't close a section you opened, or open
@@ -1410,9 +1421,12 @@ function needs() {
     const why = [Object.keys(V.unsupported || {}).length && `functions ${Object.keys(V.unsupported).slice(0, 4).join(", ")}`,
       E.overlay.stats?.missing_names?.length && `names ${E.overlay.stats.missing_names.slice(0, 3).join(", ")}`,
       E.overlay.not_compiled?.length && `${E.overlay.not_compiled.length} formula(s) not compiled`].filter(Boolean).join("; ");
-    add(`The Python overlay differs from Excel in ${(V.cells - V.matched).toLocaleString()} formula cell(s)${why ? `: ${why}` : ""}`, "python");
+    add(`The Python overlay differs from Excel in ${(V.cells - V.matched).toLocaleString()} formula cell(s)${why ? `: ${why}` : ""}${E.doctor_status ? "" : ". The doctor finds where and why"}`, "doctor");
   }
   if (E.overlay_status === "done" && E.overlay?.roll?.months_assumed) add(`Check the roll-forward: ${E.overlay.roll.months} months was assumed`, "python");
+  const sumErr = ((OVR.eid === E.id ? OVR.sum : null)?.table?.rows || []).filter(r => r.kind === "conclusion" && Object.values(r.values || {}).some(v => typeof v === "string" && v.startsWith("#"))).length;
+  if (E.overlay_status === "done" && sumErr && !(V && V.matched < V.cells) && !E.doctor_status) add(`Run the doctor: ${sumErr} figure(s) come out as errors on this year's model`, "doctor");
+  if (E.doctor_status === "error") add("Run the doctor again: it failed", "doctor");
   const sum = OVR.eid === E.id ? OVR.sum : null;
   for (const row of sum?.table?.rows || []) if (row.kind === "conclusion" && row.tie && !row.tie.ok)
     add(`${row.label} doesn't tie: rebuilt ${sumNum(row, row.values?.rebuilt)} vs the report's ${row.report}`, "summary");
@@ -1521,6 +1535,100 @@ function bindBridge() {
 }
 bind.bridge = bindBridge;
 
+// ---- the doctor: why a figure comes out wrong, and what to do about it --------------------------------------
+const DR = {eid: null, data: null, loading: false, stamp: null};
+const DR_FEED = {workbook: "Python on the saved values", prior: "Python on last year's model", current: "Python on this year's model"};
+const DR_WHERE = {workbook: "On the overlay's own saved values", prior: "On last year's client model", current: "On this year's client model"};
+const DR_BREAK = {saved: "The overlay as saved doesn't give the report's figure: look at the overlay file, or the cell picked for the figure.",
+  workbook: "Python differs from Excel on the overlay's own saved values. No client file is read at this layer, so it isn't the wrong file or the wrong row: it's something the Python rebuild can't compute yet.",
+  prior: "The figure changes when fed from last year's client model: that file isn't the version the overlay was saved with, or the link reads the wrong file.",
+  current: "The figure breaks on this year's client model: the rows followed into it, or its values."};
+const DR_WHO = {app: ["ok", "Fix here"], you: ["warn", "For you"], developer: ["info", "Needs a code change"]};
+const drStamp = () => [E.id, E.doctor_status, E.overlay_status, E.overlay_started_at].join("|");
+const drNum = v => typeof v === "number" ? v.toLocaleString(undefined, {maximumFractionDigits: Math.abs(v) >= 1 ? 2 : 6}) : esc(v ?? "–");
+function viewDoctor() {
+  if (DR.eid !== E.id) Object.assign(DR, {eid: E.id, data: null, stamp: null});
+  const head = `<div class="lede"><div><h1><b>Doctor</b></h1><p>Why a figure comes out wrong, and what to do about it. The doctor follows each of the report's figures back through the Python rebuild to the cells where it first goes wrong, checks that the right files and the right rows are being read, then ${esc(E.reviewer_model || CFG.default_reviewer)} writes it up from that evidence.</p></div></div>`;
+  if (E.overlay_status !== "done") return head + `<div class="card"><p class="muted" style="margin:0">The doctor examines the Python rebuild: build it first in <a href="#" data-go="python">Rebuild in Python</a>.</p></div>`;
+  const d = DR.data, run = busy(E.doctor_status), res = d?.result;
+  const bar = `<div class="card"><div class="row" style="justify-content:space-between">
+    <div>${run ? `<span class="pill info">${esc(E.doctor_step || "Waiting to start")}</span>` : res ? `<span class="small muted">Examined ${esc(new Date(res.at * 1000).toLocaleString())}${res.model ? ` · written up by ${esc(res.model)}` : ""}</span>${d.stale ? ` <span class="pill warn">Rebuilt in Python since: run it again</span>` : ""}` : `<span class="muted">Not run yet.</span>`}</div>
+    <div class="row">${res ? `<button class="btn small" id="drCopy" title="The diagnosis and its evidence as plain text">Copy for a message</button>` : ""}<button class="btn ${res ? "" : "primary"}" id="drRun" ${run ? "disabled" : ""}>${res ? "Run again" : "Run the doctor"}</button></div></div>
+    ${E.doctor_status === "error" ? `<div class="callout bad small" style="margin-top:10px">The doctor failed: ${esc(E.doctor_error || "")}</div>` : ""}</div>`;
+  if (!res) return head + bar + (d ? "" : `<div class="card"><p class="muted" style="margin:0">${DR.loading ? "Loading…" : ""}</p></div>`);
+  const ev = res.evidence, feeds = ev.feeds || [], H = ev.holds || {}, safe = H.safe || [], held = d.held || [];
+  const dx = res.diagnosis;
+  const holdBtn = safe.length ? `<button class="btn small" data-drhold="all">Hold ${safe.length === 1 ? "it" : `these ${safe.length} cells`} at Excel's saved value${safe.length === 1 ? "" : "s"}</button>` : "";
+  const dxCard = dx ? `<div class="card"><h2>Diagnosis</h2><p class="dxhead">${esc(dx.headline)}</p>
+    <ol class="dx">${dx.findings.map(f => `<li><div class="row" style="gap:8px"><b>${esc(f.title)}</b><span class="pill ${DR_WHO[f.who]?.[0] || ""}">${DR_WHO[f.who]?.[1] || esc(f.who)}</span><span class="pill">${esc(f.confidence)} confidence</span></div>
+      <p><span class="k">Seen:</span> ${esc(f.what_we_saw)}</p><p><span class="k">Cause:</span> ${esc(f.cause)}</p><p><span class="k">Fix:</span> ${esc(f.fix)}</p>
+      ${f.who === "app" && holdBtn ? `<p>${holdBtn}</p>` : ""}</li>`).join("")}</ol>
+    <div class="grid2" style="margin-top:14px"><div class="callout info small"><b>The wrong file?</b> ${esc(dx.wrong_file)}</div><div class="callout info small"><b>The wrong rows?</b> ${esc(dx.wrong_row)}</div></div></div>`
+    : `<div class="card"><h2>Diagnosis</h2><p class="small muted" style="margin:0">${res.diagnosis_error ? `The write-up failed (${esc(res.diagnosis_error)}). The evidence below stands on its own.` : "No write-up."}</p></div>`;
+  const breaks = [...new Set((ev.layers || []).map(r => r.breaks_at).filter(Boolean))];
+  const layers = `<div class="card"><h2>Layer by layer</h2><p class="sub">Each figure on its way from the report to this year's value. The first layer where it stops agreeing with the one before is marked: that's where to look.</p>
+    <div class="scroll"><table><thead><tr><th>Figure</th><th class="num">Report</th><th class="num">Excel, as saved</th>${feeds.map(f => `<th class="num">${esc(DR_FEED[f])}</th>`).join("")}</tr></thead><tbody>
+    ${(ev.layers || []).map(r => { const c = f => r.breaks_at === f ? "num brk" : "num";
+      return `<tr><td>${esc(r.label)} <span class="muted small">${esc(r.cell)}</span></td><td class="num">${esc(r.report || "")}</td><td class="${c("saved")}">${drNum(r.saved)}${r.saved_ties === true ? ` <span class="pill ok">✓</span>` : r.saved_ties === false ? ` <span class="pill bad">✗</span>` : ""}</td>${feeds.map(f => `<td class="${c(f)}">${drNum(r[f])}</td>`).join("")}</tr>`; }).join("")}
+    </tbody></table></div>${breaks.map(b => `<div class="callout ${b === "workbook" ? "info" : "warn"} small" style="margin-top:8px">${esc(DR_BREAK[b])}</div>`).join("")}</div>`;
+  const rootsHtml = feeds.filter(f => ev.roots?.[f]?.length).map(f => `<h3 style="font-size:14px;margin:14px 0 6px">${esc(DR_WHERE[f])} <span class="muted small">${(ev.bad_cells?.[f] || 0).toLocaleString()} wrong cell(s) on the way</span></h3>` +
+    ev.roots[f].map((g, i) => { const x = g.example;
+      return `<details class="work" data-k="dr-${f}-${i}" style="margin-bottom:6px"><summary><b style="color:var(--ink)">${esc(g.title)}</b>&nbsp;· ${g.n_cells} cell(s) · reaches ${esc(g.figures.join(", "))}${g.also_on?.length ? ` · the same on ${esc(g.also_on.map(x => ({prior: "last year's model", current: "this year's model"})[x] || x).join(" and "))}` : ""}</summary><div class="in">
+        <p style="margin:0">${esc(g.detail)}</p><p class="small muted" style="margin:4px 0 0">${esc(g.cells.join(", "))}${g.n_cells > g.cells.length ? ", …" : ""}</p>
+        ${x.formula ? `<pre class="dr">${esc(x.cell)}${x.label ? `  (${esc(x.label)})` : ""}\n=${esc(x.formula.replace(/^=/, ""))}</pre>` : ""}
+        <p class="small" style="margin:6px 0 0">Python: <b>${drNum(x.python)}</b> · Excel saved: <b>${drNum(x.excel)}</b></p>
+        ${x.reads?.length ? `<div class="scroll"><table style="margin-top:6px"><thead><tr><th>It reads</th><th class="num">Python</th><th class="num">Excel</th></tr></thead><tbody>${x.reads.map(r => `<tr><td>${esc(r.cell)} <span class="muted small">${esc(r.label || "")}</span></td><td class="num">${drNum(r.python)}</td><td class="num">${drNum(r.excel)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      </div></details>`; }).join("")).join("");
+  const rootsCard = `<div class="card"><h2>Where it starts</h2><p class="sub">From each wrong figure, the cells it reads, followed while they're wrong too, to the cells where it begins. On the page these all show as #NAME?; here each says what it is.</p>${rootsHtml || `<p class="small muted" style="margin:0">Nothing: every figure agrees on every layer.</p>`}</div>`;
+  const files = `<div class="card"><h2>The files</h2><ul class="drlist">${(ev.files || []).map(f => `<li><span class="pill ${f.status}">${{ok: "✓ ok", warn: "check", bad: "✗ wrong", info: "info"}[f.status] || esc(f.status)}</span><span><b>${esc(f.check)}</b>. ${esc(f.detail)}</span>
+      ${f.examples?.length ? `<div class="small scroll"><table><tbody>${f.examples.slice(0, 5).map(x => `<tr>${Object.values(x).map(v => `<td class="${typeof v === "number" ? "num" : ""}">${drNum(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : ""}</li>`).join("") || `<li><span class="pill info">info</span><span>Nothing to check: no client model is assigned.</span></li>`}</ul></div>`;
+  const R = ev.rows;
+  const rows = R ? `<div class="card"><h2>The rows, this year</h2><p class="sub">${R.items} client line item(s) the figures read, followed into this year's model by label: ${R.ok} look right, ${R.n_flagged} flagged${R.unmatched_values ? `, ${R.unmatched_values} value(s) not found this year (they count as blank)` : ""}. A line item's history, the periods up to last year's valuation date, should be the same numbers in both models; without history, the same forecast periods shouldn't be wildly different.</p>
+    ${R.flagged.length ? `<div class="scroll"><table><thead><tr><th>Line item</th><th>Last year</th><th>This year</th><th>Matched by</th><th>What's wrong</th></tr></thead><tbody>${R.flagged.map(x => `<tr><td class="mono small">${esc(x.item)}</td><td>${esc(x.label || "")}</td><td>${esc(x.now || "")}</td><td class="small">${esc(x.matched_by || "")}</td><td><span class="pill ${x.status === "missing" ? "bad" : "warn"}">${esc(x.status)}</span> <span class="small">${esc(x.detail)}</span>${x.periods?.length ? `<div class="small muted">${x.periods.map(p => `${esc(p.period)}: ${drNum(p.last_year)} → ${drNum(p.this_year)}`).join("; ")}</div>` : ""}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${R.unmatched_items?.length ? `<p class="small" style="margin:10px 0 4px"><b>Not found in this year's model</b></p><ul class="why small">${R.unmatched_items.map(x => `<li><span class="mono">${esc(x.item)}</span> ${esc(x.label)}: ${esc(x.detail || "")} (${x.values} value(s))</li>`).join("")}</ul>` : ""}</div>` : "";
+  const chk = H.check ? Object.entries(H.check).map(([f, c]) => `${DR_FEED[f] || f}: ${c.errors_before} → ${c.errors_after} figure(s) in error`).join("; ") : "";
+  const holds = safe.length || held.length || (H.unsafe || []).length ? `<div class="card"><h2>Hold at Excel's value</h2><p class="sub">A cell Python can't compute, whose value can't change between years (it reads nothing from the client model and no assumption), is right on every feed at the value Excel saved. Holding it lets everything above it compute.</p>
+    ${held.length ? `<div class="callout info small">${held.length} cell(s) held now: ${esc(held.slice(0, 8).map(h => h.cell).join(", "))}${held.length > 8 ? ", …" : ""}. <a href="#" id="drRelease">Release them all</a></div>` : ""}
+    ${safe.length ? `<p class="small" style="margin:10px 0 4px"><b>Safe to hold</b>${chk ? ` · checked: ${esc(chk)}` : ""}</p><p class="small" style="margin:0">${esc(safe.slice(0, 12).map(x => `${x.cell} = ${x.excel}`).join(", "))}${safe.length > 12 ? ", …" : ""}</p><p style="margin:8px 0 0">${holdBtn}</p>` : ""}
+    ${(H.unsafe || []).length ? `<p class="small" style="margin:12px 0 4px"><b>Not safe to hold</b> (they would stop moving with this year's model or your assumptions)</p><ul class="why small">${H.unsafe.slice(0, 8).map(x => `<li><span class="mono">${esc(x.cell)}</span>: ${esc(x.why)}</li>`).join("")}</ul>` : ""}</div>` : "";
+  const W = ev.whole_model || {};
+  const whole = `<div class="card"><h2>The whole rebuild</h2><p class="small" style="margin:0">${(W.matched_excel ?? 0).toLocaleString()} of ${(W.formula_cells ?? 0).toLocaleString()} formula cells equal Excel.
+    ${Object.keys(W.unsupported_functions || {}).length ? `Functions Python doesn't have: <b>${esc(Object.entries(W.unsupported_functions).map(([k, v]) => `${k} (${v})`).join(", "))}</b>. ` : ""}
+    ${(W.missing_names || []).length ? `Names it can't find: <b>${esc(W.missing_names.slice(0, 15).join(", "))}</b>${W.missing_names.length > 15 ? "…" : ""}. ` : ""}
+    ${W.not_compiled ? `${W.not_compiled} formula(s) it couldn't compile.` : ""}</p>
+    ${(W.not_compiled_examples || []).length ? `<ul class="why small">${W.not_compiled_examples.map(x => `<li><span class="mono">${esc(x.cell)}</span>: ${esc(x.reason)}</li>`).join("")}</ul>` : ""}</div>`;
+  return head + bar + dxCard + layers + rootsCard + `<div class="grid2">${files}${rows || whole}</div>` + (rows ? whole : "") + holds;
+}
+async function loadDoctor() {
+  if (DR.loading) return;
+  DR.loading = true;
+  const eid = E.id, stamp = drStamp();
+  try { DR.data = await api(`/api/engagements/${eid}/doctor`); DR.stamp = stamp; }
+  catch (e) { DR.data = null; toast(e.message, 6000); DR.stamp = stamp; }
+  DR.loading = false;
+  if (state.step === "doctor" && E?.id === eid) keepOpen($("#main"), () => { $("#main").innerHTML = viewDoctor(); bindDoctor(); });
+}
+async function drCopy(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch { const t = document.createElement("textarea"); t.value = text; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
+  toast("Copied: paste it into a message");
+}
+function bindDoctor() {
+  document.querySelectorAll("#main a[data-go]").forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.go); });
+  if (E.overlay_status === "done" && DR.stamp !== drStamp() && !DR.loading) loadDoctor();
+  $("#drRun")?.addEventListener("click", () => act(async () => { await api(`/api/engagements/${E.id}/doctor`, {method: "POST"}); }));
+  $("#drCopy")?.addEventListener("click", () => drCopy(DR.data?.result?.text || ""));
+  const changed = d => { DR.data = d; SUM.data = null; OVR.sum = null; BR.data = null; $("#main").innerHTML = viewDoctor(); bindDoctor(); };
+  document.querySelectorAll("[data-drhold]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { changed(await api(`/api/engagements/${E.id}/doctor/holds`, {method: "POST", body: {cells: null}})); toast("Held at Excel's saved values: the Summary and bridge recompute with them"); }
+    catch (e) { toast(e.message, 6000); b.disabled = false; }
+  });
+  $("#drRelease")?.addEventListener("click", async e => { e.preventDefault();
+    try { changed(await api(`/api/engagements/${E.id}/doctor/holds`, {method: "POST", body: {release: true}})); toast("Released: every cell is computed again"); } catch (err) { toast(err.message, 6000); } });
+}
+bind.doctor = bindDoctor;
+
 // ---- Ask: the engagement's chat, beside every page ----------------------------------------------------------
 function setAsk(open) {
   $("#askDrawer").hidden = !open;
@@ -1583,7 +1691,7 @@ function summaryCard(d) {
   const notes = [...conc.filter(r => r.method_note).map(r => `${r.label}: ${r.method_note}`), ...conc.filter(r => r.range_note).map(r => `${r.label}: ${r.range_note}`)];
   const isErr = x => typeof x === "string" && x.startsWith("#"), errs = conc.filter(r => cols.some(c => isErr(r.values?.[c])));
   const V = E.overlay?.validation, gap = V && V.matched < V.cells ? V.cells - V.matched : 0;
-  const errNote = errs.length ? `<div class="callout bad small" style="margin-top:10px"><b>${errs.length} figure(s) come out as Excel errors</b> (${esc([...new Set(errs.flatMap(r => cols.map(c => r.values?.[c]).filter(isErr)))].join(", "))}) in the Python overlay${gap ? `, which differs from Excel in ${gap.toLocaleString()} formula cell(s)` : ""}. <a href="#" data-go="python">Rebuild in Python</a> lists the functions, names and formulas it couldn't compute.</div>` : "";
+  const errNote = errs.length ? `<div class="callout bad small" style="margin-top:10px"><b>${errs.length} figure(s) come out as Excel errors</b> (${esc([...new Set(errs.flatMap(r => cols.map(c => r.values?.[c]).filter(isErr)))].join(", "))}) in the Python overlay${gap ? `, which differs from Excel in ${gap.toLocaleString()} formula cell(s)` : ""}. <a href="#" data-go="doctor">The doctor</a> follows them back to the cells where they start, says why, and checks the files and rows being read.</div>` : "";
   return `<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-end"><div><h2>Valuation summary</h2>
     <p class="sub" style="margin:0">Rows from last year's report. ${t.feeds.rebuilt === "prior" ? "The rebuild feeds the overlay from last year's client model;" : "The rebuild uses the values saved in the overlay;"} this year feeds it from this year's client model, rolled forward${t.roll?.valuation_date ? ` to ${esc(t.roll.valuation_date)}` : ""}.</p></div>
     <div class="row small" style="gap:10px;align-items:flex-end">${t.feeds.scenario === "current" ? `<label class="muted">Valuation date<br><input type="date" id="sumVd" value="${esc(SUM.vd || vdDefault)}"></label>` : ""}

@@ -468,12 +468,9 @@ def _comment(text: str, n: int = 110) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def compile_overlay(db_path: str, sheets: list[str], title: str = "", progress=None,
-                    source_path: str | None = None) -> tuple[str, dict]:
-    """(module source, stats) for the formula cells on `sheets` of the workbook behind model.db. source_path: the
-    workbook itself, to read its sheet-level defined names when model.db was built before it kept them."""
-    progress = progress or (lambda f, m: None)
-    db = rodb.connect(db_path)
+def context(db, sheets: list[str], source_path: str | None = None) -> tuple[dict, list[str], dict]:
+    """The compiler's view of a workbook (model.db, open): (the context Gen works in, the overlay sheets in the
+    workbook's order, formula cells by (sheet, row) -> [(col, formula)])."""
     wb_sheets = [s for (s,) in db.execute("SELECT sheet FROM sheets ORDER BY rowid")]
     overlay = [s for s in wb_sheets if s in set(sheets)]
     have = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -504,6 +501,34 @@ def compile_overlay(db_path: str, sheets: list[str], title: str = "", progress=N
     ctx = {"sheets": set(wb_sheets), "overlay": set(overlay), "extent": extent, "names": names, "fn": fn, "labels": labels,
            "isformula_targets": set(), "unknown": set(), "volatile": set(), "local_names": local_names,
            "missing_names": set()}
+    return ctx, overlay, cells
+
+
+def explain(ctx: dict, formula: str, sheet: str, row: int, col: int) -> dict:
+    """Why one formula can come out as #NAME? in Python, as the compiler sees it: it doesn't compile (and why),
+    it calls functions the runtime doesn't have, or it uses names the workbook doesn't define."""
+    mine = {**ctx, "unknown": set(), "missing_names": set(), "volatile": set(), "isformula_targets": set()}
+    gen = Gen(mine)
+    out = {"not_compiled": None}
+    try:
+        code = gen.cell(formula, sheet, row, col, [col])
+        if _depth(code) > MAX_DEPTH:
+            raise CompileError("nested too deeply for Python")
+    except Exception as e:
+        out["not_compiled"] = f"{type(e).__name__}: {e}"
+    out.update(unknown_functions=sorted(mine["unknown"]), missing_names=sorted(mine["missing_names"]),
+               issues=sorted(set(gen.issues)))
+    return out
+
+
+def compile_overlay(db_path: str, sheets: list[str], title: str = "", progress=None,
+                    source_path: str | None = None) -> tuple[str, dict]:
+    """(module source, stats) for the formula cells on `sheets` of the workbook behind model.db. source_path: the
+    workbook itself, to read its sheet-level defined names when model.db was built before it kept them."""
+    progress = progress or (lambda f, m: None)
+    db = rodb.connect(db_path)
+    ctx, overlay, cells = context(db, sheets, source_path)
+    fn, labels = ctx["fn"], ctx["labels"]
     gen = Gen(ctx)
     stats = {"formula_cells": 0, "rows": len(cells), "branches": 0, "not_compiled": []}
     body = []

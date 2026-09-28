@@ -180,15 +180,27 @@ def overlay_to_client(overlay: dict, client: dict | None) -> dict:
     target = None
     if client:
         by_name = [b for b in books if _norm_file(b["filename"]) == _norm_file(client["filename"])]
+        with _ro(client["db_path"]) as c:
+            cl_sheets = {r[0] for r in c.execute("SELECT sheet FROM sheets")}
         for b in books:
             b["cached_check"] = ext_cached_match(overlay["db_path"], b["idx"], client["db_path"]) if b["cached_cells"] else None
             b["is_client"] = b in by_name
-        # The link whose cached values best match the client file is the client model, whatever its name now.
-        scored = sorted(books, key=lambda b: (b.get("is_client", False),
-                                             (b["cached_check"] or {}).get("matched", 0)), reverse=True)
+            b["sheet_share"] = len(set(b["sheets"]) & cl_sheets) / len(b["sheets"]) if b["sheets"] else 0.0
+        # The link whose cached values best match the client file is the client model, whatever its name now; failing
+        # both name and values (a later version of the model, renamed), the one link whose sheets are the client
+        # model's sheets. Without that last step nothing would read the client model, silently: every feed would
+        # give the overlay's saved values.
+        scored = sorted(books, key=lambda b: (b.get("is_client", False), (b["cached_check"] or {}).get("matched", 0),
+                                             b["sheet_share"]), reverse=True)
+        by_sheets = [b for b in books if b["sheet_share"] >= 0.8]
         if scored and (scored[0].get("is_client") or (scored[0]["cached_check"] or {}).get("matched")):
             target = scored[0]["idx"]
+            scored[0]["matched_by"] = "name" if scored[0].get("is_client") else "the values it last read"
             scored[0]["is_client"] = True
+        elif len(by_sheets) == 1:
+            target = by_sheets[0]["idx"]
+            by_sheets[0].update(is_client=True, matched_by="its sheet names (neither its name nor the values it last "
+                                                          "read match the file: probably another version)")
     c_labels = {}
     if client and target:
         with _ro(client["db_path"]) as c:

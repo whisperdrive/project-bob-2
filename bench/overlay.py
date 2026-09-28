@@ -188,17 +188,21 @@ class RowMap:
         self.same_layout = {s for s in total if s in self.cur_sheets and same[s] >= 0.8 * total[s]}
 
     def row(self, s, r):
+        return self.match(s, r)[0]
+
+    def match(self, s, r) -> tuple[int | None, str]:
+        """(current row or None, how it was matched)."""
         k = self.prior.get((s, r))
         if k and k[1]:
             hit = self.back.get(k)
             if hit and hit[0] == s:
-                return hit[1]
+                return hit[1], "same label" if k[2] == 1 else f"same label, occurrence {k[2]} on the sheet"
             rows = self.by_label.get((s, k[1]))
             if rows:
-                return min(rows, key=lambda x: abs(x - r))
+                return min(rows, key=lambda x: abs(x - r)), "same label, the nearest of its rows (it occurs a different number of times now)"
         if s in self.same_layout:
-            return r
-        return None
+            return r, "same row (no label to follow; the sheet's layout is unchanged)"
+        return None, "unmatched"
 
     def why(self, s, r, labels: dict) -> str:
         lab = labels.get((s, r), "")
@@ -247,6 +251,7 @@ class Session:
         B.cached = lambda s, r, c: self.ov.value(s, r, c)
         self.rowmap = RowMap(self.prior or self.ov, self.current) if self.current else None
         self.mode = None
+        self.holds = {}  # (sheet, row, col) -> value: cells held at Excel's value on every feed (the doctor's fixes)
         self.configure("workbook")
 
     # feeds
@@ -256,6 +261,7 @@ class Session:
         self.mode, self.shift = mode, shift_months
         self.unmatched = {}
         B.overrides.clear()
+        B.overrides.update(self.holds)
         B.reset()
         if mode == "workbook":
             B.feed = lambda s, r, c: self.ov.value(s, r, c)

@@ -312,6 +312,29 @@ async def chart_png(eid: int, name: str):
     return FileResponse(p, media_type="image/png")
 
 
+@app.get("/api/engagements/{eid}/doctor")
+async def doctor_view(eid: int):
+    """The overlay doctor's last diagnosis, its progress, and the cells held at Excel's values."""
+    return await _run(engagement.doctor_view, eid)
+
+
+@app.post("/api/engagements/{eid}/doctor")
+async def start_doctor(eid: int):
+    """Run the doctor: where each figure breaks, why, and whether the files and rows are the right ones."""
+    return await _run(engagement.start_doctor, eid)
+
+
+class Holds(BaseModel):
+    cells: list[str] | None = None
+    release: bool = False
+
+
+@app.post("/api/engagements/{eid}/doctor/holds")
+async def doctor_holds(eid: int, body: Holds):
+    """Hold the doctor's safe cells at Excel's saved value on every feed, or release them all."""
+    return await _run(engagement.doctor_holds, eid, body.cells, body.release)
+
+
 @app.post("/api/engagements/{eid}/{kind}")
 async def start_step(eid: int, kind: str):
     if kind not in ("compare", "map", "overlay"):
