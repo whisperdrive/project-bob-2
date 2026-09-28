@@ -73,7 +73,7 @@ FACT_FIELDS = ("category", "key", "label", "value_text", "low_text", "high_text"
 
 def _conn() -> sqlite3.Connection:
     OUT.mkdir(exist_ok=True)
-    db = sqlite3.connect(DB, check_same_thread=False)
+    db = sqlite3.connect(DB, check_same_thread=False, timeout=30)
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
     have = {r[1] for r in db.execute("PRAGMA table_info(engagements)")}
@@ -150,13 +150,26 @@ def workbooks(eid: int) -> list[dict]:
         if rec:
             w = {k: rec.get(k) for k in ("id", "filename", "size", "uploaded_at", "status", "step", "pct", "error",
                                          "sheets", "line_items", "target_name", "project_name", "valuation_date",
-                                         "db_path", "source_path", "identity")}
-            w["sheet_names"] = []
-            if w["status"] == "done" and w["db_path"] and Path(w["db_path"]).exists():
-                with rodb.connect(w["db_path"]) as m:
-                    w["sheet_names"] = [r[0] for r in m.execute("SELECT sheet FROM sheets ORDER BY rowid")]
+                                         "db_path", "source_path", "identity", "processed_at")}
+            w["sheet_names"] = _sheet_names(w) if w["status"] == "done" and w["db_path"] else []
             out.append(w)
     return out
+
+
+_SHEET_NAMES: dict[tuple, list[str]] = {}
+
+
+def _sheet_names(w: dict) -> list[str]:
+    """A processed workbook's sheets, read once: the page polls every couple of seconds, and a model.db can be
+    busy for a moment (its link tables being built); a busy file shows no sheet list rather than failing the page."""
+    key = (w["db_path"], w.get("processed_at"))
+    if key not in _SHEET_NAMES:
+        try:
+            with rodb.connect(w["db_path"], timeout=2) as m:
+                _SHEET_NAMES[key] = [r[0] for r in m.execute("SELECT sheet FROM sheets ORDER BY rowid")]
+        except sqlite3.Error:
+            return []  # not cached: tried again on the next poll
+    return _SHEET_NAMES[key]
 
 
 def documents(eid: int) -> list[dict]:

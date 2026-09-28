@@ -15,6 +15,8 @@ def uri(path) -> str:
 
 
 def connect(path, **kw) -> sqlite3.Connection:
+    """Waits up to 30 s (sqlite's default is 5) for a writer to finish, e.g. a workbook's link tables being built."""
+    kw.setdefault("timeout", 30)
     return sqlite3.connect(uri(path), uri=True, **kw)
 
 

@@ -86,26 +86,21 @@ def read_links(path: str) -> list[dict]:
 
 
 def build(path: str, db_path: str) -> dict:
-    """(Re)write the extbooks / extcells / extrefs tables in model.db from the workbook file."""
+    """(Re)write the extbooks / extcells / extrefs tables in model.db from the workbook file. Everything is read and
+    worked out first; the write is then one short transaction, so the app's other readers of model.db (the pages
+    polling for progress) aren't locked out while a big overlay's links are scanned."""
     links = read_links(path) if path.lower().endswith((".xlsx", ".xlsm")) else []
-    db = sqlite3.connect(db_path)
-    db.executescript("""
-        DROP TABLE IF EXISTS extbooks; DROP TABLE IF EXISTS extcells; DROP TABLE IF EXISTS extrefs;
-        CREATE TABLE extbooks(idx INT, target TEXT, filename TEXT, sheets TEXT, n_cached INT);
-        CREATE TABLE extcells(idx INT, sheet TEXT, addr TEXT, row INT, col INT, value);
-        CREATE TABLE extrefs(sheet TEXT, row INT, idx INT, ext_sheet TEXT, ext_row INT, n_cells INT);""")
+    books, cells = [], []
     for b in links:
-        db.execute("INSERT INTO extbooks VALUES (?,?,?,?,?)",
-                   (b["idx"], b["target"], b["filename"], json.dumps(b["sheets"]), len(b["cells"])))
-        rows = []
+        books.append((b["idx"], b["target"], b["filename"], json.dumps(b["sheets"]), len(b["cells"])))
         for sheet, addr, val in b["cells"]:
             m = ADDR.fullmatch(addr or "")
             if m:
-                rows.append((b["idx"], sheet, addr, int(m.group(2)), column_index_from_string(m.group(1)), val))
-        db.executemany("INSERT INTO extcells VALUES (?,?,?,?,?,?)", rows)
-
+                cells.append((b["idx"], sheet, addr, int(m.group(2)), column_index_from_string(m.group(1)), val))
+    with rodb.connect(db_path) as ro:
+        formulas = ro.execute("SELECT sheet, row, formula FROM cells WHERE formula LIKE '%[%]%'").fetchall()
     refs: dict[tuple, int] = {}
-    for sheet, row, formula in db.execute("SELECT sheet, row, formula FROM cells WHERE formula LIKE '%[%]%'"):
+    for sheet, row, formula in formulas:
         for m in REF.finditer(formula):
             idx = int(m.group(1) or m.group(3))
             ext_sheet = (m.group(2) or m.group(4) or "").replace("''", "'") or None
@@ -115,18 +110,32 @@ def build(path: str, db_path: str) -> dict:
                 ext_rows = list(range(min(ends), min(max(ends), min(ends) + MAX_ROWS_PER_REF) + 1))
             for er in ext_rows:
                 refs[(sheet, row, idx, ext_sheet, er)] = refs.get((sheet, row, idx, ext_sheet, er), 0) + 1
-    db.executemany("INSERT INTO extrefs VALUES (?,?,?,?,?,?)", [(*k, n) for k, n in refs.items()])
-    db.execute("CREATE INDEX IF NOT EXISTS ix_extrefs ON extrefs(sheet, row)")
-    db.commit()
-    stats = {"books": len(links), "cached_cells": sum(len(b["cells"]) for b in links),
-             "rows_reading": len({(k[0], k[1]) for k in refs}), "refs": sum(refs.values())}
-    db.close()
-    return stats
+    db = sqlite3.connect(db_path, timeout=60)
+    try:
+        db.execute("PRAGMA cache_size=-131072")  # 128 MB: the transaction stays in memory until its commit
+        db.execute("BEGIN IMMEDIATE")
+        for t in ("extbooks", "extcells", "extrefs"):
+            db.execute(f"DROP TABLE IF EXISTS {t}")
+        db.execute("CREATE TABLE extbooks(idx INT, target TEXT, filename TEXT, sheets TEXT, n_cached INT)")
+        db.execute("CREATE TABLE extcells(idx INT, sheet TEXT, addr TEXT, row INT, col INT, value)")
+        db.execute("CREATE TABLE extrefs(sheet TEXT, row INT, idx INT, ext_sheet TEXT, ext_row INT, n_cells INT)")
+        db.executemany("INSERT INTO extbooks VALUES (?,?,?,?,?)", books)
+        db.executemany("INSERT INTO extcells VALUES (?,?,?,?,?,?)", cells)
+        db.executemany("INSERT INTO extrefs VALUES (?,?,?,?,?,?)", [(*k, n) for k, n in refs.items()])
+        db.execute("CREATE INDEX ix_extrefs ON extrefs(sheet, row)")
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return {"books": len(links), "cached_cells": len(cells),
+            "rows_reading": len({(k[0], k[1]) for k in refs}), "refs": sum(refs.values())}
 
 
 def ensure(path: str, db_path: str) -> None:
     """Build the tables once per model.db."""
-    with sqlite3.connect(db_path) as db:
+    with rodb.connect(db_path) as db:
         have = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if "extbooks" not in have:
         build(path, db_path)

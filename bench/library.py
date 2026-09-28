@@ -45,7 +45,7 @@ LIST_COLS = ("id, sha256, filename, size, uploaded_at, status, step, pct, error,
 
 def _conn() -> sqlite3.Connection:
     OUT.mkdir(exist_ok=True)
-    db = sqlite3.connect(REGISTRY, check_same_thread=False)
+    db = sqlite3.connect(REGISTRY, check_same_thread=False, timeout=30)
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
     return db
