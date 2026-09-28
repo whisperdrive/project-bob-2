@@ -114,7 +114,9 @@ def summarize_table(run: list[tuple[int, str, dict]]) -> str:
         vals = [rv[col] for _, _, rv in run if rv.get(col) not in ("", None)]
         name = f"{col}" + (f"={header[col]}" if header else "")
         if vals and all(isinstance(v, (date, datetime)) for v in vals):
-            cols.append(f"{name} (date {min(vals)}..{max(vals)})")
+            # a column can mix dates and date-times (calamine gives each as Excel stored it): compare them alike
+            as_dt = lambda v: v if isinstance(v, datetime) else datetime(v.year, v.month, v.day)
+            cols.append(f"{name} (date {min(vals, key=as_dt)}..{max(vals, key=as_dt)})")
         elif vals and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
             cols.append(f"{name} (number {fmt(min(vals))}..{fmt(max(vals))})")
         else:
