@@ -521,10 +521,15 @@ def resolve_table(reader: Reader, t: dict, png: bytes, rounds: int = MAX_ROUNDS,
     prev = t.get("resolution") or {}
     thread = list(prev.get("rounds") or [])
     k0 = sum(isinstance(x.get("round"), int) for x in thread)
-    issues = (None if prev.get("resolved") else prev.get("open")) or problems(t)
+    md, lines, title = latest(t), t.get("text_lines"), t.get("title")
+    if prev.get("markdown") and not prev.get("resolved"):  # carry on from where the last run left off
+        issues = prev.get("open") or problems(t)
+    elif lines:  # today's check on the text as it stands (a loop from before corrections were kept left open
+        issues = problems({"check": check_text_layer(md, lines, title)})  # points about text that is gone)
+    else:
+        issues = problems(t)
     if not issues:
         return None
-    md, lines, title = latest(t), t.get("text_lines"), t.get("title")
     second = prev.get("second_markdown") or t.get("second_markdown")
     chk, basis, n0 = None, None, len(thread)
     for k in range(k0 + 1, k0 + rounds + 1):
