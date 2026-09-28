@@ -1090,10 +1090,13 @@ def _wiring(eid: int) -> dict:
         prior_vd = f"{v // 10000:04d}-{v // 100 % 100:02d}-{v % 100:02d}"
     elif library.get(ov["id"]) and library.get(ov["id"])["valuation_date"]:
         prior_vd = library.get(ov["id"])["valuation_date"]
-    return {"overlay": {"db_path": ov["db_path"], "filename": ov["filename"], "sheets": sheets},
+    return {"overlay": {"db_path": ov["db_path"], "filename": ov["filename"], "sheets": sheets,
+                        "source_path": ov.get("source_path")},
             "prior": {"db_path": prior["db_path"], "filename": prior["filename"],
-                      "sheets": sorted(prior["sheets"]) if prior["sheets"] else None} if prior else None,
-            "current": {"db_path": cur["db_path"], "filename": cur["filename"], "sheets": None} if cur else None,
+                      "sheets": sorted(prior["sheets"]) if prior["sheets"] else None,
+                      "valuation_date": (library.get(prior["id"]) or {}).get("valuation_date")} if prior else None,
+            "current": {"db_path": cur["db_path"], "filename": cur["filename"], "sheets": None,
+                        "valuation_date": (library.get(cur["id"]) or {}).get("valuation_date")} if cur else None,
             "client_link": client_link, "prior_valuation_date": prior_vd, "same_file": same_file,
             "client_sheets": copy or None}
 

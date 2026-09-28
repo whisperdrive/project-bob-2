@@ -149,6 +149,40 @@ def error_cells(path: str) -> dict[str, dict[tuple[int, int], str]]:
     return out
 
 
+def _array_cells(af, row: int, col: int, pending: dict) -> str:
+    """An array formula (openpyxl's ArrayFormula) as ordinary formulas: over one cell, its own formula; over a range,
+    each cell takes its element, =INDEX(formula, i, j), the others filled in as the rows come."""
+    text = af.text if af.text.startswith("=") else "=" + af.text
+    ref = (af.ref or "").replace("$", "")
+    if ":" not in ref:
+        return text
+    from openpyxl.utils.cell import range_boundaries
+    c1, r1, c2, r2 = range_boundaries(ref)
+    if (r1, c1) != (row, col) or (r2 - r1 + 1) * (c2 - c1 + 1) > 100000:
+        return text
+    for rr in range(r1, r2 + 1):
+        for cc in range(c1, c2 + 1):
+            pending[(rr, cc)] = f"=INDEX({text[1:]},{rr - r1 + 1},{cc - c1 + 1})"
+    return pending.pop((row, col))
+
+
+def defined_names(path: str) -> list[tuple[str, str, str | None]]:
+    """Every defined name in the file, the workbook's and each sheet's own: (name, what it refers to, the sheet it
+    belongs to or None). Read from xl/workbook.xml, because openpyxl's read-only mode drops sheet-level names."""
+    import zipfile
+    from xml.etree import ElementTree as ET
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(path) as z:
+        root = ET.fromstring(z.read("xl/workbook.xml"))
+    sheets = [sh.get("name") for sh in root.findall("m:sheets/m:sheet", ns)]
+    out = []
+    for dn in root.findall("m:definedNames/m:definedName", ns):
+        lid = dn.get("localSheetId")
+        scope = sheets[int(lid)] if lid is not None and lid.isdigit() and int(lid) < len(sheets) else None
+        out.append((dn.get("name"), (dn.text or "").strip(), scope))
+    return out
+
+
 def main(path: str, out: str | None = None, progress=None) -> dict:
     """Build map.txt + model.db in `out` (default out/<file stem>).
 
@@ -164,7 +198,10 @@ def main(path: str, out: str | None = None, progress=None) -> dict:
     cal = CalamineWorkbook.from_path(path)
     errors = error_cells(path)
 
-    name_rows = [(n, dn.attr_text) for n, dn in wb.defined_names.items()]
+    try:
+        name_rows = defined_names(path)
+    except Exception:  # the names are a help, not a requirement
+        name_rows = [(n, dn.attr_text, None) for n, dn in wb.defined_names.items()]
 
     out = out or out_dir(path)
     os.makedirs(out, exist_ok=True)
@@ -178,9 +215,9 @@ def main(path: str, out: str | None = None, progress=None) -> dict:
         CREATE TABLE rows(sheet TEXT, row INT, section TEXT, label TEXT, units TEXT,
                           n_formula INT, n_const INT, patterns TEXT, samples TEXT);
         CREATE TABLE edges(src_sheet TEXT, src_row INT, dst_sheet TEXT, dst_row INT, kind TEXT);
-        CREATE TABLE names(name TEXT, ref TEXT);
+        CREATE TABLE names(name TEXT, ref TEXT, scope TEXT);
     """)
-    db.executemany("INSERT INTO names VALUES (?,?)", name_rows)
+    db.executemany("INSERT INTO names VALUES (?,?,?)", name_rows)
 
     lines = [f"WORKBOOK {os.path.basename(path)}",
              "Legend: sheet!row label [units] f=formula cells c=constant cells | pattern(s) in R1C1 "
@@ -189,6 +226,7 @@ def main(path: str, out: str | None = None, progress=None) -> dict:
 
     n_sheets = len(wb.worksheets)
     for i_sheet, ws in enumerate(wb.worksheets):
+        array_cells: dict[tuple[int, int], str] = {}  # the other cells of this sheet's multi-cell array formulas
         name = ws.title
         report(0.02 + 0.93 * i_sheet / n_sheets, f"Reading sheet {i_sheet + 1} of {n_sheets}: {name}")
         max_row, last_report = ws.max_row or 1, 0
@@ -229,6 +267,10 @@ def main(path: str, out: str | None = None, progress=None) -> dict:
             rowvals = {}
             for c in cells:
                 v, cv = c.value, val(c.row, c.column)
+                if not isinstance(v, str) and getattr(v, "text", None) and hasattr(v, "ref"):
+                    v = _array_cells(v, c.row, c.column, array_cells)  # a dynamic-array or Ctrl+Shift+Enter formula
+                elif (c.row, c.column) in array_cells:
+                    v = array_cells.pop((c.row, c.column))
                 rowvals[c.column_letter] = cv
                 is_f = isinstance(v, str) and v.startswith("=")
                 cell_batch.append((name, r, c.column, c.coordinate, v if is_f else None,

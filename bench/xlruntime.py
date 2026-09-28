@@ -11,6 +11,7 @@ Values follow Excel: floats (dates are serial numbers), str, bool, None for blan
 arrays and Rng for references (evaluated lazily, so INDEX(range, MATCH(...)) computes one cell, not the range).
 """
 import math
+import statistics
 import re
 from bisect import bisect_right
 from collections import Counter
@@ -992,6 +993,202 @@ class _XL:
         return VALUE  # "address", "format" etc. depend on Excel's window and formatting state
 
 
+
+    # ---- newer and less common functions (Excel 365 ones arrive without their _xlfn. prefix) -------------------
+    @staticmethod
+    def XMATCH(value, arr, mode=0.0, search=1.0):
+        value = first(value) if is_array(value) else value
+        if isinstance(value, XLError):
+            return value
+        vals = list(flat(arr))
+        m = 0 if isinstance(mode, Missing) else int(num(mode))
+        back = not isinstance(search, Missing) and num(search) < 0
+        order = list(range(len(vals)))[::-1] if back else list(range(len(vals)))
+        if m == 2:  # wildcards
+            pat = _wild(str(value))
+            hit = next((i for i in order if isinstance(vals[i], str) and pat.fullmatch(vals[i])), None)
+            return float(hit + 1) if hit is not None else NA
+        want = _rank(value)
+        exact = next((i for i in order if vals[i] is not None and not isinstance(vals[i], XLError)
+                      and _rank(vals[i]) == want), None)
+        if exact is not None or m == 0:
+            return float(exact + 1) if exact is not None else NA
+        best = None  # -1: the largest value below it; 1: the smallest above it
+        for i in order:
+            v = vals[i]
+            if v is None or isinstance(v, XLError) or _rank(v)[0] != want[0]:
+                continue
+            c = _cmp(v, value)
+            if (m == -1 and c < 0 and (best is None or _cmp(v, vals[best]) > 0)) or \
+               (m == 1 and c > 0 and (best is None or _cmp(v, vals[best]) < 0)):
+                best = i
+        return float(best + 1) if best is not None else NA
+
+    @staticmethod
+    def XLOOKUP(value, lookup, result, missing=MISSING, mode=0.0, search=1.0):
+        i = _XL.XMATCH(value, lookup, mode, search)
+        if isinstance(i, XLError):
+            return i if isinstance(missing, Missing) else missing
+        i = int(i) - 1
+        g, r = grid(lookup), grid(result)
+        if len(g) > 1 or len(g[0]) == 1:  # a column: the matching row of the results
+            if i >= len(r):
+                return REF
+            row = r[i]
+            return _unmiss(row[0]) if len(row) == 1 else [list(row)]
+        if i >= len(r[0]):
+            return REF
+        col = [[x[i]] for x in r]
+        return _unmiss(col[0][0]) if len(col) == 1 else col
+
+    @staticmethod
+    def LARGE(arr, k):
+        xs = sorted((v for v in flat(arr) if isinstance(v, float) and not isinstance(v, bool)), reverse=True)
+        k = num(k)
+        return k if isinstance(k, XLError) else (xs[int(k) - 1] if 1 <= int(k) <= len(xs) else NUM)
+
+    @staticmethod
+    def SMALL(arr, k):
+        xs = sorted(v for v in flat(arr) if isinstance(v, float) and not isinstance(v, bool))
+        k = num(k)
+        return k if isinstance(k, XLError) else (xs[int(k) - 1] if 1 <= int(k) <= len(xs) else NUM)
+
+    @staticmethod
+    def MEDIAN(*args):
+        return _agg(args, lambda xs: sorted(xs)[len(xs) // 2] if len(xs) % 2 else
+                    (sorted(xs)[len(xs) // 2 - 1] + sorted(xs)[len(xs) // 2]) / 2, empty=NUM)
+
+    @staticmethod
+    def RANK(value, arr, order=0.0):
+        v = num(value)
+        if isinstance(v, XLError):
+            return v
+        xs = [x for x in flat(arr) if isinstance(x, float) and not isinstance(x, bool)]
+        if v not in xs:
+            return NA
+        asc = not isinstance(order, Missing) and num(order) != 0
+        return float(1 + sum(1 for x in xs if (x < v if asc else x > v)))
+
+    RANK_EQ = RANK
+
+    @staticmethod
+    def STDEV(*args):
+        return _agg(args, lambda xs: statistics.stdev(xs) if len(xs) > 1 else DIV0, empty=DIV0)
+
+    STDEV_S = STDEV
+
+    @staticmethod
+    def STDEV_P(*args):
+        return _agg(args, lambda xs: statistics.pstdev(xs), empty=DIV0)
+
+    @staticmethod
+    def VAR(*args):
+        return _agg(args, lambda xs: statistics.variance(xs) if len(xs) > 1 else DIV0, empty=DIV0)
+
+    VAR_S = VAR
+
+    @staticmethod
+    def TEXTJOIN(delim, skip_empty, *args):
+        skip = truth(skip_empty) is True
+        parts = [text(v) for a in args for v in (flat(a) if is_array(a) else [a]) if not isinstance(v, Missing)]
+        bad = next((v for a in args for v in (flat(a) if is_array(a) else [a]) if isinstance(v, XLError)), None)
+        if bad is not None:
+            return bad
+        return text(delim).join(x for x in parts if x != "" or not skip)
+
+    @staticmethod
+    def _annuity(rate, nper, pmt, pv, fv, when):
+        r, n, pm, p, f, w = (num(x) if not isinstance(x, Missing) else 0.0 for x in (rate, nper, pmt, pv, fv, when))
+        for x in (r, n, pm, p, f, w):
+            if isinstance(x, XLError):
+                raise _Err(x)
+        return r, n, pm, p, f, 1.0 if w else 0.0
+
+    @staticmethod
+    def PMT(rate, nper, pv, fv=MISSING, when=MISSING):
+        try:
+            r, n, _, p, f, w = _XL._annuity(rate, nper, 0.0, pv, fv, when)
+        except _Err as e:
+            return e.err
+        if n == 0:
+            return NUM
+        if r == 0:
+            return -(p + f) / n
+        g = (1 + r) ** n
+        return -(r * (p * g + f)) / ((1 + r * w) * (g - 1))
+
+    @staticmethod
+    def PV(rate, nper, pmt, fv=MISSING, when=MISSING):
+        try:
+            r, n, pm, _, f, w = _XL._annuity(rate, nper, pmt, 0.0, fv, when)
+        except _Err as e:
+            return e.err
+        if r == 0:
+            return -(f + pm * n)
+        g = (1 + r) ** n
+        return -(f + pm * (1 + r * w) * (g - 1) / r) / g
+
+    @staticmethod
+    def FV(rate, nper, pmt, pv=MISSING, when=MISSING):
+        try:
+            r, n, pm, p, _, w = _XL._annuity(rate, nper, pmt, pv, 0.0, when)
+        except _Err as e:
+            return e.err
+        if r == 0:
+            return -(p + pm * n)
+        g = (1 + r) ** n
+        return -(p * g + pm * (1 + r * w) * (g - 1) / r)
+
+    @staticmethod
+    def WEEKDAY(s, kind=1.0):
+        k = 1 if isinstance(kind, Missing) else int(num(kind))
+        return _date1(s, lambda d: float((d.isoweekday() % 7) + 1 if k == 1 else d.isoweekday() if k == 2 else d.weekday()))
+
+    @staticmethod
+    def DATEDIF(a, b, unit):
+        x, y, u = num(a), num(b), text(unit).upper()
+        if isinstance(x, XLError) or isinstance(y, XLError):
+            return x if isinstance(x, XLError) else y
+        if y < x:
+            return NUM
+        d1, d2 = to_date(x), to_date(y)
+        months = (d2.year - d1.year) * 12 + d2.month - d1.month - (d2.day < d1.day)
+        return {"D": float(int(y) - int(x)), "M": float(months), "Y": float(months // 12),
+                "YM": float(months % 12)}.get(u, NUM)
+
+    @staticmethod
+    def MROUND(x, m):
+        a, b = num(x), num(m)
+        if isinstance(a, XLError) or isinstance(b, XLError):
+            return a if isinstance(a, XLError) else b
+        if b == 0:
+            return 0.0
+        if (a > 0) != (b > 0) and a != 0:
+            return NUM
+        return math.floor(a / b + 0.5) * b
+
+    @staticmethod
+    def QUOTIENT(a, b):
+        x, y = num(a), num(b)
+        if isinstance(x, XLError) or isinstance(y, XLError):
+            return x if isinstance(x, XLError) else y
+        return DIV0 if y == 0 else float(int(x / y))
+
+    @staticmethod
+    def EXACT(a, b):
+        return text(a) == text(b)
+
+    @staticmethod
+    def ISEVEN(v):
+        x = num(v)
+        return x if isinstance(x, XLError) else int(x) % 2 == 0
+
+    @staticmethod
+    def ISODD(v):
+        x = num(v)
+        return x if isinstance(x, XLError) else int(x) % 2 == 1
+
+
 def _irr(vs, t, guess):
     """Rate with sum(v / (1 + r)^t) = 0: Newton from the guess (as Excel does), then bisection if that fails."""
     def f(r):
@@ -1371,6 +1568,12 @@ def _find(needle, hay, start, ci):
         return float(m.start() + 1) if m else VALUE
     i = h.find(n, int(s) - 1)
     return float(i + 1) if i >= 0 else VALUE
+
+
+
+class _Err(Exception):
+    def __init__(self, err):
+        self.err = err
 
 
 xl = _XL()

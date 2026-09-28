@@ -1208,11 +1208,11 @@ function viewMapBody(head) {
   <div class="scroll"><table><thead><tr><th>[n]</th><th>File</th><th>Read by</th><th>Cached values</th><th>Prior client model?</th></tr></thead><tbody>
   ${books.map(b => `<tr><td class="mono">[${b.idx}]</td><td>${esc(b.filename || b.target || "")}</td><td class="small">${esc(b.read_by.map(r => `${r.sheet} (${r.rows})`).join(", "))}</td><td class="num">${b.cached_cells}</td>
     <td>${b.is_client ? `<span class="pill ok">Yes</span>` : ""} ${b.cached_check ? `<span class="small">${b.cached_check.matched} of ${b.cached_check.cells} match</span>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : ""}
-  <div class="card"><h2>Overlay → prior client model → current client model</h2><p class="sub">Every overlay row that reads the client model, the client row it reads, and the same line item in this year's model (matched by sheet and label).</p>
+  <div class="card"><h2>Overlay → prior client model → current client model</h2><p class="sub">Every overlay row that reads the client model, the client row it reads, and the same line item in this year's model: matched by sheet and label, then by the label nearest its old row, then, on a sheet laid out as before, by the same row.</p>
   ${m.chain?.length ? `<div class="scroll"><table><thead><tr><th>Overlay row</th><th>Via</th><th>Prior client row</th><th>Current client row</th><th>Periods</th><th class="num">Prior</th><th class="num">Current</th></tr></thead><tbody>
   ${m.chain.slice(0, 200).map(c => `<tr><td><span class="mono">${esc(c.overlay)}</span><div class="small">${esc(c.overlay_label)}</div></td><td class="small">${esc(c.via)}</td>
     <td><span class="mono">${esc(c.client)}</span><div class="small">${esc(c.client_label)}</div></td>
-    <td>${c.current ? `<span class="mono">${esc(c.current)}</span>` : `<span class="pill warn">not found</span>`}</td>
+    <td>${c.current ? `<span class="mono">${esc(c.current)}</span>` : `<span class="pill warn">not found</span>${c.why ? `<div class="small muted">${esc(c.why)}</div>` : ""}`}</td>
     <td class="small">${(c.periods || []).map(esc).join("<br>")}</td>
     <td class="num small">${(c.prior_values || []).map(v => esc(fmt(v))).join("<br>")}</td><td class="num small">${(c.current_values || []).map(v => esc(fmt(v))).join("<br>")}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted small">No links found from the overlay sheets into the client model.</p>`}</div>`;
 }
@@ -1405,6 +1405,14 @@ function needs() {
     else if (!st) add(verb, go);
   }
   if (E.charts_status === "error") add("Recreate the report's charts again: it failed", "summary");
+  const V = E.overlay?.validation;
+  if (E.overlay_status === "done" && V && V.matched < V.cells) {
+    const why = [Object.keys(V.unsupported || {}).length && `functions ${Object.keys(V.unsupported).slice(0, 4).join(", ")}`,
+      E.overlay.stats?.missing_names?.length && `names ${E.overlay.stats.missing_names.slice(0, 3).join(", ")}`,
+      E.overlay.not_compiled?.length && `${E.overlay.not_compiled.length} formula(s) not compiled`].filter(Boolean).join("; ");
+    add(`The Python overlay differs from Excel in ${(V.cells - V.matched).toLocaleString()} formula cell(s)${why ? `: ${why}` : ""}`, "python");
+  }
+  if (E.overlay_status === "done" && E.overlay?.roll?.months_assumed) add(`Check the roll-forward: ${E.overlay.roll.months} months was assumed`, "python");
   const sum = OVR.eid === E.id ? OVR.sum : null;
   for (const row of sum?.table?.rows || []) if (row.kind === "conclusion" && row.tie && !row.tie.ok)
     add(`${row.label} doesn't tie: rebuilt ${sumNum(row, row.values?.rebuilt)} vs the report's ${row.report}`, "summary");
@@ -1573,12 +1581,16 @@ function summaryCard(d) {
   const vdDefault = t.scenario_roll?.valuation_date || t.roll?.valuation_date || "";
   const sel = (id, opts, cur) => `<select class="in" id="${id}">${opts.map(([v, lab]) => `<option value="${v}" ${v === (cur || "") ? "selected" : ""}>${lab}</option>`).join("")}</select>`;
   const notes = [...conc.filter(r => r.method_note).map(r => `${r.label}: ${r.method_note}`), ...conc.filter(r => r.range_note).map(r => `${r.label}: ${r.range_note}`)];
+  const isErr = x => typeof x === "string" && x.startsWith("#"), errs = conc.filter(r => cols.some(c => isErr(r.values?.[c])));
+  const V = E.overlay?.validation, gap = V && V.matched < V.cells ? V.cells - V.matched : 0;
+  const errNote = errs.length ? `<div class="callout bad small" style="margin-top:10px"><b>${errs.length} figure(s) come out as Excel errors</b> (${esc([...new Set(errs.flatMap(r => cols.map(c => r.values?.[c]).filter(isErr)))].join(", "))}) in the Python overlay${gap ? `, which differs from Excel in ${gap.toLocaleString()} formula cell(s)` : ""}. <a href="#" data-go="python">Rebuild in Python</a> lists the functions, names and formulas it couldn't compute.</div>` : "";
   return `<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-end"><div><h2>Valuation summary</h2>
     <p class="sub" style="margin:0">Rows from last year's report. ${t.feeds.rebuilt === "prior" ? "The rebuild feeds the overlay from last year's client model;" : "The rebuild uses the values saved in the overlay;"} this year feeds it from this year's client model, rolled forward${t.roll?.valuation_date ? ` to ${esc(t.roll.valuation_date)}` : ""}.</p></div>
     <div class="row small" style="gap:10px;align-items:flex-end">${t.feeds.scenario === "current" ? `<label class="muted">Valuation date<br><input type="date" id="sumVd" value="${esc(SUM.vd || vdDefault)}"></label>` : ""}
       <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
       <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>
       ${Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length ? `<button class="btn small ghost" id="sumReset">Reset</button>` : ""}</div></div>
+  ${errNote}${t.roll?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${t.roll.months} months is ${esc(t.roll.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""}
   <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
     <tr class="sec"><td colspan="${cols.length + 2}">Conclusions</td></tr>
     ${conc.map(r => `<tr><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
@@ -1636,6 +1648,7 @@ function bindSummary() {
   $("#sumTiming")?.addEventListener("change", e => { if (e.target.value) SUM.method.timing = e.target.value; else delete SUM.method.timing; loadSummary(); });
   $("#sumDc")?.addEventListener("change", e => { if (e.target.value) SUM.method.day_count = e.target.value; else delete SUM.method.day_count; loadSummary(); });
   $("#sumReset")?.addEventListener("click", () => { SUM.changes = {}; SUM.vd = null; SUM.method = {}; loadSummary(); });
+  document.querySelectorAll("#main a[data-go]").forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.go); });
   $("#sumCharts")?.addEventListener("click", () => act(async () => { await api(`/api/engagements/${E.id}/charts`, {method: "POST"}); SUM.chartsSeen = "queued"; }));
   (d.charts?.charts || []).forEach((c, i) => {
     if (c.spec && $(`#sumRebuilt${i}`)) { $(`#sumRebuilt${i}`).append(chartCard(c.spec)); }
@@ -1686,7 +1699,8 @@ function validationCard(O) {
   if (Object.keys(v.quirks || {}).length) issues.push(...Object.entries(v.quirks).map(([k, n]) => `Excel behaviour reproduced on purpose: ${k} (${n} cell(s)).`));
   if (Object.keys(v.unsupported || {}).length) issues.push(`Functions not yet supported: ${Object.keys(v.unsupported).join(", ")}.`);
   if (v.cycles) issues.push(`${v.cycles} circular reference(s): the saved value is used there.`);
-  if (O.not_compiled?.length) issues.push(`${O.not_compiled.length} formula(s) couldn't be compiled.`);
+  if (st.missing_names?.length) issues.push(`Defined names not found in the workbook (their formulas give #NAME?): ${st.missing_names.slice(0, 12).join(", ")}${st.missing_names.length > 12 ? "…" : ""}.`);
+  if (O.not_compiled?.length) issues.push(`${O.not_compiled.length} formula(s) couldn't be compiled: ` + O.not_compiled.slice(0, 5).map(x => `${x.cell} (${x.reason})`).join("; ") + (O.not_compiled.length > 5 ? "…" : "") + ".");
   if (!v.mismatches.length && !issues.length) return "";
   return `<div class="card"><h2>Validation details</h2>${issues.map(i => `<div class="callout info small" style="margin-bottom:6px">${esc(i)}</div>`).join("")}
   ${v.mismatches.length ? `<div class="scroll"><table><thead><tr><th>Cell</th><th>Line item</th><th class="num">Python</th><th class="num">Excel</th><th>Formula</th></tr></thead><tbody>
@@ -1710,6 +1724,7 @@ function liveCard(O) {
   const nChanges = Object.keys(OV.changes).length;
   return `<div class="row" style="justify-content:space-between"><div><h2>Run it live</h2><p class="sub">Change a lever or any input; results update as you type.</p></div>
     <div class="row" role="radiogroup" aria-label="Feed">${modes.map(([m, t, why]) => `<button class="btn small ${OV.mode === m ? "primary" : ""}" data-mode="${m}" title="${esc(why)}" ${avail[m] ? "" : "disabled"} role="radio" aria-checked="${OV.mode === m}">${esc(t)}</button>`).join("")}</div></div>
+  ${OV.mode === "current" && roll.months_basis ? `<div class="callout ${roll.months_assumed ? "warn" : "info"} small" style="margin-bottom:8px">Roll-forward of ${roll.months} months: ${esc(roll.months_basis)}.</div>` : ""}
   ${OV.mode === "current" ? `<div class="row small" style="margin-bottom:10px;gap:14px"><label>New valuation date <input type="date" id="ovVd" value="${esc(OV.vd || roll.current_valuation_date || "")}"></label>
     <label>Roll forward by <input type="text" id="ovMonths" value="${esc(OV.months ?? roll.months ?? 12)}" style="width:52px"> months</label>
     <span class="muted">Overlay periods move on by the roll; client values come from the same line item in the period with the rolled date${roll.valuation_date_cell ? `; valuation date cell ${esc(roll.valuation_date_cell)}` : "; no valuation-date lever found, so set it below"}.</span></div>` : ""}

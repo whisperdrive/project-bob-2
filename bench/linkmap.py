@@ -219,17 +219,21 @@ def align_rows(prior_db: str, current_db: str, refs: list[tuple[str, int]]) -> d
             out[(s, r)] = (*k, seen[k])
         return out
 
+    import overlay as ovmod
     db = rodb.connect(current_db)
     db.execute("ATTACH DATABASE ? AS o", (rodb.uri(prior_db),))
-    with _ro(prior_db) as p, _ro(current_db) as c:
-        po, co = occurrences(p), occurrences(c)
-    back = {v: k for k, v in co.items()}
+    with _ro(prior_db) as p:
+        po = occurrences(p)
+    pw, cw = ovmod.Workbook(prior_db), ovmod.Workbook(current_db)
+    rm = ovmod.RowMap(pw, cw)  # the same row matching as the rolled-forward feed, fallbacks included
     out, tl = {}, {}
     for ref in refs:
-        key = po.get(ref)
-        hit = back.get(key) if key and key[1] else None
-        if not hit:
+        key = po.get(ref) or (ref[0], "", 0)
+        r2 = rm.row(*ref)
+        if r2 is None:
+            out[ref] = {"current": None, "why": rm.why(ref[0], ref[1], pw.labels())}
             continue
+        hit = (ref[0], r2)
         sheet_o, sheet_n = ref[0], hit[0]
         if (sheet_o, sheet_n) not in tl:
             ot, nt = diffmod.timeline(db, "o", sheet_o), diffmod.timeline(db, "main", sheet_n)
@@ -257,7 +261,8 @@ def chain(ov_links: dict, alignment: dict) -> list[dict]:
     rows = []
     for ln in ov_links["links"]:
         cur = alignment.get((ln["client_sheet"], ln["client_row"])) if ln.get("client_row") else None
-        rows.append({**ln, "current": cur["current"] if cur else None, "periods": cur["periods"] if cur else None,
-                     "prior_values": cur["prior_values"] if cur else None,
-                     "current_values": cur["current_values"] if cur else None})
+        cur = cur or {}
+        rows.append({**ln, "current": cur.get("current"), "periods": cur.get("periods"),
+                     "prior_values": cur.get("prior_values"), "current_values": cur.get("current_values"),
+                     "why": cur.get("why")})
     return rows

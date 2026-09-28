@@ -260,9 +260,13 @@ person before the next relies on it:
    The page runs the module live. Levers are the report's assumptions located in the overlay, and any other input
    can be found by search and changed. Results update as you type. There are three feeds: the workbook as saved, the
    prior client model, or the current client model **rolled forward**. Rolling forward moves the overlay's period
-   dates on by the roll (by default, how far the client timeline moved) and sets the valuation-date lever to the new
-   date. Client values come from the same line item (sheet and label) in the period with the rolled date. Values
-   that can't be matched are listed, not zeroed. Each output shows its Python function and the client values it
+   dates on by the roll and sets the valuation-date lever to the new date. The roll comes from the valuation dates
+   identified in the two client models; failing that, from how far the client sheets' timelines moved (the most
+   common forward move across sheets, since a model that keeps more history this year starts earlier); failing
+   that, 12 months, flagged for a check. The page says which. Client values come from the same line item in the
+   period with the rolled date: the same label (its n-th occurrence on the sheet), else the same label nearest its
+   old row, else, on a sheet laid out as before, the same row (which also covers unlabelled flag and timing rows).
+   Values that can't be matched are listed with the reason, not zeroed. The Map uses the same matching. Each output shows its Python function and the client values it
    reads. The module is saved as `out/overlays/e<id>/overlay.py`; open it from the page, or run it from a terminal:
    `uv run python bench/overlay.py <id> --mode current --set Val_Inputs!C5=0.075`.
 
@@ -353,11 +357,15 @@ compiled overlays in `out/overlays/` (all git-ignored).
 `xlcompile.py` turns a workbook's formulas into one Python function per line item. Cells in a row whose formulas differ
 only by a column shift share one branch, with the Excel formula and the inputs it uses written beside it.
 IF / IFERROR / IFNA / CHOOSE branches are lambdas, so only the branch taken is computed. Ranges are lazy, so
-`INDEX(range, MATCH(...))` evaluates one cell. Defined names, whole-row and whole-column references and ISFORMULA are
-resolved at compile time. Workbook text enters the code only through `repr()`.
+`INDEX(range, MATCH(...))` evaluates one cell. Defined names (each sheet's own before the workbook's, read from
+the file's workbook.xml, as openpyxl's read-only mode drops sheet-level ones), whole-row and whole-column references
+and ISFORMULA are resolved at compile time. Array formulas (dynamic arrays and Ctrl+Shift+Enter ones) are kept: over
+one cell as the formula itself, over a range as `INDEX(formula, i, j)` in each cell. IFS and SWITCH compile to lazy IF
+chains. Names and functions it can't resolve are listed on the Rebuild in Python page. Workbook text enters the code
+only through `repr()`.
 
-`xlruntime.py` has Excel's values, operators and about 100 functions: lookups, conditional sums, MMULT, OFFSET,
-dates, YEARFRAC, XNPV / XIRR, text. It also follows Excel's rules for blanks, errors, comparisons across types and
+`xlruntime.py` has Excel's values, operators and about 130 functions: lookups (XLOOKUP and XMATCH too), conditional
+sums, MMULT, OFFSET, dates, YEARFRAC, XNPV / XIRR, PMT / PV / FV, LARGE / SMALL / MEDIAN / RANK / STDEV, text. It also follows Excel's rules for blanks, errors, comparisons across types and
 implicit intersection. Evaluation runs column by column on a thread with a large stack, because a timeline
 recurrence can nest thousands of cells deep. Circular references fall back to the saved value and are listed.
 

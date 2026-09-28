@@ -23,7 +23,7 @@ import re
 import sqlite3
 import sys
 import threading
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
@@ -155,25 +155,58 @@ class Workbook:
 
 
 class RowMap:
-    """Prior (sheet, row) -> current (sheet, row) by line-item label (the n-th row with that label on the sheet)."""
+    """Prior (sheet, row) -> current (sheet, row), by line-item label:
+      1. the n-th row with that label on the sheet (rows inserted above it don't matter)
+      2. else the row with that label nearest its old position (the label now occurs more or fewer times)
+      3. else, on a sheet laid out as before (most labelled rows still at the same row), the same row, which also
+         covers rows without a label (flags, timing rows)
+    why() says what failed for a row it can't map."""
 
     def __init__(self, prior: Workbook, current: Workbook):
+        norm = lambda lab: re.sub(r"\s+", " ", (lab or "").strip().lower())
+
         def occ(wb):
             seen, out = defaultdict(int), {}
             for (s, r), lab in sorted(wb.labels().items()):
-                k = (s, re.sub(r"\s+", " ", lab.strip().lower()))
+                k = (s, norm(lab))
                 seen[k] += 1
                 out[(s, r)] = (*k, seen[k])
             return out
         self.prior, self.current = occ(prior), occ(current)
         self.back = {v: k for k, v in self.current.items()}
+        self.by_label = defaultdict(list)
+        for (s, r), (_, lab, _) in self.current.items():
+            if lab:
+                self.by_label[(s, lab)].append(r)
+        self.cur_sheets = {s for (s,) in current.db.execute("SELECT sheet FROM sheets")}
+        cur_labels = {k: norm(v) for k, v in current.labels().items()}
+        same, total = Counter(), Counter()
+        for (s, r), (_, lab, _) in self.prior.items():
+            if lab:
+                total[s] += 1
+                same[s] += cur_labels.get((s, r)) == lab
+        self.same_layout = {s for s in total if s in self.cur_sheets and same[s] >= 0.8 * total[s]}
 
     def row(self, s, r):
         k = self.prior.get((s, r))
-        if not k or not k[1]:
-            return None
-        hit = self.back.get(k)
-        return hit[1] if hit and hit[0] == s else None
+        if k and k[1]:
+            hit = self.back.get(k)
+            if hit and hit[0] == s:
+                return hit[1]
+            rows = self.by_label.get((s, k[1]))
+            if rows:
+                return min(rows, key=lambda x: abs(x - r))
+        if s in self.same_layout:
+            return r
+        return None
+
+    def why(self, s, r, labels: dict) -> str:
+        lab = labels.get((s, r), "")
+        if s not in self.cur_sheets:
+            return f"sheet {s} isn't in the current model"
+        if not lab:
+            return f"row {r} of {s} has no line-item label, and the sheet's layout changed, so it can't be followed"
+        return f"line item '{lab}' isn't on {s} in the current model"
 
 
 # ---- a live session -----------------------------------------------------------------------------------------
@@ -253,7 +286,7 @@ class Session:
         cur = self.current
         r2 = self.rowmap.row(s, r)
         if r2 is None:
-            self.unmatched[(s, r, c)] = f"line item '{prior.labels().get((s, r), '')}' not in the current model"
+            self.unmatched[(s, r, c)] = self.rowmap.why(s, r, prior.labels())
             return None
         tl_p = prior.timeline(s)
         c2 = c
@@ -432,7 +465,7 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
     sheets = overlay["sheets"]
     progress(0.05, "Compiling the overlay's formulas to Python")
     src, stats = deep(xlcompile.compile_overlay, overlay["db_path"], sheets, title,
-                      lambda f, m: progress(0.05 + 0.3 * f, m))
+                      lambda f, m: progress(0.05 + 0.3 * f, m), overlay.get("source_path"))
     module = out_dir / "overlay.py"
     module.write_text(src, encoding="utf-8")
     progress(0.4, "Loading the module")
@@ -470,9 +503,12 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
     sess.configure("workbook")
     roll = None
     if current:
-        months = roll_months(sess, prior, overlay, same_file)
+        months, basis = roll_months(sess, prior, overlay, same_file,
+                                    ((prior or {}).get("valuation_date") or prior_val_date, current.get("valuation_date")))
         vd_lever = next((l for l in levers if l["key"] == "valuation_date"), None)
-        roll = {"prior_valuation_date": prior_val_date, "months": months, "valuation_date_cell": vd_lever["cell"] if vd_lever else None,
+        roll = {"prior_valuation_date": prior_val_date, "months": months, "months_basis": basis,
+                "months_assumed": basis.startswith("assumed"),
+                "valuation_date_cell": vd_lever["cell"] if vd_lever else None,
                 "current_valuation_date": to_date(add_months(serial(date.fromisoformat(prior_val_date[:10])), months)).isoformat()
                 if prior_val_date else None}
     summary = {"module": str(module), "stats": {k: v for k, v in stats.items() if k != "not_compiled"},
@@ -485,16 +521,34 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
     return summary, sess
 
 
-def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: bool) -> int:
-    """How far the client model's timeline moved: first period of the current model vs the prior one, on the
-    client sheets the overlay reads (12 if they can't be compared)."""
+def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: bool,
+                dates: tuple[str | None, str | None] = (None, None)) -> tuple[int, str]:
+    """How far to roll forward, and how that was worked out: (months, basis).
+    1. The valuation dates identified in last year's and this year's client models (Files), when both are known
+       and this year's is later.
+    2. Else the client sheets' timelines: how far each sheet's first period moved, the most common move across
+       sheets, if it is forward. (A model that keeps more history this year starts earlier, so this is a
+       fallback, never the first choice.)
+    3. Else 12 months, flagged so the page asks for a check."""
+    prior_vd, current_vd = dates
+    if prior_vd and current_vd:
+        m = months_between(prior_vd[:10], current_vd[:10])
+        if m > 0:
+            return m, f"from the valuation dates in the two client models ({prior_vd[:10]} to {current_vd[:10]})"
     src = sess.prior or sess.ov
     sheets = sess.client_sheets or ((prior or {}).get("sheets") if same_file else None)
+    moves = Counter()
     for s in sorted(sheets or {k[1] for k in sess.ext_cached} or []):
         a, b = src.timeline(s), sess.current.timeline(s) if sess.current else {}
         if a and b:
-            return months_between(to_date(min(a.values())).isoformat(), to_date(min(b.values())).isoformat())
-    return 12
+            moves[months_between(to_date(min(a.values())).isoformat(), to_date(min(b.values())).isoformat())] += 1
+    forward = [(n, m) for m, n in moves.items() if m > 0]
+    if forward:
+        n, m = max(forward)
+        return m, f"from the client sheets' timelines (the first period moved {m} months on {n} of {sum(moves.values())} sheet(s))"
+    return 12, ("assumed: the two client models' valuation dates aren't both known and their timelines don't show a "
+                "forward move" + (f" (moves seen: {', '.join(f'{m:+d}' for m in sorted(moves))} months)" if moves else "")
+                + "; check the roll-forward months")
 
 
 def _feed(summary: dict, mode: str, valuation_date: str | None, months: int | None) -> tuple[dict, dict | None, int]:
@@ -751,11 +805,12 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
     sess.configure(base_feed)
     prior_db = rodb.patched(path, _module_values(db, sess, need)) if need else db
     sess.configure("workbook")
-    out = []
+    out, errors = [], []
     for r in rows:
         v = r["values"]
         v0, v2, v3 = v.get("rebuilt"), v.get("this_year"), v.get("scenario")
         if not all(isinstance(x, float) for x in (v0, v2)):
+            errors.append(f"{r['label']} ({v0 if not isinstance(v0, float) else v2})")
             continue
         steps = [{"key": "last_year", "label": "Last year (rebuilt; ties to the report)" if (r.get("tie") or {}).get("ok")
                   else "Last year (rebuilt)", "value": v0, "total": True}]
@@ -797,7 +852,12 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
             steps.append({"key": "scenario", "label": "Your scenario", "value": v3, "total": True})
         out.append({"label": r["label"], "cell": r["cell"], "report": r.get("report"), "scale": r.get("scale") or 1.0,
                     "sign": r.get("sign") or 1, "unit": r.get("unit"), "steps": steps, "note": note})
-    return {"bridges": out, "valuation_date": vd1, "feeds": table["feeds"]}
+    why = None
+    if not out:
+        why = ("the report's conclusions come out as Excel errors in the Python overlay: " + "; ".join(errors[:4])
+               + ". Rebuild in Python lists the formulas and names it couldn't compute.") if errors else \
+              "no conclusion of the report is matched to a cell in the overlay (check the Map)"
+    return {"bridges": out, "valuation_date": vd1, "feeds": table["feeds"], "why": why, "errors": errors}
 
 
 # ---- the DCF on the live module ----------------------------------------------------------------------------

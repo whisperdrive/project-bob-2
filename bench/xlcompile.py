@@ -303,15 +303,21 @@ class Gen:
             return f"B.ext_value({src}, {sheet!r}, {r1}, {c1})"
         return f"B.rng({src!r}, {sheet!r}, {r1}, {c1}, {r2}, {c2})"
 
-    def name(self, name: str, want: str) -> str:
-        target = self.ctx["names"].get(name.lower())
-        if target is None or name.lower() in self.names_seen:
+    def name(self, name: str, want: str, sheet: str | None = None) -> str:
+        """A defined name: the sheet's own (the formula's sheet, or the one it names) before the workbook's."""
+        scope = sheet or self.sheet
+        key = (scope, name.lower())
+        target = self.ctx["local_names"].get(key)
+        if target is None:
+            target, key = self.ctx["names"].get(name.lower()), (None, name.lower())
+        if target is None or key in self.names_seen:
+            self.ctx["missing_names"].add(f"{scope}!{name}" if sheet else name)
             return "xl.ERR['#NAME?']"
-        self.names_seen.add(name.lower())
+        self.names_seen.add(key)
         try:
             return self.expr(parse("=" + target.lstrip("=")), want)
         finally:
-            self.names_seen.discard(name.lower())
+            self.names_seen.discard(key)
 
     def lazy(self, node, want="value") -> str:
         return f"lambda: {self.expr(node, want)}"
@@ -338,6 +344,22 @@ class Gen:
                 target = r["c1"] if r["cabs1"] else r["c1"] + col - self.col
                 self.isformula.add((sheet, r["r1"], target))
             return f"(({sheet!r}, {r['r1']}, {self.colexpr(r['c1'], r['cabs1'])}) in ISFORMULA)"
+        if name == "IFS":  # condition, value pairs, in order: a chain of lazy IFs, #N/A if none holds
+            if len(args) < 2 or len(args) % 2:
+                raise CompileError("IFS needs condition, value pairs")
+            code = "xl.ERR['#N/A']"
+            for cond, val in reversed(list(zip(args[::2], args[1::2]))):
+                code = f"xl.IF({self.expr(cond)}, {self.lazy(val, want)}, lambda: {code})"
+            return code
+        if name == "SWITCH":  # expression, then value, result pairs, then an optional default
+            if len(args) < 3:
+                raise CompileError("SWITCH needs an expression and a value, result pair")
+            e, rest = self.expr(args[0]), args[1:]
+            code = self.expr(rest[-1], want) if len(rest) % 2 else "xl.ERR['#N/A']"
+            pairs = list(zip(rest[::2], rest[1::2]))
+            for val, res in reversed(pairs):
+                code = f"xl.IF(xl.eq({e}, {self.expr(val)}), {self.lazy(res, want)}, lambda: {code})"
+            return code
         if name in ("ROW", "COLUMN") and not args:
             return f"{float(self.row)!r}" if name == "ROW" else "float(c)"
         if name in VOLATILE:
@@ -351,8 +373,9 @@ class Gen:
                 parts.append(self.expr(a, "ref" if spec == ALL or i in spec else "value"))
         if name == "INDEX" and want == "ref":
             return f"xl.INDEX_REF({', '.join(parts)})"
-        if name in KNOWN:
-            return f"xl.{name}({', '.join(parts)})"
+        py = name.replace(".", "_")  # STDEV.S -> STDEV_S
+        if py in KNOWN:
+            return f"xl.{py}({', '.join(parts)})"
         self.ctx["unknown"].add(name)
         return f"B.unknown({name!r})({', '.join(parts)})"
 
@@ -373,7 +396,10 @@ class Gen:
             if r is None:
                 return self.name(node[1], want)
             if "name" in r:
-                self.issues.append(f"sheet-level or external name {node[1]}")
+                if r.get("ext") is None and r.get("sheet"):  # Sheet!Name: that sheet's own name
+                    return self.name(r["name"], want, r["sheet"])
+                self.issues.append(f"external name {node[1]}")
+                self.ctx["missing_names"].add(node[1])
                 return "xl.ERR['#NAME?']"
             return self.ref(r, want)
         if k == "f":
@@ -442,8 +468,10 @@ def _comment(text: str, n: int = 110) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def compile_overlay(db_path: str, sheets: list[str], title: str = "", progress=None) -> tuple[str, dict]:
-    """(module source, stats) for the formula cells on `sheets` of the workbook behind model.db."""
+def compile_overlay(db_path: str, sheets: list[str], title: str = "", progress=None,
+                    source_path: str | None = None) -> tuple[str, dict]:
+    """(module source, stats) for the formula cells on `sheets` of the workbook behind model.db. source_path: the
+    workbook itself, to read its sheet-level defined names when model.db was built before it kept them."""
     progress = progress or (lambda f, m: None)
     db = rodb.connect(db_path)
     wb_sheets = [s for (s,) in db.execute("SELECT sheet FROM sheets ORDER BY rowid")]
@@ -453,7 +481,17 @@ def compile_overlay(db_path: str, sheets: list[str], title: str = "", progress=N
     if "extcells" in have:
         extent.update({(i, s): (r or 1, c or 1) for i, s, r, c in
                        db.execute("SELECT idx, sheet, MAX(row), MAX(col) FROM extcells GROUP BY idx, sheet")})
-    names = {n.lower(): ref for n, ref in db.execute("SELECT name, ref FROM names")} if "names" in have else {}
+    ncols = {r[1] for r in db.execute("PRAGMA table_info(names)")} if "names" in have else set()
+    rows = db.execute("SELECT name, ref, scope FROM names").fetchall() if "scope" in ncols else \
+        [(n, r, None) for n, r in db.execute("SELECT name, ref FROM names")] if "names" in have else []
+    if "scope" not in ncols and source_path:
+        try:
+            import build_map
+            rows = build_map.defined_names(source_path)
+        except Exception:
+            pass
+    names = {n.lower(): ref for n, ref, sc in rows if not sc}
+    local_names = {(sc, n.lower()): ref for n, ref, sc in rows if sc}
     labels = {(s, r): (lab or "", u or "") for s, r, lab, u in db.execute("SELECT sheet, row, label, units FROM rows")}
 
     cells = defaultdict(list)
@@ -464,7 +502,8 @@ def compile_overlay(db_path: str, sheets: list[str], title: str = "", progress=N
     ident = {s: _ident(s, taken) for s in overlay}
     fn = {(s, r): f"{ident[s]}_{r}" for (s, r) in cells}
     ctx = {"sheets": set(wb_sheets), "overlay": set(overlay), "extent": extent, "names": names, "fn": fn, "labels": labels,
-           "isformula_targets": set(), "unknown": set(), "volatile": set()}
+           "isformula_targets": set(), "unknown": set(), "volatile": set(), "local_names": local_names,
+           "missing_names": set()}
     gen = Gen(ctx)
     stats = {"formula_cells": 0, "rows": len(cells), "branches": 0, "not_compiled": []}
     body = []
@@ -513,7 +552,8 @@ def compile_overlay(db_path: str, sheets: list[str], title: str = "", progress=N
         if hit:
             isf.add((s, r, c))
     db.close()
-    stats.update(unknown_functions=sorted(ctx["unknown"]), volatile=sorted(ctx["volatile"]), sheets=overlay,
+    stats.update(unknown_functions=sorted(ctx["unknown"]), missing_names=sorted(ctx["missing_names"])[:100],
+                 volatile=sorted(ctx["volatile"]), sheets=overlay,
                  issues=sorted(set(gen.issues)))
     head = f'''"""Python overlay{": " + _comment(title, 80) if title else ""}.
 
