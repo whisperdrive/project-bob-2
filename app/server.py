@@ -40,6 +40,11 @@ def index():
     return FileResponse(Path(__file__).parent / "index.html")
 
 
+@app.get("/charts.js")
+def charts_js():  # the chart drawing shared with the other app (web/charts.js)
+    return FileResponse(Path(__file__).resolve().parent.parent / "web" / "charts.js", media_type="text/javascript")
+
+
 @app.get("/api/config")
 def config():
     return {"models": MODELS}

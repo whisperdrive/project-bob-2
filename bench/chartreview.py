@@ -19,7 +19,7 @@ the data summary is exact (use it for numbers and indexes, not the pixels). Appl
 consistently, cite the rule ID at the start of every issue, and make the least change that satisfies them.
 
 Allowed changes (anything else is out of scope; report it as an issue):
-- title, kind ("line" or "bar"), note
+- title, kind ("line", "bar", "stacked", "area", "combo" or "waterfall"), note
 - x_start, x_end: 0-based inclusive indexes of the periods shown by default
 - y_min, y_max: y-axis limits
 Return JSON only. If the chart already follows the rules: {{"verdict": "ok", "issues": [], "changes": {{}}}}.
@@ -42,7 +42,8 @@ def rules_text() -> str:
 
 _N = {"type": ["number", "null"]}
 _S = {"type": ["string", "null"]}
-_CHANGES = {"title": _S, "kind": {"type": ["string", "null"], "enum": ["line", "bar", None]},
+_CHANGES = {"title": _S, "kind": {"type": ["string", "null"],
+                                   "enum": ["line", "bar", "stacked", "area", "combo", "waterfall", None]},
             "x_start": {"type": ["integer", "null"]}, "x_end": {"type": ["integer", "null"]},
             "y_min": _N, "y_max": _N, "note": _S}
 SCHEMA = {"type": "json_schema", "name": "chart_review", "strict": True, "schema": {
@@ -60,6 +61,7 @@ def summarize(spec: dict) -> dict:
     shown = display(spec)
     labs = shown["labels"]
     out = {"title": spec.get("title"), "units": spec.get("units"), "kind": spec.get("kind"),
+           "waterfall_totals": spec.get("totals") if spec.get("kind") == "waterfall" else None,
            "frequency": spec.get("frequency"), "periods": len(labs),
            "first_label": (labs or [None])[0], "last_label": (labs or [None])[-1],
            "sign_presentation": ("all values are negative in the workbook and are shown as positive"
@@ -77,6 +79,7 @@ def summarize(spec: dict) -> dict:
         rest = [v for i, v in vals if i != top[0][0]]
         out["series"].append({
             "name": s.get("name"), "numeric_points": len(vals),
+            **({"drawn_as": s["as"]} if s.get("as") else {}), **({"axis": "right"} if s.get("axis") == "right" else {}),
             "min": min(v for _, v in vals), "max": max(v for _, v in vals),
             "first_nonzero_index": nz[0][0] if nz else None, "last_nonzero_index": nz[-1][0] if nz else None,
             "largest_abs": [{"index": i, "label": labs[i], "value": round(v, 2)} for i, v in top],

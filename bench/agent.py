@@ -53,9 +53,20 @@ TOOLS = [
          "title": {"type": "string"},
          "series": {"type": "array", "maxItems": 8, "items": {"type": "object", "properties": {
              "range": {"type": "string", "description": "e.g. Valuation!L95:AO95"},
-             "name": {"type": "string", "description": "legend label; defaults to the line item label"}},
+             "name": {"type": "string", "description": "legend label; defaults to the line item label"},
+             "as": {"type": "string", "enum": ["bar", "line"], "description": "stacked / combo charts: a part of "
+                    "the total (bar, the default) or a line drawn over the columns (a total, last year's figure)"},
+             "axis": {"type": "string", "enum": ["left", "right"], "description": "right: its own axis on the "
+                      "right, for a rate or a series in other units drawn beside amounts"}},
              "required": ["range"]}},
-         "kind": {"type": "string", "enum": ["line", "bar"]},
+         "kind": {"type": "string", "enum": ["line", "bar", "stacked", "area", "combo", "waterfall"],
+                  "description": "line: over time; bar: clustered columns; stacked: parts that add up to a total; "
+                                 "area: stacked areas; combo: stacked columns for the parts with lines for the series "
+                                 "marked as line; waterfall: a bridge (a start value, the steps, the end value) from "
+                                 "one column range or several single cells"},
+         "totals": {"type": "array", "items": {"type": "integer"}, "description": "waterfall only: 0-based "
+                    "positions of the bars drawn from zero (the start value, subtotals, the end value); leave "
+                    "out if every value is a step, and a Total bar is added"},
          "units": {"type": "string", "description": "only if the workbook states them (the row's units column, "
                                                     "or the sheet's unit header), e.g. A$'000; omit if unsure"},
          "x_range": {"type": "string", "description": "optional range holding the x-axis labels"},
@@ -119,6 +130,11 @@ usually a calculated row on an operations or valuation sheet, not an input or ac
 "ex. historicals" row unless the user asks for that. The chart shades the model's Actuals / Business plan /
 Forecast periods automatically. If the chart tool says a series only covers part of the timeline, chart the
 suggested full rows instead (or set partial_ok if the user asked for that part only).
+Pick the kind of chart that answers the question. Parts of a total over time (cash flow components, revenue
+by segment): stacked, or combo with the total or last year's figure as a line (as "line"). A bridge from one
+value to another (enterprise value to equity value, last year's value to this year's): waterfall, with totals
+marking the bars drawn from zero. A rate beside amounts: axis "right". Never stack series that don't add up (a
+rate, a balance beside a flow, two versions of the same line item): draw those as lines.
 
 To check or recompute a valuation, or answer "what if the discount rate were X", use the dcf tool:
 1. Find the model's value cell (call dcf with no arguments to list candidates, with formulas). Use the one

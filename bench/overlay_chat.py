@@ -45,12 +45,19 @@ OVERLAY_TOOLS = [
      "description": "Draw one chart of an overlay row across its timeline as the Python overlay computes it: the "
                     "values Excel saved, then one line per feed listed (e.g. [\"prior\", \"current\"] to compare "
                     "last year's client model with this year's, rolled forward), and with changes on the last feed. "
-                    "Pass the row range. Returns a short summary of what was drawn.",
+                    "Add components (the rows that add up to it) to draw them as stacked columns under those lines, "
+                    "in one chart. Pass the row range. Returns a short summary of what was drawn.",
      "parameters": {"type": "object", "properties": {
          "title": {"type": "string"}, "range": {"type": "string", "description": "one overlay row, e.g. DCF!C7:V7"},
          "feeds": {"type": "array", "items": {"type": "string", "enum": ["workbook", "prior", "current"]},
                    "description": "feeds to draw (default none: only the saved values, plus changes if given)"},
-         "changes": _CHANGES, "kind": {"type": "string", "enum": ["line", "bar"]}},
+         "components": {"type": "array", "maxItems": 6, "items": {"type": "string"},
+                        "description": "overlay rows that add up to the charted row (e.g. its trust, company and "
+                                       "credit components), drawn as stacked columns over the same periods"},
+         "component_feed": {"type": "string", "enum": ["workbook", "prior", "current"],
+                            "description": "which feed the components come from (default: the last feed listed)"},
+         "changes": _CHANGES, "kind": {"type": "string", "enum": ["line", "bar", "stacked", "area", "combo"],
+                                       "description": "default line; combo when components are given"}},
          "required": ["title", "range"]}},
     {"type": "function", "name": "overlay_dcf",
      "description": "Recompute one of the overlay's DCFs from the cash flows the Python overlay computes on a feed "
@@ -93,7 +100,9 @@ Use overlay_run or overlay_chart for any what-if that changes the cash flows or 
 (growth, CPI, volumes, the discount rate or growth levers, the valuation date, this year's model); the dcf tool
 only re-discounts saved cash flows. Use overlay_dcf for discounting-method questions on the live numbers
 (mid-period, day count, cut-off, bridge items). For a what-if, give the outputs from overlay_run (enterprise and
-equity value) as well as any chart. Say which feed and which changes each number comes from, compare
+equity value) as well as any chart. To show how a row is made up and how it compares with last year in one
+chart, call overlay_chart with the row, its feeds and its components (the rows that add up to it): the parts are
+stacked as columns and the feeds drawn as lines. Say which feed and which changes each number comes from, compare
 with the workbook and the report where it helps, and cite cells as Sheet!A1. Change inputs with raw cell values:
 0.075 for 7.5%, dates as YYYY-MM-DD. Levers are the report's assumptions found in the overlay; any other overlay
 input can be changed too (find it with overlay_inputs).
@@ -167,9 +176,9 @@ def _formula_text(t: dict) -> str:
 
 
 def row_chart(eid: int, rng: str, title: str, feeds: list[str] | None = None, changes: dict | None = None,
-              kind: str = "line") -> dict:
+              kind: str | None = None, components: list[str] | None = None, component_feed: str | None = None) -> dict:
     """A chart spec for one overlay row: the values Excel saved, the row on each feed, and with changes (on the
-    last feed)."""
+    last feed); with components, the rows that add up to it as stacked columns under those lines (a combo)."""
     import chartdata
     import engagement
     import overlay as ovmod
@@ -179,8 +188,10 @@ def row_chart(eid: int, rng: str, title: str, feeds: list[str] | None = None, ch
     for f in feeds:
         sess, summary, clean = engagement._live(eid, f, changes)
     path = summary["wiring"]["overlay"]["db_path"]
+    comps = [c for c in (components or []) if c][:6]
+    kind = kind or ("combo" if comps else "line")
     with tools.using(path):
-        spec = tools.chart(title, [{"range": rng, "name": "As saved in Excel"}], kind=kind or "line")
+        spec = tools.chart(title, [{"range": rng, "name": "As saved in Excel"}], kind=kind)
     cols = spec.get("columns")
     if not cols:
         raise ValueError(f"{rng}: give one row of the overlay, e.g. DCF!C7:V7")
@@ -197,13 +208,31 @@ def row_chart(eid: int, rng: str, title: str, feeds: list[str] | None = None, ch
             if clean and f == feeds[-1]:
                 sess.configure(f, {**defaults, **{ovmod.parse_a1(k): v for k, v in clean.items()}}, months)
                 out.append(("With changes" + ("" if f == "workbook" else f" ({ovmod.FEED_WORDS[f]})"), sess.values(keys)))
+        parts = []
+        if comps:  # the rows that add up to it, on one feed, over the same periods
+            cf = component_feed if component_feed in ("workbook", "prior", "current") else feeds[-1]
+            defaults, _, months = ovmod._feed(summary, cf, None, None)
+            sess.configure(cf, defaults, months)
+            for c in comps:
+                s_, r_, _ = ovmod.parse_a1(c.split(":")[0])
+                parts.append((s_, r_, sess.values([(s_, r_, col) for col in cols]), cf))
         sess.configure("workbook")
-        return out
+        return out, parts
 
-    for name, vals in ovmod.deep(run):
+    lines, parts = ovmod.deep(run)
+    for name, vals in lines:
         spec["series"].append({"name": name, "range": f"{rng} (Python overlay)", "label": spec["series"][0].get("label"),
                                "units": spec["series"][0].get("units"),
                                "data": [v if isinstance(v, float) else None for v in vals]})
+    if parts:
+        db = rodb.connect(path)
+        for x in spec["series"]:
+            x["as"] = "line"
+        for s_, r_, vals, cf in parts:
+            lab = (db.execute("SELECT label FROM rows WHERE sheet=? AND row=?", (s_, r_)).fetchone() or [None])[0]
+            spec["series"].append({"name": lab or f"{s_}!r{r_}", "range": f"{s_}!r{r_} (Python overlay, "
+                                   f"{ovmod.FEED_WORDS[cf]})", "label": lab, "units": spec["series"][0].get("units"),
+                                   "as": "bar", "data": [v if isinstance(v, float) else None for v in vals]})
     notes = []
     # "As saved in Excel" and the prior client model are the same numbers when the overlay's saved link values are
     # current and the Python reproduces the workbook (the overlay's own check): then draw them once. Where they
@@ -264,7 +293,7 @@ def extra_tool(eid: int):
                                    {"type": "chart", "spec": r["chart"]}] if r.get("selected") else [])
         if name == "overlay_chart":
             spec = row_chart(eid, a["range"], a.get("title") or a["range"], a.get("feeds") or [],
-                             _changes(a.get("changes")), a.get("kind") or "line")
+                             _changes(a.get("changes")), a.get("kind"), a.get("components"), a.get("component_feed"))
             return tools.chart_note(spec), [{"type": "chart", "spec": spec}]
         if name == "overlay_formula":
             return _formula_text(engagement.overlay_trace(eid, a["cell"])), []

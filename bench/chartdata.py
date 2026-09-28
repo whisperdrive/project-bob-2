@@ -117,7 +117,8 @@ def enrich(spec: dict, db: sqlite3.Connection) -> dict:
                 vals.append(nums[0])
             else:
                 vals.append(nums[-1])
-        a_series.append({"name": s["name"], "data": vals, "method": method})
+        a_series.append({"name": s["name"], "data": vals, "method": method,
+                         **{k: s[k] for k in ("as", "axis") if s.get(k)}})
     partial = [c < per_year for c in counts]
     a_phases = None
     if spec.get("phases"):
@@ -199,5 +200,6 @@ def display(spec: dict, mode: str = "periodic") -> dict:
         labels, series = spec.get("period_labels") or spec.get("labels", []), spec.get("series", [])
     ph = spec["annual"].get("phases") if mode == "annual" and spec.get("annual") else spec.get("phases")
     return {"labels": labels, "phases": ph, "series": [{"name": s["name"], "data": [v * sign + 0.0 if isinstance(v, (int, float))
-                                                                       else v for v in s["data"]]}
+                                                                       else v for v in s["data"]],
+                                                        **{k: s[k] for k in ("as", "axis") if s.get(k)}}
                                          for s in series]}

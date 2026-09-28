@@ -230,10 +230,17 @@ def _total_columns(db, sheet: str, pts: list[tuple[int, int]]) -> set[int]:
     return drop
 
 
+KINDS = ("line", "bar", "stacked", "area", "combo", "waterfall")
+
+
 def chart(title: str, series: list[dict], kind: str = "line", x_range: str | None = None,
-          units: str | None = None) -> dict:
-    """Data for a chart the UI draws. Each series is {"range": "Sheet!L95:AO95", "name": optional}.
-    Values are read from the workbook; x labels come from x_range or the sheet's timeline header row."""
+          units: str | None = None, totals: list[int] | None = None) -> dict:
+    """Data for a chart the UI draws. Each series is {"range": "Sheet!L95:AO95", "name": optional, "as": "bar" |
+    "line" (combo / stacked: drawn as columns or as a line on top), "axis": "right" (its own axis on the right)}.
+    Values are read from the workbook; x labels come from x_range, the sheet's timeline header row (a row
+    range), or the line items' labels (a column range). kind: line, bar (clustered), stacked, area (stacked),
+    combo (stacked columns + lines), waterfall (one series as a bridge; totals = positions of the bars drawn
+    from zero, e.g. the start, subtotals and the end; single cells as series become the bridge's steps)."""
     import json as _json
     db = _db()
     out_series, labels = [], None
@@ -257,7 +264,9 @@ def chart(title: str, series: list[dict], kind: str = "line", x_range: str | Non
         name = s.get("name") or (lab[0] if lab and lab[0] and one_row else s["range"])
         out_series.append({"name": name, "range": s["range"], "data": data,
                            "label": lab[0] if lab and one_row else None,
-                           "units": lab[1] if lab and one_row else None})
+                           "units": lab[1] if lab and one_row else None,
+                           **({"as": s["as"]} if s.get("as") in ("bar", "line") else {}),
+                           **({"axis": "right"} if s.get("axis") == "right" else {})})
         if labels is None:
             if x_range:
                 xs, xpts = _range_cells(db, x_range)
@@ -271,8 +280,10 @@ def chart(title: str, series: list[dict], kind: str = "line", x_range: str | Non
                 hr = _json.loads(lay[0] or "{}").get("header_row") if lay else None
                 hv = dict(db.execute("SELECT col, value FROM cells WHERE sheet=? AND row=?", (sheet, hr))) if hr else {}
                 labels = [_period_label(hv[c]) if c in hv else get_column_letter(c) for _, c in pts]
-            else:
-                labels = [str(r) for r, _ in pts]
+            else:  # a column: the line items' labels
+                labs = dict(db.execute(f"SELECT row, label FROM rows WHERE sheet=? AND row IN ({','.join('?' * len(pts))})",
+                                       (sheet, *[r for r, _ in pts])))
+                labels = [labs.get(r) or str(r) for r, _ in pts]
     n = max((len(s["data"]) for s in out_series), default=0)
     labels = (labels or [])[:n] + [""] * (n - len(labels or []))
     import chartdata
@@ -281,12 +292,23 @@ def chart(title: str, series: list[dict], kind: str = "line", x_range: str | Non
         if len(us) == 1 and next(iter(us)):
             units = next(iter(us))
     first = [p for i, p in enumerate(_range_cells(db, series[0]["range"])[1]) if i not in dropped] if series else []
-    spec = {"title": title, "kind": kind if kind in ("line", "bar") else "line", "units": units,
-            "labels": labels, "series": out_series,
+    kind = kind if kind in KINDS else "line"
+    if kind == "waterfall" and len(out_series) > 1 and all(len(x["data"]) == 1 for x in out_series):
+        # single cells (e.g. enterprise value, net debt, equity value): each is one step of the bridge
+        labels = [x["name"] for x in out_series]
+        out_series = [{"name": title, "range": ", ".join(x["range"] for x in out_series), "label": None,
+                       "units": units, "data": [x["data"][0] for x in out_series]}]
+        first = []
+    spec = {"title": title, "kind": kind, "units": units, "labels": labels, "series": out_series,
             "columns": [c for r, c in first] if first and first[0][0] == first[-1][0] else None}
+    if kind == "waterfall":
+        spec["totals"] = sorted({int(i) for i in totals or [] if 0 <= int(i) < len(labels)})
     if dropped:
         spec["dropped_total_columns"] = len(dropped)
-    return chartdata.enrich(spec, db)
+    spec = chartdata.enrich(spec, db)
+    if kind == "waterfall":  # a bridge keeps its signs: the steps down are the point
+        spec["sign"] = 1
+    return spec
 
 
 def _fuller_rows(rng: str, limit: int = 4) -> str:
@@ -328,6 +350,15 @@ def chart_note(spec: dict) -> str:
     shown = spec.get("period_labels") or spec["labels"]
     lines = [f"Chart shown to the user: '{spec['title']}', {len(shown)} {spec.get('frequency', '')} points "
              f"({shown[0] if shown else ''} to {shown[-1] if shown else ''}); values below are the workbook's."]
+    k = spec.get("kind") or "line"
+    if k != "line":
+        lines.append({"bar": "Drawn as clustered columns.", "stacked": "Drawn as stacked columns (series marked line "
+                      "on top as lines).", "area": "Drawn as stacked areas.", "combo": "Drawn as stacked columns with "
+                      "the series marked line as lines.", "waterfall": "Drawn as a waterfall: each value moves the "
+                      "running total" + (f"; bars from zero at positions {spec.get('totals')}" if spec.get("totals")
+                                         else "; a Total bar is added at the end") + "."}[k])
+    if any(s.get("axis") == "right" for s in spec["series"]):
+        lines.append("On the right-hand axis: " + ", ".join(s["name"] for s in spec["series"] if s.get("axis") == "right") + ".")
     if spec.get("sign") == -1:
         lines.append("All values are negative in the workbook, so the chart shows them as positive (labelled).")
     if spec.get("annual"):

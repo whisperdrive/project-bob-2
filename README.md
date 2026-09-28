@@ -58,10 +58,14 @@ Drop .xlsx/.xlsm files on the page. Each file is:
 The chat (Ask tab) gets the confirmed target, valuation date and change summary as context. Tool calls are
 chosen by the model on Azure but run locally (`agent._run_tool` against model.db); only their text results
 are sent back. The `chart` tool takes cell ranges, reads the exact values locally and the page draws them
-with Chart.js (hover, line/bar, click-to-zoom, copy data); the model only sees a first/last/min/max summary.
+with Chart.js (hover, click-to-zoom, copy data); the model only sees a first/last/min/max summary. Charts can be
+lines, clustered or stacked columns, stacked areas, a combo (stacked columns for the parts, with lines for a
+total or last year's figure), or a waterfall (a bridge, e.g. enterprise value to equity value, from a column of
+line items or single cells). A rate can sit on its own axis on the right. Both apps draw them with the same
+script (`web/charts.js`), and the viewer can switch between the kinds that fit.
 Before a chart is shown it's reviewed on the server: `bench/chartrender.py` draws it to PNG with matplotlib (no
 browser), a vision model (`bench/chartreview.py`, gpt-4o) checks the image against an exact data summary and
-suggests presentation fixes (title, line/bar, visible window, y-axis range, a note, e.g. for an outlier that
+suggests presentation fixes (title, chart type, visible window, y-axis range, a note, e.g. for an outlier that
 flattens the trend), and it looks once more at the re-rendered result. Titles naming years outside the visible
 range are corrected in code. The data can't be changed; "Full range" undoes the framing, and the chat model is
 told what was changed so its answer matches. `find` ignores spaces and punctuation ("cash flow" finds
@@ -263,7 +267,11 @@ steps, each checked by a person before the next relies on it:
      module's values to `dcf.py` through a temporary view over model.db.
    - **Ask**: the Model Desk's chat agent (`bench/overlay_chat.py` on `bench/agent.py`). It has the workbook tools
      on any of the three workbooks, and tools that run the overlay: `overlay_run`, `overlay_chart` (a row saved
-     vs recomputed, several feeds on one chart), `overlay_dcf`, `overlay_formula` and `overlay_inputs`. It knows
+     vs recomputed, several feeds on one chart, and optionally the rows that add up to it as stacked columns
+     underneath), `overlay_dcf`, `overlay_formula` and `overlay_inputs`. When the prior client model, recomputed
+     in Python, gives the values Excel saved in every period, the chart draws them as one line; where they
+     differ it keeps both and says where (the overlay's saved link values are out of date there, or the Python
+     differs). It knows
      the report's key facts, the levers, the outputs and the feeds. Charts go through the same chart review as
      on the Model Desk.
 

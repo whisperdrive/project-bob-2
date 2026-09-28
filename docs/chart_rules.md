@@ -5,7 +5,7 @@ chart without restarting the app. Each rule has an ID; the reviewer cites it in 
 (e.g. "[F1] one value is 37x the next largest"). Keep rules short, testable, and within what the reviewer can
 change.
 
-**What the reviewer can change:** the title, line or bar, the default visible periods, the y-axis range, and a
+**What the reviewer can change:** the title, the chart type, the default visible periods, the y-axis range, and a
 note under the chart. **What it can't change:** the numbers, which series are shown, colours, or number
 formats. If a rule needs something outside that list, the reviewer reports it as an issue and leaves it.
 
@@ -50,6 +50,14 @@ The app applies these before the review; the data summary tells you which apply.
 - **K2 Bar** for 12 periods or fewer, or when values are totals for discrete periods (e.g. annual figures).
 - **K3 Keep the user's choice** if they asked for a specific type, unless it makes the data unreadable; then
   keep it and say why in an issue.
+- **K4 Parts of a total stay stacked.** Stacked columns, stacked areas and combos (stacked columns with lines
+  for a total or last year's figure) show how parts make up a whole; keep them, whatever K1 and K2 say. Raise
+  an issue if a stacked series doesn't add to the others (a rate, a balance beside flows, two versions of one
+  line item): those belong on a line.
+- **K5 Bridges stay waterfalls.** A waterfall walks from a start value through the steps to an end value; keep
+  it. Its bars drawn from zero (the start, subtotals, the end) are listed in waterfall_totals.
+- **K6 A second axis** (series marked right axis) is for a rate or other units beside amounts; S2 is met when
+  the units differ only between the two axes.
 
 ## F. Framing (visible range and y-axis)
 - **F1 Outliers.** A value is an outlier if its absolute size is more than 5x the next largest absolute

@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="/charts.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <style>
 :root {
@@ -880,7 +881,7 @@ const tok = n => getComputedStyle(document.documentElement).getPropertyValue(n).
 function shownData(spec, mode) {
   const sign = spec.sign || 1, a = spec.annual, annual = mode === "annual" && a;
   const labels = annual ? a.labels : (spec.period_labels || spec.labels);
-  const series = (annual ? a.series : spec.series).map(s => ({ name: s.name, method: s.method,
+  const series = (annual ? a.series : spec.series).map(s => ({ name: s.name, method: s.method, as: s.as, axis: s.axis,
     data: s.data.map(v => v == null ? null : v * sign + 0) }));
   const phases = annual ? a.phases : spec.phases;
   return { labels, series, phases: phases || null };
@@ -917,8 +918,7 @@ function chartSubtitle(spec, mode) {
     return `${units}${signNote} · ${n} years: annual ${methods} by ${esc(a.basis)}${span}` +
       (a.partial.some(Boolean) ? " · * partial year" : "") + phaseText(d);
   }
-  return `${units}${signNote} · ${n} ${(FREQ_WORD[spec.frequency] || "").toLowerCase() || "points"}${n ? " periods" : ""}${span}`
-    .replace(" periods periods", " periods") + phaseText(d);
+  return `${units}${signNote} · ${chartCount(spec, n)}${span}` + phaseText(d);
 }
 function phaseText(d) {
   if (!d.phases || !d.phases.length) return "";
@@ -951,10 +951,10 @@ function dcfCard(r) {
 function chartCard(spec) {
   const card = document.createElement("div"); card.className = "chart-card";
   const refs = [...new Set(spec.series.map(s => s.range))].map(r => `<span class="ref">${esc(r)}</span>`).join("");
-  const modes = spec.annual ? `<span class="seg"><button type="button" data-mode="periodic">${FREQ_WORD[spec.frequency] || "Periodic"}</button><button type="button" data-mode="annual">Annual</button></span>` : "";
+  const modes = spec.annual && spec.kind !== "waterfall" ? `<span class="seg"><button type="button" data-mode="periodic">${FREQ_WORD[spec.frequency] || "Periodic"}</button><button type="button" data-mode="annual">Annual</button></span>` : "";
   card.innerHTML = `<h4>${esc(spec.title)}</h4><div class="sub"></div>
     <div class="chart-box"><canvas role="img" aria-label="${esc(spec.title)}"></canvas></div>
-    <div class="chart-tools">${modes}<button type="button" data-kind="line">Line</button><button type="button" data-kind="bar">Bar</button>
+    <div class="chart-tools">${modes}${chartKinds(spec).map(k => `<button type="button" data-kind="${k}">${KIND_WORD[k]}</button>`).join("")}
       <button type="button" data-act="copy">Copy data</button><button type="button" data-act="reset">Full range</button>
       <span class="src">Source ${refs}</span></div>
     <div class="review-slot"></div>
@@ -971,22 +971,10 @@ function mountCharts(root) {
       const mode = card._mode, d = shownData(spec, mode);
       const ink = tok("--ink"), muted = tok("--muted"), rule = tok("--rule");
       const fmt = v => v == null ? "–" : Number(v).toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) < 10 ? 4 : 1 });
-      card._chart = new Chart(card.querySelector("canvas"), {
-        type: kind, plugins: [phasePlugin],
-        data: { labels: d.labels, datasets: d.series.map((s, i) => {
-          const c = tok(`--s${(i % 6) + 1}`);
-          return { label: s.name, data: s.data, borderColor: c, backgroundColor: kind === "bar" ? c : c + "22",
-            borderWidth: 2, pointRadius: d.labels.length > 60 ? 0 : 2.5, pointHoverRadius: 4, tension: 0,
-            fill: false, spanGaps: true };
-        }) },
-        options: { responsive: true, maintainAspectRatio: false, animation: false,
-          interaction: { mode: "index", intersect: false },
-          plugins: { phases: { phases: d.phases, shade: tok("--code-bg"), text: muted },
-            legend: { display: d.series.length > 1, labels: { color: ink, boxWidth: 12 } },
-            tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${fmt(c.raw)}${spec.units && !/not\s+label/i.test(spec.units) ? " " + spec.units : ""}` } } },
-          scales: { x: { ticks: { color: muted, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false }, border: { color: rule } },
-                    y: { ticks: { color: muted, callback: v => Number(v).toLocaleString() }, grid: { color: rule }, border: { display: false } } },
-          onClick: (evt, els, chart) => zoomTo(chart, els) } });
+      card._chart = new Chart(card.querySelector("canvas"), chartConfig(spec, d, kind, {
+        color: i => tok(`--s${(i % 6) + 1}`), ink, muted, rule, shade: tok("--code-bg"), up: tok("--up"), down: tok("--down"), total: tok("--s2"),
+        fmt, unit: spec.units && !/not\s+label/i.test(spec.units) ? " " + spec.units : "", plugins: [phasePlugin],
+        onClick: (evt, els, chart) => kind !== "waterfall" && zoomTo(chart, els) }));
       // Framing chosen by the chart review (data unchanged). Its period window maps to financial years in
       // the annual view; its y-axis limits are for periodic values only.
       const v = useView && spec.view;
