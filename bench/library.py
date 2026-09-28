@@ -243,7 +243,7 @@ def summarize(d: dict, prev: dict, me: dict, model: str = SUMMARY_MODEL, session
     brief = {k: (v[:25] if isinstance(v, list) else v) for k, v in d.items()}
     try:
         from llm import client, create
-        r = create(client(interactive=False), model, input=SUMMARY_PROMPT.format(
+        r = create(client(interactive=False), model, purpose="summary", input=SUMMARY_PROMPT.format(
             old=prev["filename"], new=me["filename"], d=json.dumps(brief, default=str)[:24000]))
         if r.usage:
             usage.record(model, r.usage, "summary", me["id"], session)
@@ -256,6 +256,12 @@ def summarize(d: dict, prev: dict, me: dict, model: str = SUMMARY_MODEL, session
 
 
 def process(fid: int) -> None:
+    import calllog
+    with calllog.tag(workbook=fid, step="process the workbook"):
+        _process(fid)
+
+
+def _process(fid: int) -> None:
     f = get(fid, full=True)
     try:
         _update(fid, status="processing", step="Opening workbook", pct=0, error=None, started_at=time.time())

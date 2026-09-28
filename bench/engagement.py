@@ -32,6 +32,7 @@ import diff as diffmod
 import docingest
 import extlinks
 import library
+import calllog
 import lessons
 import linkmap
 import reportfacts
@@ -87,7 +88,7 @@ def _conn() -> sqlite3.Connection:
     if "arbiter_model" not in {r[1] for r in db.execute("PRAGMA table_info(engagements)")}:
         db.execute("ALTER TABLE engagements ADD COLUMN arbiter_model TEXT")
     for col, kind in (("tables_status", "TEXT"), ("tables_left", "INT"), ("tables_step", "TEXT"),
-                      ("tables_error", "TEXT"), ("tables_started_at", "REAL")):  # ... and before background reading
+                      ("tables_error", "TEXT"), ("tables_started_at", "REAL"), ("tables_secs", "REAL")):  # ... and before background reading
         if col not in {r[1] for r in db.execute("PRAGMA table_info(documents)")}:
             db.execute(f"ALTER TABLE documents ADD COLUMN {col} {kind}")
     timing = [("documents", c) for c in ("started_at", "doc_secs", "facts_started_at", "facts_secs")] + \
@@ -190,7 +191,7 @@ def documents(eid: int) -> list[dict]:
     cols = ("id, engagement_id, filename, kind, size, uploaded_at, status, step, pct, error, pages, n_tables, n_flagged, "
             "processed_at, facts_status, facts_step, facts_error, facts_notes, review_summary, loop_json, started_at, "
             "doc_secs, facts_started_at, facts_secs, tables_status, tables_left, tables_step, tables_error, "
-            "tables_started_at")
+            "tables_started_at, tables_secs")
     out = _q(f"SELECT {cols} FROM documents WHERE engagement_id=? ORDER BY uploaded_at", eid)
     for d in out:
         d["loop"] = json.loads(d.pop("loop_json") or "null")
@@ -401,6 +402,12 @@ def _read_rest(did: int) -> None:
     """Read the report's remaining tables (the key ones were read first), saving each as it's done; then the review
     loop on those it flags, and the facts checked again against the fuller text. Runs beside the worker, so the
     facts and the model steps don't wait for it."""
+    d0 = _doc(did)
+    with calllog.tag(engagement=d0["engagement_id"] if d0 else None, document=did, step="background tables"):
+        _read_rest_tagged(did)
+
+
+def _read_rest_tagged(did: int) -> None:
     try:
         d = _doc(did)
         eid = d["engagement_id"]
@@ -419,14 +426,20 @@ def _read_rest(did: int) -> None:
         docingest.read_rest(doc, d["out_dir"], model, reviewer, _logger(eid), on_table=saved)
         cur = json.loads(_doc(did)["doc_json"])
         if any(t.get("status") == "flagged" and t["id"] in todo for t in cur["tables"]):
-            _set("documents", did, tables_step="Review loop on the flagged tables")
+            _set("documents", did, tables_step="Table review loop on the flagged tables")
             res = docingest.resolve_tables(cur, d["out_dir"], model, reviewer, None, _logger(eid), ids=set(todo))
             _merge_tables(did, [t for t in cur["tables"] if t.get("resolution") and t["id"] in todo],
                           lambda c: c.get("status") == "flagged")
             _learn(did, "tables", res["episodes"])
+        else:
+            res = {"resolved": 0, "escalated": 0}
+        prev = (json.loads(_doc(did)["loop_json"] or "{}").get("tables") or {})
+        _note_loop(did, tables={"resolved": (prev.get("resolved") or 0) + res["resolved"], "escalated": res["escalated"],
+                                "at": time.time()})  # this reading's loop has run: nothing starts another
         with _DOC_LOCK:
             _recheck_facts(did, json.loads(_doc(did)["doc_json"]))
-        _set("documents", did, tables_status="done", tables_left=0, tables_step="Done")
+        _set("documents", did, tables_status="done", tables_left=0, tables_step="Done",
+             tables_secs=round(time.time() - (_doc(did)["tables_started_at"] or time.time()), 1))
         _touch(eid)
     except Exception as ex:
         traceback.print_exc()
@@ -631,7 +644,7 @@ def _run_table_loop(did: int, doc: dict) -> None:
 
 def _resolve_tables_job(did: int) -> None:
     d = _doc(did)
-    _set("documents", did, status="processing", step="Review loop on the flagged tables", pct=0)
+    _set("documents", did, status="processing", step="Table review loop on the flagged tables", pct=0)
     doc = json.loads(d["doc_json"])
     eid = d["engagement_id"]
     e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
@@ -671,7 +684,7 @@ def _resolve_facts_job(did: int) -> None:
             f["review"] = {**f["review"], "verdict": "accept" if accepted else (o.get("verdict") or "correct"),
                            "reason": o.get("reason")}
         fs.append(f)
-    _set("documents", did, facts_status="running", facts_step="Review loop")
+    _set("documents", did, facts_status="running", facts_step="Fact review loop")
     loop = reportfacts.resolve(md, fs, e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER, _logger(eid),
                                lambda frac, msg: _set("documents", did, facts_step=msg),
                                arbiter_model=e["arbiter_model"] or DEFAULT_ARBITER)
@@ -687,6 +700,35 @@ def _resolve_facts_job(did: int) -> None:
     _learn(did, "facts", loop["episodes"])
     _set("documents", did, facts_status="done", facts_step="Done")
     _touch(eid)
+
+
+def calls_view(eid: int) -> dict:
+    """Tokens, cost and time for an engagement: model calls by file and by step (calllog.py), plus how long each
+    job took on the clock (a job's time also counts waiting for rate-limit room and work without model calls)."""
+    wbs, docs = workbooks(eid), documents(eid)
+    e = _q("SELECT * FROM engagements WHERE id=?", eid)
+    if not e:
+        raise ValueError("no such engagement")
+    e = e[0]
+    jobs = []
+    for d in docs:
+        jobs += [{"file": d["filename"], "document": d["id"], "job": "read the report (key tables)", "secs": d["doc_secs"]},
+                 {"file": d["filename"], "document": d["id"], "job": "read the other tables (background)", "secs": d["tables_secs"]},
+                 {"file": d["filename"], "document": d["id"], "job": "key facts and their review loop", "secs": d["facts_secs"]}]
+    for w in wbs:
+        took = (w["processed_at"] - w["started_at"]) if w.get("processed_at") and w.get("started_at") and \
+            w["processed_at"] > w["started_at"] else None
+        jobs.append({"file": w["filename"], "workbook": w["id"], "job": "process the workbook", "secs": took,
+                     "build_secs": w.get("build_secs")})
+    jobs += [{"file": None, "job": label, "secs": e.get(f"{k}_secs")} for k, label in
+             (("compare", "compare models"), ("map", "map"), ("overlay", "python overlay"))]
+    return {"calls": calllog.breakdown(eid, [w["id"] for w in wbs]), "jobs": [j for j in jobs if j["secs"]],
+            "names": {"documents": {d["id"]: d["filename"] for d in docs}, "workbooks": {w["id"]: w["filename"] for w in wbs}},
+            "log_file": str(calllog.DB.relative_to(ROOT))}
+
+
+def call_view(eid: int, cid: int) -> dict | None:
+    return calllog.call(cid, eid, [w["id"] for w in workbooks(eid)])
 
 
 def lessons_view() -> dict:
@@ -714,8 +756,8 @@ def _auto_review(e: dict) -> None:
     or just the loop for facts from before it existed. Once per document: a failure is recorded and shown, not
     retried on every poll (the buttons retry)."""
     for d in e["documents"]:
-        if d["status"] != "done" or busy_doc(d):
-            continue
+        if d["status"] != "done" or busy_doc(d) or d["id"] in _READING or d.get("tables_status") in ("queued", "reading"):
+            continue  # the background reader runs its own loop on the tables it reads
         loop = d.get("loop") or {}
         did = d["id"]
         if loop.get("check_version") != reportfacts.CHECK_VERSION and any(f["document_id"] == did for f in e["facts"]):
@@ -783,7 +825,7 @@ _SUGGESTING = threading.Lock()  # one suggestion at a time: two at once wrote th
 def suggest_roles(eid: int, force: bool = True) -> dict:
     """Suggest (doesn't overwrite confirmed roles). Stored so the page can show it next to what's confirmed.
     force=False (the automatic one) skips if a suggestion for the same files and facts was made meanwhile."""
-    with _SUGGESTING:
+    with _SUGGESTING, calllog.tag(engagement=eid, step="roles"):
         key = _roles_key(eid, workbooks(eid), documents(eid))
         prev = _q("SELECT roles_suggested FROM engagements WHERE id=?", eid)
         if not force and prev and (json.loads(prev[0]["roles_suggested"] or "null") or {}).get("key") == key:
@@ -1171,7 +1213,7 @@ def _process_doc(did: int) -> None:
     if _q("SELECT 1 FROM facts WHERE document_id=?", did):  # read again: the facts are checked against the new text
         _recheck_facts(did, doc)
     if note is None and any(t.get("status") == "flagged" for t in doc["tables"]):
-        _set("documents", did, step="Review loop on the flagged tables", pct=0.95)
+        _set("documents", did, step="Table review loop on the flagged tables", pct=0.95)
         try:
             _run_table_loop(did, doc)
         except Exception as ex:  # the tables stay flagged for a person
@@ -1215,6 +1257,9 @@ def _process_facts(did: int) -> None:
     _touch(eid)
 
 
+_STEP = {"doc": "read the report", "resolve_tables": "table review loop", "facts": "key facts",
+         "resolve_facts": "fact review loop", "compare": "compare models", "map": "map", "overlay": "python overlay",
+         "roles": "roles"}
 # where each job's start time and duration go: (table, started column, seconds column)
 _TIMED = {"doc": ("documents", "started_at", "doc_secs"), "resolve_tables": ("documents", "started_at", "doc_secs"),
           "facts": ("documents", "facts_started_at", "facts_secs"),
@@ -1227,7 +1272,11 @@ def _run(kind: str, rid: int) -> None:
     timed = _TIMED.get(kind)
     if timed:
         _set(timed[0], rid, **{timed[1]: t0})
-    if _run_job(kind, rid) and timed:  # how long it took: the page's estimate for the next run of the same job
+    doc = _doc(rid) if kind in ("doc", "resolve_tables", "facts", "resolve_facts") else None
+    tags = {"engagement": doc["engagement_id"] if doc else rid, "document": rid if doc else None, "step": _STEP.get(kind, kind)}
+    with calllog.tag(**tags):  # every model call in the job is logged against its engagement, document and step
+        ok = _run_job(kind, rid)
+    if ok and timed:  # how long it took: the page's estimate for the next run of the same job
         _set(timed[0], rid, **{timed[2]: round(time.time() - t0, 1)})
 
 

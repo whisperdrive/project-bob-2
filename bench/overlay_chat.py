@@ -316,7 +316,7 @@ def ask(eid: int, question: str, model: str, history: list | None = None, sessio
 
     yield from agent.ask(question, default, model, history, interactive=interactive, context=ctx, on_usage=on_usage,
                          file_id=None, session=session, system=SYSTEM + agent.SYSTEM, tool_specs=specs + OVERLAY_TOOLS,
-                         extra=extra_tool(eid), db_for=db_for)
+                         extra=extra_tool(eid), db_for=db_for, log={"engagement": eid, "step": "chat"})
 
 
 if __name__ == "__main__":

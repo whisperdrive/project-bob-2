@@ -291,7 +291,8 @@ def source_tables(f: dict, pg: dict[int, str]) -> list[tuple[str, str]]:
 
 def _call(model: str, prompt: str, schema: dict, purpose: str, on_usage) -> dict:
     from llm import client, create
-    r = create(client(interactive=False), model, input=prompt, text={"format": schema}, max_output_tokens=12000)
+    r = create(client(interactive=False), model, input=prompt, text={"format": schema}, max_output_tokens=12000,
+               purpose=purpose)
     if r.usage and on_usage:
         on_usage(model, r.usage, purpose)
     return json.loads(r.output_text)
@@ -452,7 +453,7 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
     k = 0
     while issues and k < rounds:
         k += 1
-        progress((k - 1) / rounds, f"Review loop round {k}: {len(issues)} fact(s) open ({model} fixes, {reviewer_model} checks)")
+        progress((k - 1) / rounds, f"Fact review loop, round {k}: {len(issues)} fact(s) open ({model} fixes, {reviewer_model} checks)")
         cites = [by_id[i].get("page") for i in issues] + [(iss["correction"] or {}).get("page") for iss in issues.values()] \
             + [n for i in issues for n in _quote_pages(by_id[i], pg)]
         doc = cited_pages(markdown, [c for c in cites if c])
@@ -529,7 +530,7 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
     episodes = [{"category": f["category"], "key": f["key"], "added_by_reviewer": f.get("origin") == "reviewer",
                  "thread": f["agent"]["thread"], "outcome": f["agent"]["status"]}
                 for f in facts if len(f["agent"]["thread"]) > 1]
-    progress(1.0, f"Review loop: {summary['agreed']} agreed, {summary['withdrawn']} withdrawn, {summary['escalated']} for you")
+    progress(1.0, f"Fact review loop: {summary['agreed']} agreed, {summary['withdrawn']} withdrawn, {summary['escalated']} for you")
     return {"summary": summary, "episodes": episodes}
 
 

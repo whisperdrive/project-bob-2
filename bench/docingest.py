@@ -26,6 +26,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import calllog
 import lessons
 
 DPI = 200
@@ -203,7 +204,7 @@ class Reader:
     def _call(self, model, prompt, png: bytes, schema, purpose) -> dict:
         from llm import create
         b64 = base64.b64encode(png).decode()
-        r = create(self.llm, model, text={"format": schema}, max_output_tokens=6000, input=[{"role": "user", "content": [
+        r = create(self.llm, model, text={"format": schema}, max_output_tokens=6000, purpose=purpose, input=[{"role": "user", "content": [
             {"type": "input_text", "text": prompt},
             {"type": "input_image", "image_url": f"data:image/png;base64,{b64}", "detail": "high"}]}])
         if r.usage:
@@ -342,9 +343,9 @@ def resolve_tables(doc: dict, out_dir: str | Path, model: str, reviewer_model: s
             return None
 
     with ThreadPoolExecutor(READERS) as pool:
-        for ep in pool.map(one, todo):
+        for ep in pool.map(calllog.carry(one), todo):
             done += 1
-            progress(done / len(todo), f"Review loop: {done} of {len(todo)} flagged tables")
+            progress(done / len(todo), f"Table review loop: {done} of {len(todo)} flagged tables")
             if ep:
                 episodes.append(ep)
     doc["markdown"] = render(doc)
@@ -691,7 +692,7 @@ def _read_all(reader: Reader | None, jobs: list, out_dir: Path, progress, pages:
         return t
 
     with ThreadPoolExecutor(READERS) as pool:
-        for t in pool.map(one, jobs):
+        for t in pool.map(calllog.carry(one), jobs):
             done += 1
             progress(0.3 + 0.65 * done / len(jobs), f"Read and checked {done} of {len(jobs)} tables")
 
@@ -825,7 +826,7 @@ def read_rest(doc: dict, out_dir: str | Path, model: str, reviewer_model: str, o
         return t
 
     with ThreadPoolExecutor(READERS) as pool:
-        for t in pool.map(one, todo):
+        for t in pool.map(calllog.carry(one), todo):
             done += 1
             progress(done / len(todo), f"Read and checked {done} of {len(todo)} remaining tables")
             if on_table:

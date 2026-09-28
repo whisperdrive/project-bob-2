@@ -198,6 +198,18 @@ async def resolve_facts(did: int):
     return {"ok": True}
 
 
+@app.get("/api/engagements/{eid}/calls")
+async def get_calls(eid: int):
+    """Tokens, cost and time by file and by step, and the latest calls (the call log, calllog.py)."""
+    return await _run(engagement.calls_view, eid)
+
+
+@app.get("/api/engagements/{eid}/calls/{cid}")
+async def get_call(eid: int, cid: int):
+    """One call in full: what was sent and what came back."""
+    return await _run(engagement.call_view, eid, cid)
+
+
 @app.get("/api/lessons")
 async def get_lessons():
     """What the report agents have learned: curated rules (docs/report_rules.md) and learned lessons."""

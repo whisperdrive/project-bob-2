@@ -249,7 +249,7 @@ def distil(scope: str, episodes: list[dict], names: list[str], markdown: str, mo
     llm = client(interactive=False)
 
     def call(prompt, schema, purpose):
-        r = create(llm, model, input=prompt, text={"format": schema}, max_output_tokens=4000)
+        r = create(llm, model, input=prompt, text={"format": schema}, max_output_tokens=4000, purpose=purpose)
         if r.usage and on_usage:
             on_usage(model, r.usage, purpose)
         return json.loads(r.output_text)

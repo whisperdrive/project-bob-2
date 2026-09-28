@@ -264,6 +264,13 @@ A report is read again: every table is re-read and re-checked, and its key facts
 the new reading. Uploading the same workbook to another engagement reuses its build. The same report uploaded to
 another engagement is read again.
 
+**The call log** (`bench/calllog.py`). Every model call is kept in `out/calls.db`, which is git-ignored because it
+holds report text. Each row has what was sent (instructions, input, tools offered, the answer format; images are
+noted but not kept), what came back, the model, tokens, cost at list price, how long it took, and what it was
+for: the engagement, the report or workbook, the step and the purpose. Jobs tag their calls, including those
+made on background threads, so the spend chip in the header opens a breakdown. It shows totals, tokens and model
+time by file and by step, clock time by job, and the latest calls; click a call to read its transcript.
+
 All model calls run on Azure Foundry through `bench/llm.py`: gpt-6-luna extracts and reads tables, gpt-6-sol reviews
 (second reads of picture tables, fact review), and both can be changed per engagement in the header. Calls are logged
 to the usage table with session `engagement-<id>`. State lives in `out/engage.db`, report reads in `out/docs/` and

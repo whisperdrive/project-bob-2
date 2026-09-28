@@ -95,7 +95,7 @@ def _ask(llm, spec: dict, view: dict, question: str, file_id, session) -> dict:
     current = (f"This image already applies earlier review changes: view {json.dumps(view)}, title "
                f"'{spec.get('title')}', note '{spec.get('note') or ''}'. Check the result and return only further "
                f"changes, or verdict ok." if view or spec.get("note") else "")
-    r = create(llm, REVIEW_MODEL, text={"format": SCHEMA}, input=[{"role": "user", "content": [
+    r = create(llm, REVIEW_MODEL, text={"format": SCHEMA}, purpose="chart review", input=[{"role": "user", "content": [
         {"type": "input_text", "text": PROMPT.format(question=question or "(not given)", current=current,
                                                      rules=rules_text(),
                                                      summary=json.dumps(summarize(spec), default=str))},

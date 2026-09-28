@@ -167,7 +167,7 @@ def _show_chart(spec: dict, question: str, file_id, session, interactive):
 
 def ask(question: str, db_path: str, model: str, history: list | None = None, interactive: bool = True,
         context: str = "", on_usage=None, file_id: int | None = None, session: str | None = None,
-        system: str | None = None, tool_specs: list | None = None, extra=None, db_for=None):
+        system: str | None = None, tool_specs: list | None = None, extra=None, db_for=None, log: dict | None = None):
     """history: earlier [{"role": "user"|"assistant", "content": str}] turns of this conversation.
     context: extra text for the instructions (e.g. confirmed target / valuation date, changes vs last version).
     on_usage(model, usage): called after every model response, so tokens are logged even if a later call fails.
@@ -188,7 +188,8 @@ def ask(question: str, db_path: str, model: str, history: list | None = None, in
             lim = ratelimit.limits(model)
             yield {"type": "waiting", "seconds": round(wait), "model": model,
                    "tpm_budget": lim["tpm_budget"], "rpm_budget": lim["rpm_budget"]}
-        r = create(llm, model, instructions=instructions, input=items, tools=specs)
+        r = create(llm, model, instructions=instructions, input=items, tools=specs, purpose="chat",
+                   log={"workbook": file_id, "session": session, **(log or {})})
         usage["calls"] += 1
         if on_usage and r.usage:
             on_usage(model, r.usage)

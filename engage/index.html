@@ -256,6 +256,13 @@ details.work[open] summary::before { transform: rotate(90deg); }
 .chat-stats b { color: var(--ink); }
 .composer { display: flex; gap: 10px; align-items: flex-end; }
 .composer textarea { flex: 1; resize: none; min-height: 46px; max-height: 180px; font-family: var(--sans); font-size: 14.5px; padding: 10px 12px; }
+/* the call log dialog */
+dialog#callsDlg { border: 1px solid var(--rule-strong); border-radius: 8px; background: var(--ground); color: var(--ink); padding: 0; width: min(1100px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
+.dlg-head { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--rule); background: var(--surface); position: sticky; top: 0; z-index: 1; }
+.dlg-head h2 { margin: 0; font-size: 16px; flex: 1; }
+.dlg-body { padding: 16px 18px 22px; display: grid; gap: 16px; }
+.transcript pre { white-space: pre-wrap; word-break: break-word; background: var(--code-bg); padding: 10px 12px; border-radius: 4px; font: 12px/1.5 var(--mono); max-height: 420px; overflow: auto; margin: 4px 0 10px; }
 /* the status panel: stages, what's happening now, what needs you */
 .nowbox { max-width: 1360px; margin: 16px auto 0; padding: 0 24px; }
 .pipe { list-style: none; margin: 0; padding: 12px 14px 10px; display: flex; align-items: flex-start; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px 6px 0 0; overflow-x: auto; }
@@ -311,12 +318,13 @@ details.work[open] summary::before { transform: rotate(90deg); }
       <label for="mSel">Model</label><select id="mSel"></select>
       <label for="rSel">Reviewer</label><select id="rSel"></select>
       <label for="aSel" title="Settles what the extractor and reviewer can't: a third, independent model">Arbiter</label><select id="aSel"></select>
-      <span class="chip" id="spend" title="Azure model spend for this engagement">$0.00</span>
+      <button class="chip" id="spend" type="button" title="Tokens, time and the log of every model call" style="cursor:pointer">$0.00</button>
     </div>
   </div>
   <nav class="steps" id="steps"></nav>
   <div class="yellow-rule"></div>
 </header>
+<dialog id="callsDlg" aria-labelledby="callsTitle"><div class="dlg-head"><h2 id="callsTitle">Tokens, time and the call log</h2><button class="btn small" type="button" id="callsClose">Close</button></div><div class="dlg-body" id="callsBody"><p class="muted">Loading…</p></div></dialog>
 <div id="now" class="nowbox" hidden aria-live="polite"></div>
 <main id="main"></main>
 <div id="tip"></div>
@@ -440,8 +448,8 @@ function keepOpen(root, draw) {
 // ---- the status panel: what's happening now, where each stage is, and what needs you ------------------------
 // Worked out from the engagement on every refresh; redrawn only when something changed, so the animations run on.
 const WB_FLOW = ["Open the file", "Row map, sheet by sheet", "Target and valuation date", "Compare with an earlier version"];
-const DOC_FLOW = ["Read the pages", "Read each table (luna) and check it", "Review loop on flagged tables"];
-const FACT_FLOW = ["Extract key facts (luna)", "Check quotes and numbers", "Review (sol)", "Review loop: luna fixes, sol checks", "Approve what both agree", "Write down lessons"];
+const DOC_FLOW = ["Read the pages", "Read the key tables (luna) and check them", "Table review loop"];
+const FACT_FLOW = ["Extract key facts (luna)", "Check quotes and numbers", "Review (sol)", "Fact review loop: luna fixes, sol checks", "Approve what both agree", "Write down lessons"];
 const TABLE_LOOP = ["Flagged table", "luna corrects it", "Code checks the page", "sol checks the image"];
 function stageOf(text, rules) { for (const [rx, i] of rules) if (rx.test(text || "")) return i; return -1; }
 function pipeline() {
@@ -467,11 +475,11 @@ function pipeline() {
   const rep = {id: "reference", name: "Report reference"};
   const tLoop = docs.find(d => busy(d.status) && /review loop/i.test(d.step || "")), fBusy = docs.find(d => busy(d.facts_status));
   const you = f.filter(needsYou).length, flagged = docs.filter(d => d.status === "done").reduce((a, d) => a + (d.n_flagged || 0), 0);
-  if (tLoop) Object.assign(rep, {state: "running", line: "review loop on tables", live: `${tLoop.step}. luna corrects each flagged table, code checks it against the page, sol checks it against the image.`, flow: [TABLE_LOOP, 1], loop: true,
+  if (tLoop) Object.assign(rep, {state: "running", line: "table review loop", live: `${tLoop.step}. luna corrects each flagged table, code checks it against the page, sol checks it against the image.`, flow: [TABLE_LOOP, 1], loop: true,
     timer: [tLoop.started_at, null, null]});
   else if (fBusy) Object.assign(rep, {state: "running", line: "key facts", live: fBusy.facts_step || "Starting",
     timer: fBusy.facts_status === "running" ? [fBusy.facts_started_at, null, fBusy.facts_secs] : null,
-    flow: [FACT_FLOW, stageOf(fBusy.facts_step, [[/Extracting/i, 0], [/Reviewing/i, 2], [/review loop/i, 3], [/Writing down/i, 5]])], loop: /review loop/i.test(fBusy.facts_step || "")});
+    flow: [FACT_FLOW, stageOf(fBusy.facts_step, [[/Extracting/i, 0], [/Reviewing/i, 2], [/review loop|arbiter/i, 3], [/Writing down/i, 5]])], loop: /review loop/i.test(fBusy.facts_step || "")});
   else if (docs.some(d => ["queued", "reading"].includes(d.tables_status)) && !you) {
     const d = docs.find(d => ["queued", "reading"].includes(d.tables_status));
     Object.assign(rep, {state: "running", line: `${d.tables_left ?? ""} tables in the background`,
@@ -507,7 +515,7 @@ function pipeline() {
 const ICON = {done: "✓", you: "!", error: "×", idle: "", running: ""};
 function flowHtml(flow, loop) {
   const [nodes, cur] = flow;
-  return `<div class="subflow" aria-hidden="true">${nodes.map((n, i) => `${i ? `<span class="sf-link ${i <= cur ? "past" : ""} ${i === cur ? "flowing" : ""}"></span>` : ""}<span class="sf-node ${i < cur ? "past" : i === cur ? "cur" : ""}">${i === cur && loop ? `Review loop: <span class="swap">luna <span class="arr">⇄</span> sol</span>` : esc(n)}</span>`).join("")}</div>`;
+  return `<div class="subflow" aria-hidden="true">${nodes.map((n, i) => `${i ? `<span class="sf-link ${i <= cur ? "past" : ""} ${i === cur ? "flowing" : ""}"></span>` : ""}<span class="sf-node ${i < cur ? "past" : i === cur ? "cur" : ""}">${i === cur && loop ? `${nodes === FACT_FLOW ? "Fact" : "Table"} review loop: <span class="swap">luna <span class="arr">⇄</span> sol</span>` : esc(n)}</span>`).join("")}</div>`;
 }
 let nowHtml = "";
 function renderNow() {
@@ -749,7 +757,7 @@ function tableReview(t) {
 }
 function tableThread(t) {
   const r = t.resolution; if (!r || !r.rounds.length) return r?.open ? `<div class="callout warn small" style="margin-top:8px">${esc(r.open.join("; "))}</div>` : "";
-  return `<details data-k="table-${esc(t.id)}-loop" ${r.resolved ? "" : "open"} style="margin-top:8px"><summary>Review loop: ${r.resolved ? `resolved in round ${r.rounds.length}` : `not settled after ${r.rounds.length} round(s); over to you`}</summary>
+  return `<details data-k="table-${esc(t.id)}-loop" ${r.resolved ? "" : "open"} style="margin-top:8px"><summary>Table review loop: ${r.resolved ? `resolved in round ${r.rounds.length}` : `not settled after ${r.rounds.length} round(s); over to you`}</summary>
   <ol class="why" style="color:var(--ink)">${r.rounds.map(x => `<li><b>Round ${x.round}.</b> Problems: ${esc(x.problems.join("; "))}<br><span class="muted">${esc(x.fixer)} fixed:</span> ${esc(x.changes || "")}
     ${x.check_ok != null ? `<br><span class="muted">Text-layer check:</span> ${x.check_ok ? "passes" : "still fails"}` : ""}${x.agrees_with_second_read != null ? `<br><span class="muted">Matches the independent read:</span> ${x.agrees_with_second_read ? "yes" : "no"}` : ""}
     ${x.verdict ? `<br><span class="muted">${esc(x.verdict.by === "code" ? "Code" : x.verdict.by)}:</span> ${x.verdict.verdict === "accept" ? "accepts" : "objects"}${x.verdict.problems?.length ? ": " + esc(x.verdict.problems.join("; ")) : ""}` : ""}</li>`).join("")}</ol>
@@ -796,7 +804,7 @@ function factsCard(d) {
   const nAgentsOk = fs.filter(f => f.status === "approved" && byAgents(f)).length, nAgentsNo = fs.filter(f => f.status === "rejected" && byAgents(f)).length;
   let html = head + `<div class="row small" style="margin-bottom:8px">${nAgentsOk ? `<span class="pill ok">${nAgentsOk} approved by the agents</span>` : ""}${n.approved - nAgentsOk ? `<span class="pill ok">${n.approved - nAgentsOk} approved by you</span>` : ""}${nAgreed ? `<span class="pill ok">${nAgreed} agreed, not yet approved</span>` : ""}${nYou ? `<span class="pill warn">${nYou} need you</span>` : `<span class="pill">nothing needs you</span>`}${nWithdrawn ? `<span class="pill">${nWithdrawn} withdrawn by the agents</span>` : ""}${nAgentsNo ? `<span class="pill">${nAgentsNo} rejected by the agents</span>` : ""}${n.rejected - nAgentsNo ? `<span class="pill bad">${n.rejected - nAgentsNo} rejected by you</span>` : ""}</div>`;
   const L = d.loop || {};
-  if (L.facts) html += `<div class="callout info small" style="margin-bottom:8px"><b>Review loop:</b> ${L.facts.rounds ? `${L.facts.rounds} round(s); ${L.facts.settled_in_loop} fact(s) settled between the agents` : "the reviewer and the checks agreed with every fact at first reading"}${L.facts.approved != null ? `; ${L.facts.approved} approved${L.facts.rejected ? ` and ${L.facts.rejected} rejected` : ""} automatically because both agents agree and the checks pass` : ""}${L.facts.arbitrated ? `; the arbiter settled ${L.facts.arbitrated} more` : ""}${L.facts.escalated ? `; ${L.facts.escalated} they couldn't settle are over to you (shown first below)` : ""}. Undo any decision to take it over.${lessonNote(L.lessons_facts)}</div>`;
+  if (L.facts) html += `<div class="callout info small" style="margin-bottom:8px"><b>Fact review loop:</b> ${L.facts.rounds ? `${L.facts.rounds} round(s); ${L.facts.settled_in_loop} fact(s) settled between the agents` : "the reviewer and the checks agreed with every fact at first reading"}${L.facts.approved != null ? `; ${L.facts.approved} approved${L.facts.rejected ? ` and ${L.facts.rejected} rejected` : ""} automatically because both agents agree and the checks pass` : ""}${L.facts.arbitrated ? `; the arbiter settled ${L.facts.arbitrated} more` : ""}${L.facts.escalated ? `; ${L.facts.escalated} they couldn't settle are over to you (shown first below)` : ""}. Undo any decision to take it over.${lessonNote(L.lessons_facts)}</div>`;
   if (d.review_summary) html += `<div class="callout info small" style="margin-bottom:10px"><b>Reviewer, first reading:</b> ${esc(d.review_summary)}</div>`;
   for (const [cat, label] of Object.entries(CAT)) {
     const rows = fs.filter(f => f.category === cat).sort((a, b) => needsYou(b) - needsYou(a)); if (!rows.length) continue;
@@ -1817,6 +1825,72 @@ function alignColumns(root) {
 let alignTimer = null;
 new MutationObserver(() => { clearTimeout(alignTimer); alignTimer = setTimeout(() => alignColumns($("#main")), 20); })
   .observe($("#main"), {childList: true, subtree: true});
+
+// ---- tokens, time and the call log (from the spend chip) ---------------------------------------------------------
+let CALLS = null;
+const tokfmt = n => (n || 0) >= 1e6 ? ((n || 0) / 1e6).toFixed(2) + "M" : (n || 0) >= 1e3 ? ((n || 0) / 1e3).toFixed(1) + "k" : String(n || 0);
+const usdf = v => v == null ? "–" : v < 0.01 && v > 0 ? "<$0.01" : "$" + Number(v).toFixed(v < 1 ? 3 : 2);
+function whose(r) {
+  if (r.document) return CALLS.names.documents[r.document] || `report #${r.document}`;
+  if (r.workbook) return CALLS.names.workbooks[r.workbook] || `workbook #${r.workbook}`;
+  return "The engagement (roles, compare, chat)";
+}
+async function openCalls() {
+  if (!E) return;
+  $("#callsDlg").showModal();
+  $("#callsBody").innerHTML = `<p class="muted">Loading…</p>`;
+  try { CALLS = await api(`/api/engagements/${E.id}/calls`); } catch (e) { $("#callsBody").innerHTML = `<div class="callout bad">${esc(e.message)}</div>`; return; }
+  const c = CALLS.calls, t = c.total || {};
+  const sumCols = [["Calls", r => nfmt(r.calls), 1], ["Input tokens", r => tokfmt(r.input_tokens), 1], ["of them cached", r => tokfmt(r.cached_tokens), 1],
+    ["Output tokens", r => tokfmt(r.output_tokens), 1], ["Cost", r => usdf(r.cost_usd), 1], ["Model time", r => dur(r.model_secs), 1]];
+  const table = (rows, cols) => rows.length ? `<div class="scroll"><table><thead><tr>${cols.map(x => `<th${x[2] ? ' class="num"' : ""}>${x[0]}</th>`).join("")}</tr></thead><tbody>
+    ${rows.map(r => `<tr${r.id ? ` class="click" data-call="${r.id}"` : ""}>${cols.map(x => `<td${x[2] ? ' class="num"' : ""}>${x[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<p class="small muted" style="margin:0">Nothing yet.</p>`;
+  $("#callsBody").innerHTML = `
+    <div class="tiles">
+      <div class="tile"><b>${nfmt(t.calls)}</b><span>model calls${t.failed ? ` (${t.failed} failed)` : ""}</span></div>
+      <div class="tile"><b>${tokfmt((t.input_tokens || 0) + (t.output_tokens || 0))}</b><span>tokens (${tokfmt(t.cached_tokens)} input cached)</span></div>
+      <div class="tile"><b>${usdf(t.cost_usd)}</b><span>at list prices</span></div>
+      <div class="tile"><b>${dur(t.model_secs) || "0s"}</b><span>waiting on the models</span></div>
+    </div>
+    <div class="card"><h2>By file</h2><p class="sub">Model calls for each report and workbook, and for the engagement itself.</p>${table(c.by_file || [], [["File", r => esc(whose(r))], ...sumCols])}</div>
+    <div class="card"><h2>Time on the clock, by job</h2><p class="sub">From start to finish, including waits for rate-limit room and work that needs no model.</p>
+      ${table(CALLS.jobs, [["File", r => esc(r.file || "The engagement")], ["Job", r => esc(r.job)], ["Took", r => dur(r.secs) + (r.build_secs ? ` <span class="small muted">(row map ${dur(r.build_secs)})</span>` : ""), 1]])}</div>
+    <div class="card"><h2>By step</h2><p class="sub">What each call was for, in the order the steps ran.</p>
+      ${table(c.by_step || [], [["File", r => esc(whose(r))], ["Step", r => esc(r.step || "")], ["Purpose", r => `<span class="mono small">${esc(r.purpose || "")}</span>`], ["Model", r => esc(r.model)], ...sumCols])}</div>
+    <div class="card"><h2>Latest calls</h2><p class="sub">Click a call to see exactly what was sent and what came back. Kept on this machine in <span class="mono">${esc(CALLS.log_file)}</span> (not in git; it holds report text). Calls from before this log existed aren't in it.</p>
+      ${table(c.recent || [], [["When", r => new Date(r.ts * 1000).toLocaleTimeString()], ["File", r => esc(whose(r))], ["Step", r => esc(r.step || "")], ["Purpose", r => `<span class="mono small">${esc(r.purpose || "")}</span>`],
+        ["Model", r => esc(r.model)], ["In", r => tokfmt(r.input_tokens), 1], ["Out", r => tokfmt(r.output_tokens), 1], ["Cost", r => usdf(r.cost_usd), 1], ["Time", r => dur(r.secs), 1],
+        ["", r => r.ok ? "" : `<span class="pill bad" title="${esc(r.error || "")}">failed</span>`]])}
+      <div id="callDetail" class="transcript"></div></div>`;
+  document.querySelectorAll("#callsBody [data-call]").forEach(tr => tr.onclick = () => showCall(+tr.dataset.call));
+}
+function msgText(m) {
+  if (typeof m === "string") return m;
+  if (Array.isArray(m)) return m.map(msgText).join("\n\n");
+  if (m && typeof m === "object") {
+    if (m.type === "function_call_output") return `[tool result]\n${m.output}`;
+    if (m.type === "function_call") return `[tool call] ${m.name}(${m.arguments})`;
+    if (m.type === "input_image") return "[image sent: not kept]";
+    if (m.type === "input_text" || m.type === "output_text") return m.text;
+    if (m.content !== undefined) return `[${m.role || m.type || "message"}]\n${msgText(m.content)}`;
+    if (m.type === "reasoning") return "[reasoning]";
+    return JSON.stringify(m);
+  }
+  return String(m ?? "");
+}
+async function showCall(id) {
+  const box = $("#callDetail"); box.innerHTML = `<p class="muted">Loading…</p>`;
+  let c; try { c = await api(`/api/engagements/${E.id}/calls/${id}`); } catch (e) { box.innerHTML = `<div class="callout bad">${esc(e.message)}</div>`; return; }
+  const q = c.request || {};
+  box.innerHTML = `<div style="border-top:1px solid var(--rule);margin-top:12px;padding-top:12px">
+    <div class="row small"><b>Call ${c.id}</b><span class="muted">${new Date(c.ts * 1000).toLocaleString()} · ${esc(c.model)} · ${esc(c.purpose)} · ${esc(c.step || "")} · ${tokfmt(c.input_tokens)} in, ${tokfmt(c.output_tokens)} out · ${usdf(c.cost_usd)} · ${dur(c.secs)}</span>${c.ok ? "" : `<span class="pill bad">${esc(c.error)}</span>`}</div>
+    ${q.instructions ? `<div class="small muted" style="margin-top:8px">Instructions</div><pre>${esc(q.instructions)}</pre>` : ""}
+    <div class="small muted">Sent${q.format ? ` (answer as ${esc(q.format)})` : ""}${q.tools ? ` with tools: ${esc(q.tools.join(", "))}` : ""}</div><pre>${esc(msgText(q.input))}</pre>
+    <div class="small muted">Came back</div><pre>${esc(c.response || "(nothing)")}</pre></div>`;
+  box.scrollIntoView({block: "nearest", behavior: "smooth"});
+}
+$("#spend").onclick = openCalls;
+$("#callsClose").onclick = () => $("#callsDlg").close();
 
 boot().catch(e => { $("#main").innerHTML = `<div class="callout bad">Couldn't start: ${esc(e.message)}</div>`; });
 </script>

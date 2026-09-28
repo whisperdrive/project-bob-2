@@ -476,7 +476,8 @@ def second_opinion(reports: list[dict], workbooks: list[dict], facts: list[dict]
             sug["overlay_sheets"] = r.get("sheets") or []
     prompt = SECOND_PROMPT.format(evidence=json.dumps(evidence(reports, workbooks, facts, res), indent=1, default=str)[:60000],
                                   suggestion=json.dumps(sug, indent=1))
-    r = create(client(interactive=False), model, input=prompt, text={"format": SECOND_SCHEMA}, max_output_tokens=3000)
+    r = create(client(interactive=False), model, input=prompt, text={"format": SECOND_SCHEMA}, max_output_tokens=3000,
+               purpose="roles-review")
     if r.usage and on_usage:
         on_usage(model, r.usage, "roles-review")
     out = json.loads(r.output_text)

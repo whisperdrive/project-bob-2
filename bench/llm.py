@@ -8,6 +8,7 @@ Settings come from environment variables or a `.env` file in the project root (g
 `.env.example`): AZURE_OPENAI_ENDPOINT, AZURE_AI_PROJECT_ENDPOINT, AZURE_TENANT_ID.
 """
 import os
+import time
 from pathlib import Path
 
 from azure.identity import (AuthenticationRecord, AuthenticationRequiredError, DeviceCodeCredential,
@@ -61,20 +62,26 @@ def client(interactive: bool = True) -> OpenAI:
     return OpenAI(base_url=ENDPOINT, api_key=get_bearer_token_provider(credential(interactive), SCOPE))
 
 
-def create(llm: OpenAI, model: str, on_wait=None, **kwargs):
-    """responses.create, kept a safety margin below the deployment's rate limits (see ratelimit.py).
-    on_wait(seconds, limits) is called if the call has to wait for room."""
+def create(llm: OpenAI, model: str, on_wait=None, purpose: str | None = None, log: dict | None = None, **kwargs):
+    """responses.create, kept a safety margin below the deployment's rate limits (see ratelimit.py), and logged
+    with what it was for (calllog.py: purpose, plus log= tags or the running job's). on_wait(seconds, limits) is
+    called if the call has to wait for room; that wait isn't counted in the call's time."""
+    import calllog
     import ratelimit
     est = ratelimit.estimate_tokens(kwargs.get("instructions", ""), kwargs.get("input", ""), kwargs.get("tools", ""),
                                     reserve_output=kwargs.get("max_output_tokens") or 1000)
     entry = ratelimit.acquire(model, est, on_wait)
-    r = None
+    r, err, t0 = None, None, time.time()
     try:
         r = llm.responses.create(model=model, **kwargs)
         return r
+    except Exception as e:
+        err = e
+        raise
     finally:
         u = getattr(r, "usage", None)
         ratelimit.settle(entry, (u.input_tokens + u.output_tokens) if u else est)
+        calllog.record(model, kwargs, r, time.time() - t0, err, purpose, log)
 
 
 if __name__ == "__main__":

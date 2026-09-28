@@ -130,7 +130,7 @@ def identify(db_path: str, filename: str, model: str = "gpt-4o", file_id: int | 
     try:
         from llm import client, create
         r = create(client(interactive=False), model, input=PROMPT.format(filename=filename, cands=json.dumps(c, indent=1, default=str)),
-            text={"format": SCHEMA})
+            text={"format": SCHEMA}, purpose="identify", log={"workbook": file_id})
         if r.usage:
             import usage
             usage.record(model, r.usage, "identify", file_id)
