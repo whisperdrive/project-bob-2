@@ -226,6 +226,7 @@ def get(eid: int) -> dict | None:
         w["identity_notes"] = ident.get("notes")
     out = {**e, "documents": documents(eid), "workbooks": wbs, "facts": facts(eid), "roles": roles(eid),
            "session": _session(eid)}
+    _auto_review(out)
     _maybe_suggest(eid, out)
     out["roles_pending"] = eid in _ROLE_JOBS
     return out
@@ -346,6 +347,10 @@ def settle_table(did: int, tid: str, action: str, markdown: str | None = None) -
         t["final_check"] = docingest.check_text_layer(t["final_markdown"], t["text_lines"])
     _save_doc(did, doc)
     _recheck_facts(did, doc)
+    reopened = [f for f in _q("SELECT agent_json FROM facts WHERE document_id=? AND status='pending'", did)
+                if (json.loads(f["agent_json"] or "null") or {}).get("status") == "escalated"]
+    if reopened and _doc(did)["facts_status"] not in ("queued", "running"):
+        resolve_facts(did)  # the loop takes them again with the page as it now reads
     return document(did)
 
 
@@ -528,7 +533,8 @@ def _run_table_loop(did: int, doc: dict) -> None:
     res = docingest.resolve_tables(doc, d["out_dir"], e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER,
                                    prog, _logger(eid))
     _save_doc(did, doc)
-    _note_loop(did, tables={"resolved": res["resolved"], "escalated": res["escalated"], "at": time.time()})
+    _note_loop(did, tables={"resolved": res["resolved"], "escalated": res["escalated"], "at": time.time()},
+               lessons_tables=None)  # this loop's lessons replace the last one's note
     _learn(did, "tables", res["episodes"])
 
 
@@ -569,7 +575,7 @@ def _resolve_facts_job(did: int) -> None:
             f["agent"]["thread"] = prev["thread"] + f["agent"]["thread"][1:]
         _set("facts", f["id"], **{k: f.get(k) for k in FACT_FIELDS}, check_json=json.dumps(f["check"]),
              review_json=json.dumps(f.get("review")), agent_json=json.dumps(f["agent"]), updated_at=now)
-    _note_loop(did, facts={**loop["summary"], **auto_decide(did), "at": now})
+    _note_loop(did, facts={**loop["summary"], **auto_decide(did), "at": now}, lessons_facts=None)
     _set("documents", did, facts_step="Writing down what the loop taught")
     _learn(did, "facts", loop["episodes"])
     _set("documents", did, facts_status="done", facts_step="Done")
@@ -592,6 +598,41 @@ def _wb_inputs(eid: int) -> list[dict]:
 
 
 _ROLE_JOBS: set[int] = set()  # engagements with a role suggestion queued
+_AUTO: set[tuple[str, int]] = set()  # (job, document) queued by _auto_review, so a poll doesn't queue it twice
+
+
+def _auto_review(e: dict) -> None:
+    """Start the report's review work without a button, for every report that's been read: the loop on flagged
+    tables if it hasn't run, then the key facts (extraction, review, the loop, the agents' approvals, lessons),
+    or just the loop for facts from before it existed. Once per document: a failure is recorded and shown, not
+    retried on every poll (the buttons retry)."""
+    for d in e["documents"]:
+        if d["status"] != "done" or busy_doc(d):
+            continue
+        loop = d.get("loop") or {}
+        did = d["id"]
+        if d["n_flagged"] and "tables" not in loop and not d["error"]:
+            job = ("resolve_tables", did)
+        elif not d["facts_status"] and not any(f["document_id"] == did for f in e["facts"]):
+            job = ("facts", did)
+        elif d["facts_status"] == "done" and "facts" not in loop and any(
+                f["document_id"] == did and f["status"] == "pending" and not f.get("agent") for f in e["facts"]):
+            job = ("resolve_facts", did)
+        else:
+            continue
+        if job in _AUTO:
+            continue
+        _AUTO.add(job)
+        if job[0] == "resolve_tables":
+            _set("documents", did, status="queued", step="Waiting for the review loop", pct=0)
+        else:
+            _set("documents", did, facts_status="queued", facts_step="Waiting to start" if job[0] == "facts"
+                 else "Waiting for the review loop", facts_error=None)
+        _jobs.put(job)
+
+
+def busy_doc(d: dict) -> bool:
+    return d["status"] in ("queued", "processing") or d["facts_status"] in ("queued", "running")
 
 
 def _roles_key(eid: int, wbs: list[dict], docs: list[dict]) -> str:
@@ -996,6 +1037,8 @@ def _process_doc(did: int) -> None:
     if errors:
         note = f"{len(errors)} table(s) couldn't be read: {errors[0].get('error')}"
     _set("documents", did, status="done", step="Done", pct=1.0, processed_at=time.time(), error=note)
+    if note is None and not _q("SELECT 1 FROM facts WHERE document_id=?", did):
+        extract_facts(did)  # the key facts, their review and the review loop start without a button
 
 
 def _process_facts(did: int) -> None:
@@ -1016,7 +1059,7 @@ def _process_facts(did: int) -> None:
                         json.dumps(f.get("review")), "pending", now, json.dumps(f.get("agent"))))
     _set("documents", did, facts_notes=res.get("notes"), review_summary=res.get("review_summary"))
     if res.get("loop"):
-        _note_loop(did, facts={**res["loop"]["summary"], **auto_decide(did), "at": now})
+        _note_loop(did, facts={**res["loop"]["summary"], **auto_decide(did), "at": now}, lessons_facts=None)
         _set("documents", did, facts_step="Writing down what the loop taught")
         _learn(did, "facts", res["loop"]["episodes"])
     _set("documents", did, facts_status="done", facts_step="Done")
@@ -1034,6 +1077,7 @@ def _run(kind: str, rid: int) -> None:
             _set("documents", rid, status="error", step="Failed", error=msg)
         elif kind == "resolve_tables":  # the document itself is still fine
             _set("documents", rid, status="done", step="Done", pct=1.0, error="The review loop failed: " + msg)
+            _note_loop(rid, tables={"error": msg, "at": time.time()})  # tried: not started again by itself
         elif kind == "roles":
             pass  # suggest_roles kept the error with the suggestion
         elif kind in ("facts", "resolve_facts"):

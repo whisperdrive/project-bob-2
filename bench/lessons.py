@@ -49,6 +49,8 @@ What you write must be anonymous and general:
   dates or amounts; no quotes from the report. Describe things generically ("the preferred value within a
   range", "a currency prefix in a column heading", "a figure repeated in the summary and the body").
 - one rule per lesson, imperative, at most 40 words, with a short "why" (at most 25 words, also generic)
+- about HOW to find, read, quote and check, never about WHAT to extract: the agents' brief (which datapoints the
+  reference wants, identity such as project name and client included) is fixed, so no lesson may narrow it
 - only lessons the episodes support. Don't restate an existing rule: list its ID in reinforce instead, and
   refine an existing rule's wording only if the episodes show it's incomplete. Nothing learned is a fine answer.
 

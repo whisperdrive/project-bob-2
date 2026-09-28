@@ -255,7 +255,46 @@ details.work[open] summary::before { transform: rotate(90deg); }
 .chat-stats b { color: var(--ink); }
 .composer { display: flex; gap: 10px; align-items: flex-end; }
 .composer textarea { flex: 1; resize: none; min-height: 46px; max-height: 180px; font-family: var(--sans); font-size: 14.5px; padding: 10px 12px; }
-@media (max-width: 640px) { .hbar, nav.steps, main { padding-left: 16px; padding-right: 16px; } }
+/* the status panel: stages, what's happening now, what needs you */
+.nowbox { max-width: 1360px; margin: 16px auto 0; padding: 0 24px; }
+.pipe { list-style: none; margin: 0; padding: 12px 14px 10px; display: flex; align-items: flex-start; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px 6px 0 0; overflow-x: auto; }
+.pipe > li { flex: none; }
+.pipe > li.link { flex: 1 1 24px; min-width: 14px; height: 2px; background: var(--rule-strong); margin: 15px 2px 0; }
+.pipe > li.link.done { background: var(--yellow); }
+.pipe > li.link.flowing, .sf-link.flowing { background: repeating-linear-gradient(90deg, var(--blue) 0 6px, transparent 6px 12px); background-size: 12px 2px; animation: flow .7s linear infinite; }
+.st { display: grid; justify-items: center; gap: 2px; background: none; border: 0; cursor: pointer; padding: 2px 6px; min-width: 104px; text-align: center; color: inherit; }
+.st:hover .nm { text-decoration: underline; }
+.st .ic { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; border: 2px solid var(--rule-strong); font-weight: 700; font-size: 12.5px; position: relative; color: var(--muted); background: var(--surface); }
+.st.done .ic { background: var(--yellow); border-color: var(--yellow); color: #2e2e38; }
+.st.you .ic { border-color: #e0b400; color: var(--warn); background: var(--warn-bg); animation: glowy 1.8s ease-out infinite; }
+.st.error .ic { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
+.st.running .ic { border-color: var(--rule); }
+.st.running .ic::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--blue); border-top-color: transparent; border-right-color: transparent; animation: spin .9s linear infinite; }
+.st .nm { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.st .ln { font-size: 11.5px; color: var(--muted); max-width: 150px; line-height: 1.3; }
+.st.you .ln { color: var(--warn); font-weight: 600; }
+.now-row { display: flex; gap: 10px 18px; align-items: center; flex-wrap: wrap; justify-content: space-between; padding: 10px 14px; background: var(--raised); border: 1px solid var(--rule); border-top: 0; border-radius: 0 0 6px 6px; }
+.live { flex: 1 1 420px; min-width: 0; }
+.live-head { display: flex; gap: 8px; align-items: center; font-size: 13.5px; flex-wrap: wrap; }
+.todo { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dot-idle { width: 8px; height: 8px; border-radius: 50%; background: var(--rule-strong); display: inline-block; }
+.subflow { display: flex; align-items: center; flex-wrap: wrap; row-gap: 6px; margin-top: 8px; font-size: 12px; }
+.sf-node { padding: 3px 10px; border-radius: 99px; border: 1px solid var(--rule-strong); color: var(--muted); background: var(--surface); white-space: nowrap; }
+.sf-node.past { color: var(--ink); border-color: var(--yellow); }
+.sf-node.cur { color: #fff; background: var(--blue); border-color: var(--blue); font-weight: 600; animation: glow 1.6s ease-out infinite; }
+.sf-link { width: 20px; height: 2px; background: var(--rule-strong); }
+.sf-link.past { background: var(--yellow); }
+.swap .arr { display: inline-block; animation: flip 1.2s steps(1) infinite; }
+.dot.work { animation: glow 1.8s ease-out infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes flow { to { background-position: 12px 0; } }
+@keyframes flip { 50% { transform: scaleX(-1); } }
+@keyframes glow { 0% { box-shadow: 0 0 0 0 rgba(26, 154, 250, .55); } 70%, 100% { box-shadow: 0 0 0 7px rgba(26, 154, 250, 0); } }
+@keyframes glowy { 0% { box-shadow: 0 0 0 0 rgba(224, 180, 0, .6); } 70%, 100% { box-shadow: 0 0 0 7px rgba(224, 180, 0, 0); } }
+@media (prefers-reduced-motion: reduce) {
+  .st.running .ic::after, .pipe > li.link.flowing, .sf-link.flowing, .sf-node.cur, .swap .arr, .st.you .ic, .dot.work { animation: none; }
+}
+@media (max-width: 640px) { .hbar, nav.steps, main { padding-left: 16px; padding-right: 16px; } .nowbox { padding: 0 16px; } .st { min-width: 84px; } }
 </style>
 </head>
 <body>
@@ -276,6 +315,7 @@ details.work[open] summary::before { transform: rotate(90deg); }
   <nav class="steps" id="steps"></nav>
   <div class="yellow-rule"></div>
 </header>
+<div id="now" class="nowbox" hidden aria-live="polite"></div>
 <main id="main"></main>
 <div id="tip"></div>
 <input type="file" id="picker" multiple accept=".pdf,.pptx,.xlsx,.xlsm" hidden>
@@ -331,7 +371,7 @@ function editing() {
 async function refresh(force = false) {
   if (!E) return;
   E = await api(`/api/engagements/${E.id}`);
-  if (!force && editing()) renderSteps(); else render();
+  if (!force && editing()) { renderSteps(); renderNow(); } else render();
   schedule();
 }
 function schedule() {
@@ -379,11 +419,93 @@ function render(creating = false) {
   $("#modelCtl").hidden = !E;
   if (E) { $("#mSel").value = E.model || CFG.default_model; $("#rSel").value = E.reviewer_model || CFG.default_reviewer; }
   renderSteps();
+  renderNow();
   const m = $("#main");
-  if (!E || creating) { m.innerHTML = viewNew(); bindNew(); return; }
+  if (!E || creating) { m.innerHTML = viewNew(); bindNew(); $("#now").hidden = true; return; }
   const views = {files: viewFiles, reference: viewReference, roles: viewRoles, compare: viewCompare, map: viewMap, python: viewPython};
   m.innerHTML = (views[state.step] || viewFiles)();
   bind[state.step]?.();
+}
+
+// ---- the status panel: what's happening now, where each stage is, and what needs you ------------------------
+// Worked out from the engagement on every refresh; redrawn only when something changed, so the animations run on.
+const WB_FLOW = ["Open the file", "Row map, sheet by sheet", "Target and valuation date", "Compare with an earlier version"];
+const DOC_FLOW = ["Read the pages", "Read each table (luna) and check it", "Review loop on flagged tables"];
+const FACT_FLOW = ["Extract key facts (luna)", "Check quotes and numbers", "Review (sol)", "Review loop: luna fixes, sol checks", "Approve what both agree", "Write down lessons"];
+const TABLE_LOOP = ["Flagged table", "luna corrects it", "Code checks the page", "sol checks the image"];
+function stageOf(text, rules) { for (const [rx, i] of rules) if (rx.test(text || "")) return i; return -1; }
+function pipeline() {
+  const docs = E.documents, wbs = E.workbooks, f = E.facts, r = E.roles, name = x => shortName(x.filename);
+  const st = [];
+  // 1 files
+  const bDoc = docs.find(d => busy(d.status) && !/review loop/i.test(d.step || "")), bWb = wbs.find(w => busy(w.status));
+  const bad = [...docs.filter(d => d.status === "error"), ...wbs.filter(w => w.status === "error")];
+  const files = {id: "files", name: "Files"};
+  if (bDoc || bWb || uploads.some(u => !u.done)) {
+    const x = bDoc || bWb;
+    Object.assign(files, {state: "running", line: `${docs.filter(d => busy(d.status)).length + wbs.filter(w => busy(w.status)).length || 1} being read`,
+      live: x ? `Reading ${name(x)}: ${x.step || "waiting to start"}` : "Uploading…",
+      flow: x === bWb ? [WB_FLOW, stageOf(x?.step, [[/Opening/i, 0], [/Identif/i, 2], [/earlier version|Comparing/i, 3], [/./, 1]])]
+        : x ? [DOC_FLOW, stageOf(x.step, [[/Reading page/i, 0], [/table/i, 1]])] : null});
+  } else if (bad.length) Object.assign(files, {state: "error", line: `${bad.length} failed`, todo: {text: `Retry ${name(bad[0])}`, go: "files"}});
+  else if (!docs.length || wbs.length < 2) Object.assign(files, {state: "you", line: !docs.length ? "no report yet" : "models missing",
+    todo: {text: !docs.length ? "Upload last year's report" : "Upload the client models and the overlay", go: "files"}});
+  else Object.assign(files, {state: "done", line: `${docs.length + wbs.length} files read`});
+  st.push(files);
+  // 2 report reference
+  const rep = {id: "reference", name: "Report reference"};
+  const tLoop = docs.find(d => busy(d.status) && /review loop/i.test(d.step || "")), fBusy = docs.find(d => busy(d.facts_status));
+  const you = f.filter(needsYou).length, flagged = docs.filter(d => d.status === "done").reduce((a, d) => a + (d.n_flagged || 0), 0);
+  if (tLoop) Object.assign(rep, {state: "running", line: "review loop on tables", live: `${tLoop.step}. luna corrects each flagged table, code checks it against the page, sol checks it against the image.`, flow: [TABLE_LOOP, 1], loop: true});
+  else if (fBusy) Object.assign(rep, {state: "running", line: "key facts", live: fBusy.facts_step || "Starting",
+    flow: [FACT_FLOW, stageOf(fBusy.facts_step, [[/Extracting/i, 0], [/Reviewing/i, 2], [/review loop/i, 3], [/Writing down/i, 5]])], loop: /review loop/i.test(fBusy.facts_step || "")});
+  else if (you || flagged) Object.assign(rep, {state: "you", line: [you && `${you} fact(s)`, flagged && `${flagged} table(s)`].filter(Boolean).join(", ") + " need you",
+    todo: {text: you ? `Decide ${you} fact(s) the agents couldn't settle` : `Check ${flagged} table(s) the agents couldn't settle`, go: "reference"}});
+  else if (f.length) Object.assign(rep, {state: "done", line: `${f.filter(x => x.status === "approved").length} facts approved`});
+  else Object.assign(rep, {state: docs.some(d => d.status === "done") ? "running" : "idle", line: docs.some(d => d.status === "done") ? "starting" : "after the report is read"});
+  st.push(rep);
+  // 3 roles
+  const roles = {id: "roles", name: "Roles"}, nConf = Object.values(r).filter(x => x.confirmed).length;
+  if (E.roles_pending) Object.assign(roles, {state: "running", line: "suggesting", live: "Comparing the workbooks (how alike they are, what each contains) and the report's figures to suggest who's who."});
+  else if (nConf === 4) Object.assign(roles, {state: "done", line: "confirmed"});
+  else if (Object.keys(r).length) Object.assign(roles, {state: "you", line: `${Object.keys(r).length - nConf} to confirm`, todo: {text: "Confirm who's who", go: "roles"}});
+  else Object.assign(roles, {state: "idle", line: "after the models are read"});
+  st.push(roles);
+  // 4-6 compare, map, python overlay
+  const ready = nConf === 4;
+  for (const [id, key, label, verb] of [["compare", "compare", "Compare models", "Compare the client models"], ["map", "map", "Map", "Build the map"], ["python", "overlay", "Python overlay", "Build the Python overlay"]]) {
+    const s = E[`${key}_status`], x = {id, name: label};
+    if (busy(s)) Object.assign(x, {state: "running", line: "building", live: `${label}: ${E[`${key}_step`] || "starting"}`});
+    else if (s === "error") Object.assign(x, {state: "error", line: "failed", todo: {text: `Retry: ${verb.toLowerCase()}`, go: id}});
+    else if (s === "done") Object.assign(x, {state: "done", line: "built"});
+    else if (ready && st.every(y => y.state !== "you" && y.state !== "error")) Object.assign(x, {state: "you", line: "ready to build", todo: {text: verb, go: id}});
+    else Object.assign(x, {state: "idle", line: "after the roles"});
+    st.push(x);
+  }
+  return st;
+}
+const ICON = {done: "✓", you: "!", error: "×", idle: "", running: ""};
+function flowHtml(flow, loop) {
+  const [nodes, cur] = flow;
+  return `<div class="subflow" aria-hidden="true">${nodes.map((n, i) => `${i ? `<span class="sf-link ${i <= cur ? "past" : ""} ${i === cur ? "flowing" : ""}"></span>` : ""}<span class="sf-node ${i < cur ? "past" : i === cur ? "cur" : ""}">${i === cur && loop ? `Review loop: <span class="swap">luna <span class="arr">⇄</span> sol</span>` : esc(n)}</span>`).join("")}</div>`;
+}
+let nowHtml = "";
+function renderNow() {
+  const box = $("#now");
+  if (!E) { box.hidden = true; nowHtml = ""; return; }
+  box.hidden = false;
+  const st = pipeline(), run = st.find(s => s.state === "running" && s.live), todos = st.filter(s => s.todo);
+  const html = `<ol class="pipe" aria-label="Where the engagement is">${st.map((s, i) => `${i ? `<li class="link ${st[i - 1].state === "done" ? "done" : ""} ${s.state === "running" ? "flowing" : ""}" aria-hidden="true"></li>` : ""}
+      <li><button class="st ${s.state}" data-go="${s.id}" title="${esc(s.name)}: ${esc(s.line || "")}"><span class="ic">${ICON[s.state] || i + 1}</span><span class="nm">${esc(s.name)}</span><span class="ln">${esc(s.line || "")}</span></button></li>`).join("")}</ol>
+    <div class="now-row">
+      <div class="live">${run ? `<div class="live-head"><span class="pulse"></span><b>Now</b><span>${esc(run.live)}</span></div>${run.flow && run.flow[1] >= 0 ? flowHtml(run.flow, run.loop) : ""}`
+        : `<div class="live-head muted"><span class="dot-idle"></span>${todos.length ? "The agents are waiting for you." : "Nothing running. Everything built so far is up to date."}</div>`}</div>
+      <div class="todo">${todos.length ? `<span class="small muted">Next for you</span>${todos.map((t, i) => `<button class="btn ${i ? "small" : "primary"}" data-go="${t.todo.go}">${esc(t.todo.text)}</button>`).join("")}` : ""}</div>
+    </div>`;
+  if (html === nowHtml) return;
+  nowHtml = html;
+  box.innerHTML = html;
+  box.querySelectorAll("[data-go]").forEach(b => b.onclick = () => go(b.dataset.go));
 }
 
 // ---- new engagement ----------------------------------------------------------------------------------------
@@ -469,7 +591,7 @@ function viewReference() {
   if (!state.doc || !ready.some(d => d.id === state.doc)) state.doc = (ready.find(d => d.id === E.roles.prior_report?.id) || ready[0]).id;
   const d = ready.find(x => x.id === state.doc);
   if (!DOC || DOC.id !== d.id || DOC._stamp !== docStamp(d)) loadDoc(d);
-  return `<div class="lede"><div><h1><b>Report reference</b></h1><p>The report's conclusions and assumptions are the guide for finding the valuation in last year's overlay. Tables the checks flag and facts the reviewer disputes go through a review loop: the extractor fixes, code re-checks, the reviewer checks again, until they agree or hand it to you. Every fact shows its page, quote, checks and the loop's rounds; what the loop teaches is kept, anonymised, for next time.</p></div></div>
+  return `<div class="lede"><div><h1><b>Report reference</b></h1><p>The report's conclusions and assumptions are the guide for finding the valuation in last year's overlay. This starts by itself once the report is read: the key facts are extracted and reviewed, and tables the checks flag and facts the reviewer disputes go through a review loop: the extractor fixes, code re-checks, the reviewer checks again, until they agree or hand it to you. Every fact shows its page, quote, checks and the loop's rounds; what the loop teaches is kept, anonymised, for next time.</p></div></div>
   ${ready.length > 1 ? `<div class="row"><label class="small muted">Report</label><select class="in" id="docSel">${ready.map(x => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.filename)}</option>`).join("")}</select></div>` : ""}
   <div class="card" id="tablesCard"><h2>Tables in ${esc(d.filename)}</h2><p class="sub">Loading…</p></div>
   <div class="card" id="factsCard">${factsCard(d)}</div>

@@ -71,8 +71,10 @@ value; those results are shown. For every fact decide:
 - correct: something is wrong; give the corrected value_text / low_text / high_text / basis / page / quote
   (quote verbatim from the document)
 - reject: the document doesn't support it, or it isn't a key fact (say why)
-Then list key facts that were missed (target, valuation date, conclusions and their range, discount rate and
-basis, terminal growth or exit / RAB multiple, approach), with the same fields. Be strict: numbers must match
+Then list key facts that were missed, with the same fields. The reference wants every datapoint below that the
+report states, identity included (the project name and the client are wanted even though they aren't valuation
+figures): don't reject a fact only because it isn't a number.
+{keys} Be strict: numbers must match
 the document exactly, including units and whether a value is pre- or post-tax, nominal or real.
 A quote must be one continuous piece of the document, so for a figure in a table the quote is its row and the
 column it sits under goes in basis: check the column against the table, but don't "correct" a fact only to add
@@ -91,10 +93,13 @@ FIX_PROMPT = """You extracted key facts from last year's valuation report. A rev
 issues below. For each one decide:
 - revise: the fact needs changing; give it in full, with the quote copied verbatim from the pages below
 - keep: it is right as it stands; say why, pointing to the text
-- withdraw: it shouldn't be in the reference (not supported, not a key fact, or a duplicate)
+- withdraw: it shouldn't be in the reference (the report doesn't support it, or it duplicates another fact); every
+  datapoint in the brief below is wanted, identity included (project name, client)
 A fact the reviewer added becomes yours if you keep or revise it; withdraw it if you disagree. The automatic
 checks need the quote to be one continuous piece of the cited page that contains the value, and the number to
-match the text. Field conventions:
+match the text. The brief:
+{keys}
+Field conventions:
 {fields}
 
 Rules learned from earlier reviews (list the IDs you apply in rules_applied):
@@ -113,6 +118,9 @@ checks, raised the issues below and the extractor has answered each one. For eac
   basis / page / quote (quote verbatim) if you can, else leave them ""
 Be strict about numbers, units, basis (pre or post tax, nominal or real) and the page. The automatic checks on
 the fact as it now stands are shown: don't accept a fact whose checks fail unless you say why the check is wrong.
+The reference wants every datapoint below that the report states, identity included (project name, client), so
+a withdrawal is right only when the report doesn't support the fact or it duplicates another:
+{keys}
 
 Rules learned from earlier reviews (list the IDs you apply in rules_applied):
 {rules}
@@ -253,7 +261,7 @@ def extract(markdown: str, model: str, on_usage=None) -> dict:
 def review(markdown: str, facts: list[dict], model: str, on_usage=None) -> dict:
     brief = [{"id": f["id"], **{k: f.get(k) for k in _FACT}, "automatic_checks": [i["text"] for i in f["check"]["items"]]}
              for f in facts]
-    return _call(model, REVIEW_PROMPT.format(facts=json.dumps(brief, indent=1), rules=lessons.rules_text("facts"),
+    return _call(model, REVIEW_PROMPT.format(facts=json.dumps(brief, indent=1), rules=lessons.rules_text("facts"), keys=KEYS,
                                              doc=select(markdown)), REVIEW_SCHEMA, "facts-review", on_usage)
 
 
@@ -322,7 +330,7 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
         doc = cited_pages(markdown, [c for c in cites if c])
         brief = [{"id": i, "added_by_reviewer": by_id[i].get("origin") == "reviewer", "fact": _fields(by_id[i]),
                   "checks_failed": _failed(by_id[i]), "reviewer": iss} for i, iss in issues.items()]
-        fix = _call(model, FIX_PROMPT.format(fields=FIELDS, rules=lessons.rules_text("facts"),
+        fix = _call(model, FIX_PROMPT.format(fields=FIELDS, keys=KEYS, rules=lessons.rules_text("facts"),
                                              issues=json.dumps(brief, indent=1, ensure_ascii=False), doc=doc),
                     FIX_SCHEMA, "facts-fix", on_usage)
         answers = {r["id"]: r for r in fix["responses"] if r["id"] in issues}
@@ -344,7 +352,7 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
             items.append({"id": i, "you_said": issues[i], "extractor": {"action": r["action"], "reason": r["reason"]},
                           "fact_now": _fields(cand), "automatic_checks_now": [x["text"] for x in cand["check"]["items"]]})
         cites = [c.get("page") for _, c in pending.values()] + [n for _, c in pending.values() for n in _quote_pages(c, pg)]
-        ver = _call(reviewer_model, VERIFY_PROMPT.format(rules=lessons.rules_text("facts"), items=json.dumps(
+        ver = _call(reviewer_model, VERIFY_PROMPT.format(rules=lessons.rules_text("facts"), keys=KEYS, items=json.dumps(
             items, indent=1, ensure_ascii=False), doc=cited_pages(markdown, [c for c in cites if c] or [1])),
             VERIFY_SCHEMA, "facts-verify", on_usage)
         verdicts = {v["id"]: v for v in ver["verdicts"]}

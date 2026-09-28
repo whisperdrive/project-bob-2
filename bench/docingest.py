@@ -362,7 +362,8 @@ def _lines(words: list[dict], tol: float = 2.5) -> list[dict]:
     for ln in lines:
         ws = sorted(ln["words"], key=lambda w: w["x0"])
         ln.update(text=" ".join(w["text"] for w in ws), x0=ws[0]["x0"], x1=ws[-1]["x1"],
-                  size=sum(w.get("size", 0) for w in ws) / len(ws))
+                  size=sum(w.get("size", 0) for w in ws) / len(ws),
+                  bold=all(w.get("bold") for w in ws))
         del ln["words"]
     return lines
 
@@ -398,6 +399,62 @@ def _number_runs(lines: list[dict], taken: list) -> list[tuple]:
     return boxes
 
 
+# ---- reading order: columns, sidebars, text beside a chart ------------------------------------------------------
+# Words on one baseline across the whole page would run two columns together line by line. The page is cut
+# recursively (XY cut) into blocks read top-left to bottom-right, column by column: first down a tall clear
+# gutter with running text on both sides (or a table / picture on one side), else across the widest horizontal
+# gap. Lines of a label-value list or a table have too few words to count as running text, so they're never
+# split into their columns.
+COL_GAP = 9.0        # pt: the narrowest gutter between two columns
+_BOLD = re.compile(r"bold|black|heavy", re.I)
+PROSE_WORDS = 3.0    # average words per line for a side of a gutter to count as running text
+
+
+def _merged(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _running_text(items: list[dict]) -> bool:
+    words = [w for w in items if "box" not in w]
+    if not words:
+        return any("box" in w for w in items)  # a table or picture on its own
+    lines = _lines(words)
+    return len(lines) >= 2 and len(words) / len(lines) >= PROSE_WORDS
+
+
+def _xy_cut(items: list[dict], lh: float, depth: int = 0) -> list[list[dict]]:
+    """Items (words, and table / picture boxes marked "box") -> blocks in reading order."""
+    if len(items) <= 1 or depth > 24:
+        return [items]
+    cols = _merged([(w["x0"], w["x1"]) for w in items])
+    best = None
+    for (_, a), (b, _) in zip(cols, cols[1:]):
+        if b - a < COL_GAP:
+            continue
+        left, right = [w for w in items if w["x1"] <= a], [w for w in items if w["x0"] >= b]
+        side_by_side = min(max(w["bottom"] for w in left), max(w["bottom"] for w in right)) - \
+            max(min(w["top"] for w in left), min(w["top"] for w in right))
+        if side_by_side >= 2 * lh and _running_text(left) and _running_text(right) \
+                and any("box" not in w for w in left + right):
+            if best is None or b - a > best[1] - best[0]:
+                best = (a, b, left, right)
+    if best:
+        return _xy_cut(best[2], lh, depth + 1) + _xy_cut(best[3], lh, depth + 1)
+    rows = _merged([(w["top"], w["bottom"]) for w in items])
+    gaps = [(b - a, a, b) for (_, a), (b, _) in zip(rows, rows[1:]) if b - a >= 0.5 * lh]
+    if gaps:
+        _, a, b = max(gaps)
+        return _xy_cut([w for w in items if w["bottom"] <= a], lh, depth + 1) + \
+            _xy_cut([w for w in items if w["top"] >= b], lh, depth + 1)
+    return [items]
+
+
 def _pdf(path: str, out_dir: Path, reader: Reader | None, progress) -> dict:
     import pdfplumber
     pages, tables, jobs = [], [], []
@@ -405,7 +462,10 @@ def _pdf(path: str, out_dir: Path, reader: Reader | None, progress) -> dict:
         n_pages = len(pdf.pages)
         for pno, page in enumerate(pdf.pages, start=1):
             progress(0.05 + 0.25 * pno / n_pages, f"Reading page {pno} of {n_pages}")
-            words = page.extract_words(extra_attrs=["size"])
+            words = page.extract_words(extra_attrs=["size"], return_chars=True)  # font per character: a ligature's
+            for w in words:                                                     # own font mustn't split a word
+                chars = w.pop("chars", None) or []
+                w["bold"] = bool(chars) and sum(bool(_BOLD.search(c.get("fontname", ""))) for c in chars) > len(chars) / 2
             lines = _lines(words)
             area = float(page.width * page.height)
             imgs = [(float(i["x0"]), float(i["top"]), float(i["x1"]), float(i["bottom"])) for i in page.images
@@ -420,31 +480,55 @@ def _pdf(path: str, out_dir: Path, reader: Reader | None, progress) -> dict:
             else:
                 ruled = [tuple(float(v) for v in tb.bbox) for tb in page.find_tables()]
                 ruled = [b for b in ruled if (b[2] - b[0]) > 60 and (b[3] - b[1]) > 20]
-                regions = [(b, "text-layer table") for b in ruled]
-                regions += [(b, "text-layer table") for b in _number_runs(lines, ruled + imgs)]
-                regions += [(b, "picture") for b in imgs if not any(_overlap(b, r) for r, _ in regions)]
-                for k, (box, source) in enumerate(sorted(regions, key=lambda r: r[0][1]), start=1):
-                    box = _pad(box, page)
-                    t = {"id": f"p{pno:03d}-t{k}", "page": pno, "source": source, "where": f"page {pno}",
-                         "bbox": [round(v, 1) for v in box]}
-                    inside = [ln["text"] for ln in lines if _inside(ln, box)]
-                    if source == "text-layer table":
-                        t["text_lines"] = inside  # kept so a person's edit can be checked against the page too
-                    png = _png(page.crop(box).to_image(resolution=DPI).original)
-                    jobs.append((t, png, inside if source == "text-layer table" and inside else None))
-                    tables.append(t)
-                    blocks.append((box[1], "table", t["id"]))
-                sizes = sorted(ln["size"] for ln in lines) or [10]
+                fixed = [(b, "text-layer table") for b in ruled]
+                # borderless tables across the page first: they are solid blocks, never cut into columns
+                fixed += [(b, "text-layer table") for b in _number_runs(_lines(words), ruled + imgs)]
+                fixed += [(b, "picture") for b in imgs if not any(_overlap(b, r) for r, _ in fixed)]
+                boxes = [b for b, _ in fixed]
+                in_box = lambda w: any(b[0] - 1 <= (w["x0"] + w["x1"]) / 2 <= b[2] + 1 and b[1] - 1 <= (w["top"] + w["bottom"]) / 2 <= b[3] + 1
+                                       for b in boxes)
+                items = [w for w in words if not in_box(w)]
+                items += [{"x0": b[0], "top": b[1], "x1": b[2], "bottom": b[3], "box": k} for k, b in enumerate(boxes)]
+                heights = sorted(w["bottom"] - w["top"] for w in words) or [10]
+                # reading order, then per block: its lines, the borderless tables among them, the fixed boxes
+                ordered = []  # (kind, payload): ("line", line) / ("region", (box, source))
+                for leaf in _xy_cut(items, heights[len(heights) // 2]):
+                    lns = _lines([w for w in leaf if "box" not in w])
+                    runs = _number_runs(lns, boxes)  # tables inside a column
+                    entries = [(b[1], "region", (b, "text-layer table")) for b in runs]
+                    entries += [(fixed[w["box"]][0][1], "region", fixed[w["box"]]) for w in leaf if "box" in w]
+                    entries += [(ln["top"], "line", ln) for ln in lns if not any(_inside(ln, b) for b in runs)]
+                    ordered += [(kind, payload) for _, kind, payload in sorted(entries, key=lambda e: e[0])]
+                sizes = sorted(ln["size"] for kind, ln in ordered if kind == "line") or [10]
                 body = sizes[len(sizes) // 2]
-                prev = None
-                for ln in lines:
-                    if any(_inside(ln, t["bbox"]) for t in tables if t["page"] == pno):
+                prev, k = None, 0
+                for seq, (kind, payload) in enumerate(ordered):
+                    if kind == "region":
+                        box, source = payload
+                        k += 1
+                        box = _pad(box, page)
+                        t = {"id": f"p{pno:03d}-t{k}", "page": pno, "source": source, "where": f"page {pno}",
+                             "bbox": [round(v, 1) for v in box]}
+                        inside = [ln["text"] for ln in _lines([w for w in words if _inside(
+                            {"top": w["top"], "bottom": w["bottom"], "x0": w["x0"], "x1": w["x1"]}, box)])]
+                        if source == "text-layer table":
+                            t["text_lines"] = inside  # kept so a person's edit can be checked against the page too
+                        png = _png(page.crop(box).to_image(resolution=DPI).original)
+                        jobs.append((t, png, inside if source == "text-layer table" and inside else None))
+                        tables.append(t)
+                        blocks.append((seq, "table", t["id"]))
+                        prev = None
                         continue
+                    ln = payload
                     if re.fullmatch(r"(page )?\d+( of \d+)?", ln["text"].strip(), re.I) and ln["top"] > page.height * 0.9:
                         continue  # page number in the footer
-                    heading = ln["size"] >= body * 1.3
-                    gap = prev is not None and ln["top"] - prev["bottom"] > 1.2 * (prev["bottom"] - prev["top"])
-                    blocks.append((ln["top"], "heading" if heading else "text", ln["text"], gap))
+                    # a heading: bigger type, or a short bold line of its own (a side heading at body size)
+                    heading = ln["size"] >= body * 1.3 or (ln["bold"] and len(ln["text"].split()) <= 8
+                                                           and not ln["text"].rstrip().endswith((".", ",", ";")))
+                    # a new paragraph after a wider gap, or where reading moves up to the next column
+                    gap = prev is None or ln["top"] < prev["top"] - 1 or \
+                        ln["top"] - prev["bottom"] > 1.2 * (prev["bottom"] - prev["top"])
+                    blocks.append((seq, "heading" if heading else "text", ln["text"], gap))
                     prev = ln
             pages.append({"n": pno, "blocks": sorted(blocks, key=lambda b: b[0])})
     _read_all(reader, jobs, out_dir, progress)

@@ -125,6 +125,11 @@ overlay (the workings that take the client model to the report's conclusions) an
 steps, each checked by a person before the next relies on it:
 1. **Files.** Workbooks go through the Model Desk pipeline and library (`bench/library.py`), so a model uploaded in
    either app is built once. Reports (PDF, PPTX) are read by `bench/docingest.py` into Markdown with page markers.
+   A PDF page is read in reading order, not line by line across the page. The page is cut into blocks (XY cut)
+   down any tall, clear gutter with running text on both sides, so two columns, a sidebar, or text beside a
+   picture are read one after the other instead of interleaved. Tables are cut out first and never split into
+   columns, and label-value lists stay on their lines. Short bold lines are side headings. No model call and no
+   extra service: Azure Document Intelligence's layout model reads layout better and is an option for later.
    Every table is cropped, rendered at 200 dpi and transcribed by a vision model, then checked. A table with a text
    layer must match it (every number on the page, each row's numbers on one line in order, the same label words,
    so "$m" for "A$m" is caught). A picture-only table gets a second, independent read by the reviewer model,
@@ -136,7 +141,9 @@ steps, each checked by a person before the next relies on it:
    range), assumptions (discount rate and basis, terminal growth or exit / RAB multiple, ...), approach and the
    sensitivity grid, each with a page and a verbatim quote. Code checks each one: the quote is on that page, the
    values are in the quote, and quotes from unsettled tables are marked. A reviewer model accepts, corrects or
-   rejects each fact and lists what was missed. Every fact still open then goes through the review loop. Facts the
+   rejects each fact and lists what was missed. None of this needs a button: once a report is read, the table
+   loop, the extraction, the review and the fact loop start by themselves (opening an engagement also picks up
+   any report they haven't run on yet). Every fact still open then goes through the review loop. Facts the
    two models agree on, and that pass the checks, are approved by the agents; facts they agree to withdraw are
    rejected by them. Both are marked as the agents' decision, and a person can undo either (an undone decision
    stays theirs). The person decides what the agents escalated: edit, take the reviewer's latest correction, or
@@ -222,6 +229,10 @@ steps, each checked by a person before the next relies on it:
      vs recomputed, several feeds on one chart), `overlay_dcf`, `overlay_formula` and `overlay_inputs`. It knows
      the report's key facts, the levers, the outputs and the feeds. Charts go through the same chart review as
      on the Model Desk.
+
+A status panel at the top of every step shows where the engagement is. Each stage appears as done, running (with
+what the agents are doing now, step by step, the review loop animated), needing you, or failed. It also shows the
+next thing for you to do, as a button that takes you there.
 
 All model calls run on Azure Foundry through `bench/llm.py`: gpt-6-luna extracts and reads tables, gpt-6-sol reviews
 (second reads of picture tables, fact review), and both can be changed per engagement in the header. Calls are logged
