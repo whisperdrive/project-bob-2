@@ -86,6 +86,10 @@ def _conn() -> sqlite3.Connection:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
     if "arbiter_model" not in {r[1] for r in db.execute("PRAGMA table_info(engagements)")}:
         db.execute("ALTER TABLE engagements ADD COLUMN arbiter_model TEXT")
+    for col, kind in (("tables_status", "TEXT"), ("tables_left", "INT"), ("tables_step", "TEXT"),
+                      ("tables_error", "TEXT"), ("tables_started_at", "REAL")):  # ... and before background reading
+        if col not in {r[1] for r in db.execute("PRAGMA table_info(documents)")}:
+            db.execute(f"ALTER TABLE documents ADD COLUMN {col} {kind}")
     timing = [("documents", c) for c in ("started_at", "doc_secs", "facts_started_at", "facts_secs")] + \
         [("engagements", f"{k}_{c}") for k in ("compare", "map", "overlay") for c in ("started_at", "secs")] + \
         [("engagements", "overlay_pct")]
@@ -185,7 +189,8 @@ def _sheet_names(w: dict) -> list[str]:
 def documents(eid: int) -> list[dict]:
     cols = ("id, engagement_id, filename, kind, size, uploaded_at, status, step, pct, error, pages, n_tables, n_flagged, "
             "processed_at, facts_status, facts_step, facts_error, facts_notes, review_summary, loop_json, started_at, "
-            "doc_secs, facts_started_at, facts_secs")
+            "doc_secs, facts_started_at, facts_secs, tables_status, tables_left, tables_step, tables_error, "
+            "tables_started_at")
     out = _q(f"SELECT {cols} FROM documents WHERE engagement_id=? ORDER BY uploaded_at", eid)
     for d in out:
         d["loop"] = json.loads(d.pop("loop_json") or "null")
@@ -337,6 +342,11 @@ def table_png(did: int, tid: str) -> Path | None:
 
 def settle_table(did: int, tid: str, action: str, markdown: str | None = None) -> dict:
     """A person's decision on a table: approve the first read, take the reviewer's read, or edit it."""
+    with _DOC_LOCK:
+        return _settle_table(did, tid, action, markdown)
+
+
+def _settle_table(did: int, tid: str, action: str, markdown: str | None = None) -> dict:
     d = _doc(did)
     doc = json.loads(d["doc_json"])
     t = next((t for t in doc["tables"] if t["id"] == tid), None)
@@ -365,11 +375,72 @@ def settle_table(did: int, tid: str, action: str, markdown: str | None = None) -
     return document(did)
 
 
+_DOC_LOCK = threading.RLock()  # the background reader and a person's table decisions save into the same document
+_READING: set[int] = set()     # documents whose remaining tables are being read in the background
+
+
+def _merge_tables(did: int, updated: list[dict], only_if) -> dict:
+    """Put tables read or settled elsewhere into the stored document, each only if the stored one still qualifies
+    (e.g. still unread): a person's decision made meanwhile is never overwritten. Returns the saved document."""
+    with _DOC_LOCK:
+        doc = json.loads(_doc(did)["doc_json"])
+        by_id = {t["id"]: t for t in updated}
+        doc["tables"] = [by_id[t["id"]] if t["id"] in by_id and only_if(t) else t for t in doc["tables"]]
+        _save_doc(did, doc)
+        return doc
+
+
+def _start_rest(did: int) -> None:
+    if did in _READING:
+        return
+    _READING.add(did)
+    threading.Thread(target=_read_rest, args=(did,), daemon=True, name=f"report-tables-{did}").start()
+
+
+def _read_rest(did: int) -> None:
+    """Read the report's remaining tables (the key ones were read first), saving each as it's done; then the review
+    loop on those it flags, and the facts checked again against the fuller text. Runs beside the worker, so the
+    facts and the model steps don't wait for it."""
+    try:
+        d = _doc(did)
+        eid = d["engagement_id"]
+        e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+        model, reviewer = e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER
+        doc = json.loads(d["doc_json"])
+        todo = [t["id"] for t in doc["tables"] if t.get("deferred") and t.get("status") == "unread"]
+        _set("documents", did, tables_status="reading", tables_left=len(todo), tables_started_at=time.time(),
+             tables_step=f"Reading {len(todo)} more tables", tables_error=None)
+
+        def saved(t):
+            cur = _merge_tables(did, [t], lambda c: c.get("status") == "unread")
+            left = sum(bool(x.get("deferred")) and x.get("status") == "unread" for x in cur["tables"])
+            _set("documents", did, tables_left=left, tables_step=f"{left} more tables to read")
+
+        docingest.read_rest(doc, d["out_dir"], model, reviewer, _logger(eid), on_table=saved)
+        cur = json.loads(_doc(did)["doc_json"])
+        if any(t.get("status") == "flagged" and t["id"] in todo for t in cur["tables"]):
+            _set("documents", did, tables_step="Review loop on the flagged tables")
+            res = docingest.resolve_tables(cur, d["out_dir"], model, reviewer, None, _logger(eid), ids=set(todo))
+            _merge_tables(did, [t for t in cur["tables"] if t.get("resolution") and t["id"] in todo],
+                          lambda c: c.get("status") == "flagged")
+            _learn(did, "tables", res["episodes"])
+        with _DOC_LOCK:
+            _recheck_facts(did, json.loads(_doc(did)["doc_json"]))
+        _set("documents", did, tables_status="done", tables_left=0, tables_step="Done")
+        _touch(eid)
+    except Exception as ex:
+        traceback.print_exc()
+        _set("documents", did, tables_status="error", tables_error=friendly(ex))
+    finally:
+        _READING.discard(did)
+
+
 def _save_doc(did: int, doc: dict) -> None:
     md = docingest.render(doc)
     d = _doc(did)
     Path(d["out_dir"], "document.md").write_text(md, encoding="utf-8")
-    flagged = sum(t.get("status") in ("flagged", "error", "unread") for t in doc["tables"])
+    flagged = sum(t.get("status") in ("flagged", "error") or (t.get("status") == "unread" and not t.get("deferred"))
+                  for t in doc["tables"])
     _set("documents", did, doc_json=json.dumps(doc, default=str), n_flagged=flagged,
          n_tables=sum(t.get("status") != "figure" for t in doc["tables"]), pages=len(doc["pages"]))
 
@@ -562,8 +633,17 @@ def _resolve_tables_job(did: int) -> None:
     d = _doc(did)
     _set("documents", did, status="processing", step="Review loop on the flagged tables", pct=0)
     doc = json.loads(d["doc_json"])
-    _run_table_loop(did, doc)
-    _recheck_facts(did, doc)
+    eid = d["engagement_id"]
+    e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+    prog = lambda frac, msg: _set("documents", did, pct=round(frac, 3), step=msg)
+    res = docingest.resolve_tables(doc, d["out_dir"], e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER,
+                                   prog, _logger(eid))
+    doc = _merge_tables(did, [t for t in doc["tables"] if t.get("resolution")], lambda c: c.get("status") == "flagged")
+    _note_loop(did, tables={"resolved": res["resolved"], "escalated": res["escalated"], "at": time.time()},
+               lessons_tables=None)
+    _learn(did, "tables", res["episodes"])
+    with _DOC_LOCK:
+        _recheck_facts(did, json.loads(_doc(did)["doc_json"]))
     _set("documents", did, status="done", step="Done", pct=1.0)
 
 
@@ -692,16 +772,28 @@ def _maybe_suggest(eid: int, e: dict) -> None:
 
 def _suggest_job(eid: int) -> None:
     try:
-        suggest_roles(eid)
+        suggest_roles(eid, force=False)
     finally:
         _ROLE_JOBS.discard(eid)
 
 
-def suggest_roles(eid: int) -> dict:
-    """Suggest (doesn't overwrite confirmed roles). Stored so the page can show it next to what's confirmed."""
+_SUGGESTING = threading.Lock()  # one suggestion at a time: two at once wrote the same model.db and locked each other out
+
+
+def suggest_roles(eid: int, force: bool = True) -> dict:
+    """Suggest (doesn't overwrite confirmed roles). Stored so the page can show it next to what's confirmed.
+    force=False (the automatic one) skips if a suggestion for the same files and facts was made meanwhile."""
+    with _SUGGESTING:
+        key = _roles_key(eid, workbooks(eid), documents(eid))
+        prev = _q("SELECT roles_suggested FROM engagements WHERE id=?", eid)
+        if not force and prev and (json.loads(prev[0]["roles_suggested"] or "null") or {}).get("key") == key:
+            return get(eid)
+        return _suggest_roles(eid, key)
+
+
+def _suggest_roles(eid: int, key: str) -> dict:
     docs = [d for d in documents(eid) if d["status"] == "done"]
     n_facts = {d["id"]: sum(1 for f in facts(eid) if f["document_id"] == d["id"]) for d in docs}
-    key = _roles_key(eid, workbooks(eid), documents(eid))
     try:
         res = rolesmod.suggest([{**d, "n_facts": n_facts[d["id"]]} for d in docs], _wb_inputs(eid), reference(eid))
     except Exception as ex:  # kept with its key, so a failing suggestion isn't retried on every poll
@@ -711,6 +803,13 @@ def suggest_roles(eid: int) -> dict:
                                                              "key": key, "error": friendly(ex)}))
         return get(eid)
     res.update(key=key, at=time.time())
+    e = _q("SELECT reviewer_model FROM engagements WHERE id=?", eid)[0]
+    try:  # a second opinion from the reviewer model on the same evidence; the person decides
+        docs_in = [{**d, "n_facts": n_facts[d["id"]]} for d in docs]
+        res["second_opinion"] = rolesmod.second_opinion(docs_in, _wb_inputs(eid), reference(eid), res,
+                                                        e["reviewer_model"] or DEFAULT_REVIEWER, _logger(eid))
+    except Exception as ex:
+        res["second_opinion"] = {"error": friendly(ex)}
     _set("engagements", eid, roles_suggested=json.dumps(res, default=str), updated_at=time.time())
     have = roles(eid)
     with _lock, _conn() as db:
@@ -805,7 +904,12 @@ def _map(eid: int) -> None:
                "reproduced": bool(a.get("matches")), "ok": a.get("ok"), "reason": a.get("reason"),
                "report": anchors_at.get(a["cell"], [])} for a in cat]
     step("Following the overlay's links into the prior client model")
-    ov_client = linkmap.overlay_to_client(ov, prior) if ov else {"links": [], "books": []}
+    copy = _wiring(eid).get("client_sheets") if ov and prior else None
+    if copy:  # the overlay reads its own copy of the client sheets; that copy's rows are the prior model's rows
+        ov_client = linkmap.overlay_to_client({**ov, "sheets": set(ov["sheets"] or [])}, {**ov, "sheets": set(copy)})
+        ov_client["mode"] = "inside a copy of the prior client model"
+    else:
+        ov_client = linkmap.overlay_to_client(ov, prior) if ov else {"links": [], "books": []}
     alignment = {}
     if prior and cur:
         step("Lining up those rows with the current client model")
@@ -908,11 +1012,15 @@ _SESSIONS: dict[int, tuple] = {}  # engagement -> (overlay.Session, summary): th
 def _wiring(eid: int) -> dict:
     """Which files and sheets the overlay module reads, from the confirmed (or suggested) roles."""
     ov, prior, cur = _role_wb(eid, "prior_overlay"), _role_wb(eid, "prior_model"), _role_wb(eid, "current_model")
-    sheets = [s for s in next(w for w in workbooks(eid) if w["id"] == ov["id"])["sheet_names"]
-              if not ov["sheets"] or s in ov["sheets"]]
+    names = {w["id"]: w["sheet_names"] for w in workbooks(eid)}
+    sheets = [s for s in names[ov["id"]] if not ov["sheets"] or s in ov["sheets"]]
     same_file = bool(prior) and prior["id"] == ov["id"]
+    # the overlay in a copy of the client model, the client's own file assigned as the prior model: the overlay
+    # reads its copy's sheets, which are fed from that file
+    copy = [s for s in names[ov["id"]] if s not in sheets and s in set(names.get(prior["id"], []))] \
+        if prior and not same_file and ov["sheets"] else []
     client_link = None
-    if prior and not same_file:
+    if prior and not same_file and not copy:
         extlinks.ensure(ov["source_path"], ov["db_path"])
         client_link = linkmap.overlay_to_client({**ov, "sheets": None}, {**prior, "sheets": None}).get("client_link")
     vd = next((f for f in reference(eid) if f["key"] == "valuation_date" and f.get("value")), None)
@@ -926,7 +1034,8 @@ def _wiring(eid: int) -> dict:
             "prior": {"db_path": prior["db_path"], "filename": prior["filename"],
                       "sheets": sorted(prior["sheets"]) if prior["sheets"] else None} if prior else None,
             "current": {"db_path": cur["db_path"], "filename": cur["filename"], "sheets": None} if cur else None,
-            "client_link": client_link, "prior_valuation_date": prior_vd, "same_file": same_file}
+            "client_link": client_link, "prior_valuation_date": prior_vd, "same_file": same_file,
+            "client_sheets": copy or None}
 
 
 def _overlay(eid: int) -> None:
@@ -938,7 +1047,7 @@ def _overlay(eid: int) -> None:
     w = _wiring(eid)
     _SESSIONS.pop(eid, None)
     summary, sess = ovmod.build(OUT / "overlays" / f"e{eid}", w["overlay"], w["prior"], w["current"], reference(eid),
-                                e["name"], w["client_link"], w["prior_valuation_date"], step)
+                                e["name"], w["client_link"], w["prior_valuation_date"], step, client_sheets=w["client_sheets"])
     summary["wiring"] = w
     summary["reference_approved"] = all(f["approved"] for f in reference(eid)) and bool(reference(eid))
     _SESSIONS[eid] = (sess, summary)
@@ -958,7 +1067,7 @@ def overlay_session(eid: int):
     w = summary["wiring"]
     sess = ovmod.Session(summary["module"], w["overlay"]["db_path"], w["overlay"]["sheets"],
                          None if w["same_file"] else (w["prior"] or {}).get("db_path"), (w["current"] or {}).get("db_path"),
-                         w["client_link"], (w["prior"] or {}).get("sheets") if w["same_file"] else None)
+                         w["client_link"], w.get("client_sheets") or ((w["prior"] or {}).get("sheets") if w["same_file"] else None))
     _SESSIONS[eid] = (sess, summary)
     return _SESSIONS[eid]
 
@@ -1052,7 +1161,7 @@ def _process_doc(did: int) -> None:
             _logger(eid))
     note = None
     try:
-        doc = docingest.process(*args)
+        doc = docingest.process(*args, key_only=True)  # the tables with the key figures now, the rest afterwards
     except Exception as ex:  # not signed in: keep the text layer, leave the tables to read on retry
         if type(ex).__name__ not in ("AuthenticationRequiredError", "ClientAuthenticationError"):
             raise
@@ -1071,9 +1180,13 @@ def _process_doc(did: int) -> None:
     errors = [t for t in doc["tables"] if t.get("status") == "error"]
     if errors:
         note = f"{len(errors)} table(s) couldn't be read: {errors[0].get('error')}"
-    _set("documents", did, status="done", step="Done", pct=1.0, processed_at=time.time(), error=note)
+    left = sum(bool(t.get("deferred")) and t.get("status") == "unread" for t in doc["tables"])
+    _set("documents", did, status="done", step="Done", pct=1.0, processed_at=time.time(), error=note,
+         tables_status="queued" if left and note is None else None, tables_left=left, tables_error=None)
     if note is None and not _q("SELECT 1 FROM facts WHERE document_id=?", did):
         extract_facts(did)  # the key facts, their review and the review loop start without a button
+    if left and note is None:
+        _start_rest(did)  # the other tables, alongside
 
 
 def _process_facts(did: int) -> None:
@@ -1156,7 +1269,7 @@ def rebuild_document(did: int) -> dict:
     d = _doc(did)
     if not d:
         raise ValueError("no such document")
-    if d["status"] in ("queued", "processing") or d["facts_status"] in ("queued", "running"):
+    if d["status"] in ("queued", "processing") or d["facts_status"] in ("queued", "running") or did in _READING:
         raise ValueError(f"{d['filename']} is already being worked on")
     _note_loop(did, tables=None, lessons_tables=None)
     retry_document(did)
@@ -1192,6 +1305,8 @@ def start_worker() -> None:
     for r in _q("SELECT id, step, doc_json IS NOT NULL AS read FROM documents WHERE status IN ('queued','processing')"):
         # a document already read and in its table loop only needs the loop again
         _jobs.put(("resolve_tables" if r["read"] and "review loop" in (r["step"] or "").lower() else "doc", r["id"]))
+    for r in _q("SELECT id FROM documents WHERE status='done' AND tables_status IN ('queued','reading')"):
+        _start_rest(r["id"])  # background table reading a restart interrupted
     for r in _q("SELECT id FROM documents WHERE facts_status IN ('queued','running')"):
         # an interrupted loop reruns as a loop (on the facts saved); an interrupted extraction starts again
         _jobs.put(("resolve_facts" if _q("SELECT 1 FROM facts WHERE document_id=?", r["id"]) else "facts", r["id"]))

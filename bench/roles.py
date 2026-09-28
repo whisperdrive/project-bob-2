@@ -113,9 +113,10 @@ def structure(workbooks: list[dict]) -> dict:
             why.append(f"{c['similarity']}% alike to {names[j]} (sheets {c['sheets']}%, line items {c['line_items']}%, "
                        f"formulas {c['formulas']}%)")
         # a workbook holding all of a smaller one plus more sheets: the overlay added to a copy of the client model.
-        # The host is the biggest workbook it holds (it may hold a standalone overlay's sheets too).
+        # The host is the workbook it holds most completely (this year's model is held nearly as well, being so
+        # alike; a standalone overlay's sheets may be held too), the bigger one on a tie.
         held = [j for j in ids if j != i and pair(j, i)["a_in_b"] >= CONTAINS and len(sigs[j]["sheets"]) < len(sig["sheets"])]
-        host = max(held, key=lambda j: sigs[j]["line_items"], default=None)
+        host = max(held, key=lambda j: (pair(j, i)["a_in_b"], sigs[j]["line_items"]), default=None)  # the fullest copy
         if host is not None:
             others = set(sigs[host]["sheet_keys"])
             for k, s in sig["sheet_keys"].items():
@@ -149,7 +150,8 @@ def structure(workbooks: list[dict]) -> dict:
         if sig["markers"]:
             why.append("mentions " + ", ".join(f"{m} ({w})" for m, w in list(sig["markers"].items())[:3]))
         shape[i] = {"family": sorted(fam), "extra": extra, "points": points, "why": why,
-                    "standalone": not fam and not extra and points >= OVERLAY_POINTS}
+                    "standalone": not fam and not extra and points >= OVERLAY_POINTS,
+                    "host": host if extra else None, "host_share": pair(host, i)["a_in_b"] if extra else None}
     return {"sigs": sigs, "pairs": pairs, "shape": shape}
 
 
@@ -230,14 +232,26 @@ def suggest(reports: list[dict], workbooks: list[dict], facts: list[dict]) -> di
         profs[wb["id"]] = prof
     by_id = {wb["id"]: wb for wb in workbooks}
     ov_id = max((i for i in info if info[i]["overlay"]), key=lambda i: info[i]["score"], default=None)
+    names = {w["id"]: w["filename"] for w in workbooks}
+    when = {w["id"]: _when(w, info[w["id"]]["timeline_start"]) for w in workbooks}
     prior_id = None
     if ov_id is not None:
         o = info[ov_id]
         why = [f"{s}: {'; '.join(o['why'][s])}" for s in o["overlay"] if o["why"][s]]
         if o["mode"] == "standalone overlay":
             why = o["structure"] + why
+        if FILE_OVERLAY.search(names[ov_id]):
+            why.append("its file name says so")
         roles["prior_overlay"] = {"kind": "workbook", "id": ov_id, "sheets": o["overlay"], "why": why}
-        if o["mode"] == "overlay inside the client model":
+        host = st["shape"][ov_id].get("host")
+        if o["mode"] == "overlay inside the client model" and host is not None and info[host]["mode"] == "client model" \
+                and _same_period(when[host], when[ov_id]):
+            # the overlay was added to a copy of a client model that's here too: that file is the client's own
+            prior_id = host
+            roles["prior_model"] = {"kind": "workbook", "id": host, "sheets": None, "why": [
+                f"the client's model as sent: {names[ov_id]} is a copy of it ({st['shape'][ov_id]['host_share']}% of "
+                f"its line items) with the overlay added ({', '.join(o['overlay'])})", *_date_why(when[host])]}
+        elif o["mode"] == "overlay inside the client model":
             prior_id = ov_id
             roles["prior_model"] = {"kind": "workbook", "id": ov_id, "sheets": o["client"],
                                     "why": [f"same workbook as the overlay; client sheets: {', '.join(o['client'])}"]}
@@ -261,24 +275,216 @@ def suggest(reports: list[dict], workbooks: list[dict], facts: list[dict]) -> di
                 roles["prior_model"] = {"kind": "workbook", "id": prior_id, "sheets": None, "why": why}
     rest = [w for w in workbooks if w["id"] not in (ov_id, prior_id) or (w["id"] == ov_id and info[ov_id]["mode"] == "client model")]
     rest = [w for w in rest if info[w["id"]]["mode"] == "client model"]
-    order = lambda w: (info[w["id"]]["timeline_start"] or "", w.get("valuation_date") or "", w.get("uploaded_at") or 0)
-    rest.sort(key=order)
+    rest.sort(key=lambda w: when[w["id"]]["key"])  # valuation date, then the date in the file name, then the timeline
     if prior_id is not None:  # the current model is another version of the prior one, if there is such a version
-        fam = [w for w in rest if w["id"] in info[prior_id]["family"]]
-        rest = fam or rest
+        fam = [w for w in rest if w["id"] in info[prior_id]["family"] and w["id"] != prior_id
+               and not _same_period(when[w["id"]], when[prior_id])]
+        rest = fam or [w for w in rest if w["id"] != prior_id]
     if prior_id is None and len(rest) >= 2:
         prior_id = rest[0]["id"]
         roles["prior_model"] = {"kind": "workbook", "id": prior_id, "sheets": None,
-                                "why": [f"earlier timeline (starts {info[prior_id]['timeline_start'] or 'unknown'})"]
+                                "why": ["the earlier of the client models", *_date_why(when[prior_id])]
                                 + info[prior_id]["structure"][:1]}
     current = [w for w in rest if w["id"] != prior_id]
     if current:
         c = current[-1]
-        why = [f"client model with the latest timeline (starts {info[c['id']]['timeline_start'] or 'unknown'})"]
-        if prior_id is not None and info[prior_id]["timeline_start"] and info[c["id"]]["timeline_start"]:
-            why.append(f"prior model's timeline starts {info[prior_id]['timeline_start']}")
+        why = ["the latest of the client models", *_date_why(when[c["id"]], when.get(prior_id))]
         roles["current_model"] = {"kind": "workbook", "id": c["id"], "sheets": None, "why": why + info[c["id"]]["structure"][:1]}
+    checks = _checks(roles, info, st, when, names, facts)
     pairs = [{"a": a, "b": b, **{k: v for k, v in c.items()}} for (a, b), c in st["pairs"].items()]
     return {"roles": roles, "workbooks": {i: {k: v for k, v in x.items() if k != "score"} for i, x in info.items()},
             "likeness": {"pairs": pairs, "profiles": {i: likeness.public(sg) for i, sg in st["sigs"].items()}},
+            "dates": {i: {k: v for k, v in w.items() if k != "key"} for i, w in when.items()}, "checks": checks,
             "evidence": f"structure and {len(facts)} report fact(s)" if facts else "structure only"}
+
+
+# ---- dates: which version is earlier ------------------------------------------------------------------------------
+# The identified valuation date says it best; the date in the file name ("20250523 ...", "... Jun 25 ...", "FY26")
+# next; the timeline's first period last (a model with actuals from years back starts on the same date every year).
+FILE_OVERLAY = re.compile(r"overlay|valuation|\bval\b|\bdcf\b", re.I)
+_MONTHS = {m: i for i, m in enumerate("jan feb mar apr may jun jul aug sep oct nov dec".split(), 1)}
+
+
+def file_date(name: str) -> str | None:
+    """The date a file name carries, as YYYY-MM-DD (the day is 1 when only a month is given)."""
+    n = name or ""
+    m = re.search(r"(?<!\d)(20\d{2})[-_. ]?(0[1-9]|1[0-2])[-_. ]?(0[1-9]|[12]\d|3[01])(?!\d)", n)
+    if m:
+        return f"{m[1]}-{m[2]}-{m[3]}"
+    m = re.search(r"(?<![A-Za-z])(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[-_ ']*(20)?(\d{2})(?!\d)", n, re.I)
+    if m:
+        return f"20{m[3]}-{_MONTHS[m[1].lower()]:02d}-01"
+    m = re.search(r"(?<![A-Za-z])(?:FY|BP)[-_ ]?(20)?(\d{2})(?!\d)", n, re.I)  # financial year, business plan
+    return f"20{m[2]}-06-30" if m else None
+
+
+def file_version(name: str) -> str | None:
+    m = re.search(r"\bv(\d+(?:\.\d+)*)\b", name or "", re.I)
+    return m[1] if m else None
+
+
+def _when(w: dict, timeline_start: str | None) -> dict:
+    vd, fd = w.get("valuation_date"), file_date(w.get("filename"))
+    return {"valuation_date": vd, "file_date": fd, "version": file_version(w.get("filename")),
+            "timeline_start": timeline_start, "key": (vd or "", fd or "", timeline_start or "", w.get("uploaded_at") or 0)}
+
+
+def _same_period(a: dict, b: dict) -> bool:
+    """Same valuation (same valuation date, or file dates within four months when there's none)."""
+    if a["valuation_date"] and b["valuation_date"]:
+        return a["valuation_date"] == b["valuation_date"]
+    if a["file_date"] and b["file_date"]:
+        from datetime import date
+        da, db_ = date.fromisoformat(a["file_date"]), date.fromisoformat(b["file_date"])
+        return abs((da - db_).days) <= 120
+    return a["timeline_start"] == b["timeline_start"]
+
+
+def _date_why(w: dict, other: dict | None = None) -> list[str]:
+    out = []
+    if w["valuation_date"]:
+        out.append(f"valuation date {w['valuation_date']}" + (f" (the prior's is {other['valuation_date']})"
+                                                              if other and other.get("valuation_date") else ""))
+    if w["file_date"]:
+        out.append(f"its file name is dated {w['file_date']}" + (f" (the prior's {other['file_date']})"
+                                                                 if other and other.get("file_date") else ""))
+    if w["version"]:
+        out.append(f"version {w['version']}")
+    return out
+
+
+# ---- checks on a suggestion ------------------------------------------------------------------------------------------
+
+def _checks(roles: dict, info: dict, st: dict, when: dict, names: dict, facts: list[dict]) -> list[dict]:
+    """Plain checks on the assignment, each ok (True), a warning (False) or can't tell yet (None)."""
+    out = []
+    add = lambda ok, text: out.append({"ok": ok, "text": text})
+    wid = lambda role: (roles.get(role) or {}).get("id") if (roles.get(role) or {}).get("kind") == "workbook" else None
+    ov, pr, cu = wid("prior_overlay"), wid("prior_model"), wid("current_model")
+    pair = lambda a, b: st["pairs"].get((a, b)) or st["pairs"].get((b, a))
+    if pr and cu:
+        c = pair(pr, cu)
+        if c:
+            add(c["similarity"] >= FAMILY, f"the prior and current client models are {c['similarity']}% alike"
+                + (" (versions of one model)" if c["similarity"] >= FAMILY else ": are they the same model?"))
+        a, b = when[pr], when[cu]
+        if a["valuation_date"] and b["valuation_date"]:
+            add(b["valuation_date"] > a["valuation_date"], f"the current model's valuation date ({b['valuation_date']}) "
+                f"is {'after' if b['valuation_date'] > a['valuation_date'] else 'not after'} the prior's ({a['valuation_date']})")
+        elif a["file_date"] and b["file_date"]:
+            add(b["file_date"] > a["file_date"], f"the current model's file date ({b['file_date']}) is "
+                f"{'after' if b['file_date'] > a['file_date'] else 'not after'} the prior's ({a['file_date']})")
+        else:
+            add(None, "no valuation date or file date to tell the prior and current models apart; check the order")
+    elif not cu:
+        add(False, "no current client model found")
+    if ov:
+        o = info[ov]
+        if o["mode"] == "standalone overlay" and pr:
+            add(True if roles["prior_model"]["why"] and "external link" in roles["prior_model"]["why"][0] else None,
+                "the overlay reads the prior client model through an external link"
+                if roles["prior_model"]["why"] and "external link" in roles["prior_model"]["why"][0]
+                else "no external link from the overlay to the prior client model found")
+        elif pr and pr != ov:
+            add(True, f"the overlay sits in a copy of the prior client model ({names[ov]})")
+        elif pr == ov:
+            add(True, "the overlay sits inside the prior client model")
+        vo = when[ov]["valuation_date"]
+        rep_vd = next((f for f in facts if f.get("key") == "valuation_date" and f.get("value")), None)
+        if rep_vd and vo:
+            v = int(rep_vd["value"])
+            iso = f"{v // 10000:04d}-{v // 100 % 100:02d}-{v % 100:02d}"
+            add(iso == vo, f"the report's valuation date ({iso}) {'matches' if iso == vo else 'differs from'} the overlay "
+                f"workbook's ({vo})")
+        elif not facts:
+            add(None, "the report's facts aren't in yet: they will confirm the overlay by where its figures sit")
+        n_fig = sum(1 for s in o["overlay"] for w in (o["why"].get(s) or []) if w.startswith("holds "))
+        if facts:
+            add(n_fig > 0 or None, f"the report's figures sit on {n_fig} of the overlay's sheets" if n_fig
+                else "none of the report's figures were found on the overlay sheets")
+    else:
+        add(False, "no overlay found: pick the overlay workbook and its sheets")
+    return out
+
+
+# ---- a second opinion ------------------------------------------------------------------------------------------------
+# The rules above are explicit but can miss what a person sees at a glance (a file name, a sheet called "Overlay",
+# a cover sheet's version note). A model looks at the same evidence and the suggestion, and agrees or says what it
+# would assign instead, with its reasons. It never assigns anything itself: the page shows it beside the rules'
+# suggestion for the person to decide.
+SECOND_PROMPT = """You check which file plays which part in a recurring valuation engagement:
+- prior_report: last year's final valuation report (PDF / PPTX)
+- prior_model: the client's model behind last year's valuation, as the client sent it
+- prior_overlay: our valuation workings (the "overlay") that take the client model to the report's conclusions:
+  a separate workbook, or sheets added to a copy of the client model (then name the workbook and those sheets)
+- current_model: this year's client model, onto which the valuation is rolled forward
+
+Use the evidence: file names (dates, versions, words like overlay or valuation), identified valuation dates,
+how alike the workbooks are (versions of one model are mostly alike; a copy with extra valuation sheets holds
+the overlay), where the report's figures sit, external links, charts and valuation vocabulary. Say whether you
+agree with the suggested assignment. If not, give yours (file names exactly as listed, "" for none) and why.
+
+Evidence:
+{evidence}
+
+Suggested assignment:
+{suggestion}"""
+_S = {"type": "string"}
+SECOND_SCHEMA = {"type": "json_schema", "name": "roles_second_opinion", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False,
+    "required": ["agree", "prior_report", "prior_model", "prior_overlay", "overlay_sheets", "current_model", "confidence", "reasons"],
+    "properties": {"agree": {"type": "boolean"}, "prior_report": _S, "prior_model": _S, "prior_overlay": _S,
+                   "overlay_sheets": {"type": "array", "items": _S}, "current_model": _S,
+                   "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+                   "reasons": {"type": "array", "items": _S}}}}
+
+
+def evidence(reports: list[dict], workbooks: list[dict], facts: list[dict], res: dict) -> dict:
+    """What the second opinion sees: each file with what's known about it, how alike the workbooks are, the report."""
+    names = {w["id"]: w["filename"] for w in workbooks}
+    prof = res["likeness"]["profiles"]
+    out = {"reports": [{"file": r["filename"], "facts_extracted": r.get("n_facts") or 0} for r in reports], "workbooks": []}
+    for w in workbooks:
+        p, i, d = prof.get(w["id"]) or {}, res["workbooks"].get(w["id"]) or {}, res["dates"].get(w["id"]) or {}
+        out["workbooks"].append({
+            "file": w["filename"], "sheets": (p.get("sheets") or [])[:80], "formula_cells": p.get("formulas"),
+            "identified_target": w.get("target_name"), "identified_valuation_date": w.get("valuation_date"),
+            "date_in_file_name": d.get("file_date"), "version_in_file_name": d.get("version"),
+            "timeline_starts": d.get("timeline_start"), "valuation_terms": list((p.get("terms") or {}).keys()),
+            "charts": p.get("charts"), "external_links_to": p.get("external_links"),
+            "author": (p.get("props") or {}).get("creator"), "company": (p.get("props") or {}).get("company"),
+            "rules_say": i.get("mode"), "overlay_sheets_by_rules": i.get("overlay"),
+            "evidence_by_rules": {s: why for s, why in (i.get("why") or {}).items()}})
+    out["alike"] = [{"a": names[p["a"]], "b": names[p["b"]], "similarity_pct": p["similarity"],
+                     "share_of_a_in_b_pct": p["a_in_b"], "share_of_b_in_a_pct": p["b_in_a"],
+                     "sheets_only_in_a": p["only_a"][:12], "sheets_only_in_b": p["only_b"][:12]}
+                    for p in res["likeness"]["pairs"] if p["a"] in names and p["b"] in names]
+    ident = {f["key"]: f["value_text"] for f in facts if f.get("category") in ("identity", "conclusion")}
+    out["report_facts"] = ident
+    return out
+
+
+def second_opinion(reports: list[dict], workbooks: list[dict], facts: list[dict], res: dict, model: str,
+                   on_usage=None) -> dict:
+    from llm import client, create
+    names = {w["id"]: w["filename"] for w in workbooks}
+    docs = {r["id"]: r["filename"] for r in reports}
+    sug = {}
+    for role, r in res["roles"].items():
+        sug[role] = (docs if r["kind"] == "document" else names).get(r["id"], "")
+        if role == "prior_overlay":
+            sug["overlay_sheets"] = r.get("sheets") or []
+    prompt = SECOND_PROMPT.format(evidence=json.dumps(evidence(reports, workbooks, facts, res), indent=1, default=str)[:60000],
+                                  suggestion=json.dumps(sug, indent=1))
+    r = create(client(interactive=False), model, input=prompt, text={"format": SECOND_SCHEMA}, max_output_tokens=3000)
+    if r.usage and on_usage:
+        on_usage(model, r.usage, "roles-review")
+    out = json.loads(r.output_text)
+    out["model"] = model
+    # compare file by file, whatever the model says about agreeing
+    out["differs"] = [k for k in ("prior_report", "prior_model", "prior_overlay", "current_model")
+                      if (out.get(k) or "") != (sug.get(k) or "")]
+    if not out["differs"] and sorted(out.get("overlay_sheets") or []) != sorted(sug.get("overlay_sheets") or []) \
+            and out.get("overlay_sheets"):
+        out["differs"].append("overlay_sheets")
+    return out

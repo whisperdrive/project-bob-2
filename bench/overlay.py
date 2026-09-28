@@ -422,8 +422,11 @@ def tie(value, report_text, scale=1.0, sign=1) -> dict | None:
 
 
 def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None, facts: list[dict],
-          title: str, client_link: int | None, prior_val_date: str | None, progress=None) -> dict:
-    """overlay / prior / current: {"db_path", "filename", "sheets"}. Returns the summary saved to overlay.json."""
+          title: str, client_link: int | None, prior_val_date: str | None, progress=None,
+          client_sheets: list[str] | None = None) -> dict:
+    """overlay / prior / current: {"db_path", "filename", "sheets"}. Returns the summary saved to overlay.json.
+    client_sheets: the overlay workbook's own copy of the client model's sheets, when the overlay sits in a copy of
+    a client model that is also here as its own file (prior): those sheets are then fed from that file."""
     progress = progress or (lambda f, m: None)
     out_dir.mkdir(parents=True, exist_ok=True)
     sheets = overlay["sheets"]
@@ -435,7 +438,8 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
     progress(0.4, "Loading the module")
     same_file = prior is not None and prior["db_path"] == overlay["db_path"]
     sess = Session(str(module), overlay["db_path"], sheets, None if same_file else (prior or {}).get("db_path"),
-                   (current or {}).get("db_path"), client_link, (prior or {}).get("sheets") if same_file else None)
+                   (current or {}).get("db_path"), client_link,
+                   client_sheets or ((prior or {}).get("sheets") if same_file else None))
     progress(0.5, f"Recomputing {len(sess.formula_cells):,} formula cells and checking each against Excel")
     val = sess.validate()
     progress(0.7, "Finding levers and outputs")
@@ -485,7 +489,7 @@ def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: boo
     """How far the client model's timeline moved: first period of the current model vs the prior one, on the
     client sheets the overlay reads (12 if they can't be compared)."""
     src = sess.prior or sess.ov
-    sheets = (prior or {}).get("sheets") if same_file else None
+    sheets = sess.client_sheets or ((prior or {}).get("sheets") if same_file else None)
     for s in sorted(sheets or {k[1] for k in sess.ext_cached} or []):
         a, b = src.timeline(s), sess.current.timeline(s) if sess.current else {}
         if a and b:

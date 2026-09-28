@@ -267,7 +267,9 @@ def check(f: dict, pg: dict[int, str]) -> dict:
                       else f"number {f['value']} doesn't match {f['value_text']}"))
     # A quote taken from a table inherits that table's status (it's in the page's <!-- table id (status) --> marker).
     for tid, status in source_tables(f, pg):
-        if status not in ("verified", "approved", "edited", "resolved"):
+        if status == "unread":  # quoted from the PDF's own text while the table waits to be read: that text is real
+            items.append((True, f"from table {tid}, still being read; the quote is the PDF's own text"))
+        elif status not in ("verified", "approved", "edited", "resolved"):
             items.append((False, f"from table {tid}, which is {status}: settle the table first"))
     waived = {w["check"]: w for w in f.get("waivers") or []}
     items = [(True, f"{t} — waived by {waived[t]['by']}: {waived[t]['note']}") if not ok and t in waived else (ok, t)

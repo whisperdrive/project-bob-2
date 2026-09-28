@@ -134,8 +134,11 @@ steps, each checked by a person before the next relies on it:
    extra service: Azure Document Intelligence's layout model reads layout better and is an option for later.
    Every table is cropped, rendered at 200 dpi and transcribed by a vision model, then checked. A table with a text
    layer must match it (every number on the page, each row's numbers on one line in order, the same label words,
-   so "$m" for "A$m" is caught). A picture-only table gets a second, independent read by the reviewer model,
-   compared number by number. PPTX tables and chart data are read from the file. A table that fails goes through the
+   so "$m" for "A$m" is caught). When it does, no second read is needed. A picture-only table, or one that fails
+   the check, gets a second, independent read by the reviewer model, compared number by number. The tables most
+   likely to hold the key figures (up to 12, ranked by valuation words in the table and on its page) are read
+   first. The report then counts as read, so its facts and the model steps start. The other tables are read in
+   the background: until one is, its text comes straight from the PDF, which facts can already quote. PPTX tables and chart data are read from the file. A table that fails goes through the
    **review loop** (below); anything the loop can't settle is "Check": the page shows the image beside the
    transcription and every round, and the person approves, takes the reviewer's read or edits it. Edits are
    re-checked against the page.
@@ -187,6 +190,16 @@ steps, each checked by a person before the next relies on it:
      beta, terminal value, ...), charts, external links or the adviser's name, is a standalone overlay. The
      adviser's name is searched in the text, sheet names and file properties when it's set as
      `VALUATION_DESK_OVERLAY_MARKERS` in `.env`, so it stays out of the repo.
+
+   Which version is earlier is decided by the identified valuation date, then the date in the file name
+   ("20250523 …", "Jun 25", "FY26", "BP25"), then the timeline's first period. When the overlay sits in a copy of a
+   client model that is also uploaded as its own file (v2.1 = v2.0 plus an overlay sheet), the client's own file
+   is the prior client model. The overlay's copy of the client sheets is then fed from it, so feeding the prior
+   model checks the copy matches the file. Each suggestion lists plain checks (✓ / ✗ / ?) and gets a second
+   opinion from the reviewer model on the same evidence. The model can disagree, with reasons, and its assignment
+   can be taken with one click; nothing is assigned until the person confirms. Only one suggestion runs at a
+   time, and a workbook's external-link tables are built while it's processed, so suggestions don't write to a
+   model.db that others are reading.
 
    The report's facts then add the stronger evidence: an overlay sheet holds the report's conclusions or
    valuation-only assumptions (label and value must both agree), or a DCF that `valuation.py` reproduces, or reads

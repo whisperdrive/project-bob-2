@@ -244,8 +244,11 @@ def read_and_check(reader: Reader, t: dict, png: bytes, text_lines: list[str] | 
     if not whole_page and not first["is_table"]:
         return {**t, "is_table": False, "markdown": "", "description": first["description"], "status": "figure",
                 "check": None}
-    second = reader.page(png, t["where"], True) if whole_page else reader.table(png, t["where"], True)
     check = check_text_layer(first["markdown"], text_lines) if text_lines else None
+    if check and check["ok"]:  # the PDF's own text confirms every number and word: no second read needed
+        return {**t, "is_table": True, "title": first.get("title") or None, "markdown": first["markdown"],
+                "check": check, "status": "verified"}
+    second = reader.page(png, t["where"], True) if whole_page else reader.table(png, t["where"], True)
     agree = compare_reads(first["markdown"], second["markdown"])
     ok = check["ok"] if check else agree["ok"]
     return {**t, "is_table": True, "title": first.get("title") or None, "markdown": first["markdown"],
@@ -320,10 +323,12 @@ def resolve_table(reader: Reader, t: dict, png: bytes, rounds: int = MAX_ROUNDS)
     return {"source": t["source"], "text_layer": bool(lines), "rounds": thread, "outcome": "resolved" if resolved else "escalated"}
 
 
-def resolve_tables(doc: dict, out_dir: str | Path, model: str, reviewer_model: str, progress=None, on_usage=None) -> dict:
-    """The loop on every flagged table of a read document. Returns {"resolved", "escalated", "episodes"}."""
+def resolve_tables(doc: dict, out_dir: str | Path, model: str, reviewer_model: str, progress=None, on_usage=None,
+                   ids: set | None = None) -> dict:
+    """The loop on every flagged table of a read document (or those in ids). Returns {"resolved", "escalated",
+    "episodes"}."""
     progress = progress or (lambda frac, msg: None)
-    todo = [t for t in doc["tables"] if t.get("status") == "flagged" and t.get("png")]
+    todo = [t for t in doc["tables"] if t.get("status") == "flagged" and t.get("png") and (ids is None or t["id"] in ids)]
     if not todo:
         return {"resolved": 0, "escalated": 0, "episodes": []}
     reader = Reader(model, reviewer_model, on_usage)
@@ -499,7 +504,7 @@ def _xy_cut(items: list[dict], lh: float, depth: int = 0) -> list[list[dict]]:
     return [items]
 
 
-def _pdf(path: str, out_dir: Path, reader: Reader | None, progress) -> dict:
+def _pdf(path: str, out_dir: Path, reader: Reader | None, progress, key_only: bool = False) -> dict:
     import pdfplumber
     pages, tables, jobs = [], [], []
     with pdfplumber.open(path) as pdf:
@@ -576,7 +581,7 @@ def _pdf(path: str, out_dir: Path, reader: Reader | None, progress) -> dict:
                     blocks.append((seq, "heading" if heading else "text", ln["text"], gap))
                     prev = ln
             pages.append({"n": pno, "blocks": sorted(blocks, key=lambda b: b[0])})
-    _read_all(reader, jobs, out_dir, progress)
+    _read_all(reader, jobs, out_dir, progress, pages, key_only)
     return {"kind": "pdf", "pages": pages, "tables": tables}
 
 
@@ -621,15 +626,44 @@ def table_md(t: dict) -> str:
     if t.get("status") == "figure":
         return f"*[Figure: {t.get('description') or 'image'}]*"
     md = t.get("final_markdown") or t.get("markdown") or ""
+    if not md and t.get("status") == "unread" and t.get("text_lines"):
+        # not read yet: the PDF's own text for now, so the facts can already be found and quoted from it
+        return f"<!-- table {t['id']} (unread) -->\n" + "  \n".join(t["text_lines"])
     if not md:
-        return f"*[Table {t['id']}: not read]*"
+        return f"*[Table {t['id']}: not read yet]*" if t.get("deferred") else f"*[Table {t['id']}: not read]*"
     if t.get("source") == "page image":
         return md
     cap = f"**{t['title']}**\n\n" if t.get("title") else ""
     return f"<!-- table {t['id']} ({t.get('status')}) -->\n{cap}{md}"
 
 
-def _read_all(reader: Reader | None, jobs: list, out_dir: Path, progress) -> None:
+# ---- which tables first -----------------------------------------------------------------------------------------
+# The steps after the report need its key figures (target, valuation date, conclusions, key assumptions), which
+# sit in a few tables. Those are read first; the report counts as read once they are, and the rest are read in
+# the background (engagement.py) while the facts are extracted and the models are worked on.
+KEY_WORDS = re.compile(r"valuation|enterprise value|equity value|discount rate|\bwacc\b|terminal|growth|multiple|"
+                       r"net debt|preferred|\brange\b|sensitivit|conclu|assumption|cost of (?:equity|capital|debt)|"
+                       r"gearing|\bbeta\b|risk premium|summary", re.I)
+KEY_TABLES = 12
+
+
+def _page_texts(pages: list[dict]) -> dict[int, str]:
+    return {p["n"]: " ".join(str(b[2]) for b in p["blocks"] if len(b) > 2 and b[1] in ("text", "heading"))
+            + " " + (p.get("title") or "") for p in pages}
+
+
+def rank_tables(tables: list[dict], pages: list[dict]) -> list[tuple[int, dict]]:
+    """[(score, table)], most likely to hold key figures first: valuation words in the table's own text count
+    three times those on its page; then page order."""
+    text = _page_texts(pages)
+    words = lambda s: {m.lower() for m in KEY_WORDS.findall(s or "")}
+    scored = [(3 * len(words(" ".join(t.get("text_lines") or []) + " " + (t.get("title") or "")))
+               + len(words(text.get(t["page"], ""))), t) for t in tables]
+    return sorted(scored, key=lambda x: (-x[0], x[1]["page"], x[1]["id"]))
+
+
+def _read_all(reader: Reader | None, jobs: list, out_dir: Path, progress, pages: list | None = None,
+              key_only: bool = False) -> None:
     (out_dir / "tables").mkdir(parents=True, exist_ok=True)
     for t, png, _ in jobs:
         t["png"] = f"tables/{t['id']}.png"
@@ -640,6 +674,12 @@ def _read_all(reader: Reader | None, jobs: list, out_dir: Path, progress) -> Non
         for t, _, _ in jobs:
             t.update(status="unread", markdown="", check=None)
         return
+    if key_only and len(jobs) > KEY_TABLES:
+        key = {t["id"] for score, t in rank_tables([j[0] for j in jobs], pages or [])[:KEY_TABLES] if score > 0}
+        for t, _, _ in jobs:
+            if t["id"] not in key:
+                t.update(status="unread", markdown="", check=None, deferred=True)
+        jobs = [j for j in jobs if j[0]["id"] in key]
     done = 0
 
     def one(job):
@@ -686,7 +726,7 @@ def _chart_md(chart) -> str:
     return _grid_md(rows)
 
 
-def _pptx(path: str, out_dir: Path, reader: Reader | None, progress) -> dict:
+def _pptx(path: str, out_dir: Path, reader: Reader | None, progress, key_only: bool = False) -> dict:
     from PIL import Image
     from pptx import Presentation
     prs = Presentation(path)
@@ -740,7 +780,7 @@ def _pptx(path: str, out_dir: Path, reader: Reader | None, progress) -> dict:
         if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip():
             blocks.append((10 ** 12, "text", "> Speaker notes: " + slide.notes_slide.notes_text_frame.text.strip(), True))
         pages.append({"n": sno, "title": title, "blocks": sorted(blocks, key=lambda b: b[0])})
-    _read_all(reader, jobs, out_dir, progress)
+    _read_all(reader, jobs, out_dir, progress, pages, key_only)
     return {"kind": "pptx", "pages": pages, "tables": tables}
 
 
@@ -762,17 +802,50 @@ def render(doc: dict) -> str:
     return doc["markdown"]
 
 
+def read_rest(doc: dict, out_dir: str | Path, model: str, reviewer_model: str, on_usage=None, progress=None,
+              on_table=None) -> int:
+    """Read the tables process(key_only=True) left for later, most likely to matter first. on_table(t) is called
+    as each one is done (so it can be saved at once). Returns how many were read."""
+    progress = progress or (lambda frac, msg: None)
+    todo = [t for score, t in rank_tables([t for t in doc["tables"] if t.get("deferred") and t.get("status") == "unread"
+                                           and t.get("png")], doc["pages"])]
+    if not todo:
+        return 0
+    reader = Reader(model, reviewer_model, on_usage)
+    done = 0
+
+    def one(t):
+        try:
+            png = (Path(out_dir) / t["png"]).read_bytes()
+            lines = t.get("text_lines") if t["source"] == "text-layer table" else None
+            t.update(read_and_check(reader, t, png, lines))
+        except Exception as e:
+            t.update(status="error", markdown="", error=f"{type(e).__name__}: {e}")
+        t.pop("deferred", None)
+        return t
+
+    with ThreadPoolExecutor(READERS) as pool:
+        for t in pool.map(one, todo):
+            done += 1
+            progress(done / len(todo), f"Read and checked {done} of {len(todo)} remaining tables")
+            if on_table:
+                on_table(t)
+    return done
+
+
 def process(path: str, out_dir: str | Path, model: str = "gpt-6-luna", reviewer_model: str = "gpt-6-sol",
-            progress=None, on_usage=None, read: bool = True) -> dict:
+            progress=None, on_usage=None, read: bool = True, key_only: bool = False) -> dict:
+    """Read a report. key_only: read only the tables most likely to hold the key figures now (up to KEY_TABLES);
+    the others are marked deferred for read_rest()."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     progress = progress or (lambda frac, msg: None)
     reader = Reader(model, reviewer_model, on_usage) if read else None
     ext = Path(path).suffix.lower()
     if ext == ".pdf":
-        doc = _pdf(path, out_dir, reader, progress)
+        doc = _pdf(path, out_dir, reader, progress, key_only)
     elif ext == ".pptx":
-        doc = _pptx(path, out_dir, reader, progress)
+        doc = _pptx(path, out_dir, reader, progress, key_only)
     else:
         raise ValueError(f"{Path(path).name}: reports must be .pdf or .pptx (save .ppt / .docx as PDF first)")
     (out_dir / "document.md").write_text(render(doc), encoding="utf-8")

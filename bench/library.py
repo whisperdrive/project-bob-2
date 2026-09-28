@@ -261,6 +261,9 @@ def process(fid: int) -> None:
         _update(fid, status="processing", step="Opening workbook", pct=0, error=None, started_at=time.time())
         stats = build_map.main(f["source_path"], f["out_dir"], _stage(fid, 0.0, 0.8))
         _update(fid, sheets=stats["sheets"], line_items=stats["line_items"], build_secs=stats["secs"])
+        _update(fid, step="Reading external links", pct=0.81)
+        import extlinks  # now, while nothing else reads this model.db: later they'd be written under readers' feet
+        extlinks.build(f["source_path"], f["db_path"])
 
         _update(fid, step="Identifying target and valuation date", pct=0.82)
         ident = identmod.identify(f["db_path"], f["filename"], file_id=fid)

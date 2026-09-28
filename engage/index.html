@@ -147,6 +147,7 @@ tr.click:hover td { background: var(--raised); }
 .checks { list-style: none; padding: 0; margin: 0; font-size: 12.5px; }
 .checks li::before { content: "✓ "; color: var(--ok); font-weight: 700; }
 .checks li.no::before { content: "✗ "; color: var(--bad); }
+.checks li.unk::before { content: "? "; color: var(--warn); font-weight: 700; }
 details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
 .quote { font-size: 12.5px; color: var(--muted); border-left: 3px solid var(--rule-strong); padding-left: 8px; margin-top: 4px; }
 .why { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
@@ -378,7 +379,7 @@ async function refresh(force = false) {
 function schedule() {
   clearTimeout(pollTimer);
   if (!E) return;
-  const working = E.documents.some(d => busy(d.status) || busy(d.facts_status)) || E.workbooks.some(w => busy(w.status))
+  const working = E.documents.some(d => busy(d.status) || busy(d.facts_status) || ["queued", "reading"].includes(d.tables_status)) || E.workbooks.some(w => busy(w.status))
     || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || E.roles_pending || uploads.some(u => !u.done);
   if (working) pollTimer = setTimeout(async () => { await refresh(); spend(); }, 1500);
 }
@@ -471,6 +472,12 @@ function pipeline() {
   else if (fBusy) Object.assign(rep, {state: "running", line: "key facts", live: fBusy.facts_step || "Starting",
     timer: fBusy.facts_status === "running" ? [fBusy.facts_started_at, null, fBusy.facts_secs] : null,
     flow: [FACT_FLOW, stageOf(fBusy.facts_step, [[/Extracting/i, 0], [/Reviewing/i, 2], [/review loop/i, 3], [/Writing down/i, 5]])], loop: /review loop/i.test(fBusy.facts_step || "")});
+  else if (docs.some(d => ["queued", "reading"].includes(d.tables_status)) && !you) {
+    const d = docs.find(d => ["queued", "reading"].includes(d.tables_status));
+    Object.assign(rep, {state: "running", line: `${d.tables_left ?? ""} tables in the background`,
+      live: `Reading the report's other ${d.tables_left ?? ""} tables in the background. The key figures are in, so the roles, compare, map and Python overlay don't wait.`,
+      timer: d.tables_started_at ? [d.tables_started_at, d.n_tables ? (d.n_tables - (d.tables_left || 0)) / d.n_tables : null, null] : null});
+  }
   else if (you || flagged) Object.assign(rep, {state: "you", line: [you && `${you} fact(s)`, flagged && `${flagged} table(s)`].filter(Boolean).join(", ") + " need you",
     todo: {text: you ? `Decide ${you} fact(s) the agents couldn't settle` : `Check ${flagged} table(s) the agents couldn't settle`, go: "reference"}});
   else if (f.length) Object.assign(rep, {state: "done", line: `${f.filter(x => x.status === "approved").length} facts approved`});
@@ -561,6 +568,14 @@ function timing(started, pct, last) {
   else if (last) bits.push(`last run took ${dur(last)}`);
   return bits.join(" · ");
 }
+// the report's other tables, read in the background once the key ones are in
+function restLine(d) {
+  if (d.tables_status === "error") return `<div class="small" style="color:var(--warn)">Background table reading stopped: ${esc(d.tables_error || "")}</div>`;
+  if (!["queued", "reading"].includes(d.tables_status)) return "";
+  const total = d.n_tables || 0, left = d.tables_left ?? 0, pct = total ? (total - left) / total : null;
+  return `<div class="small muted" style="margin-top:4px">Key tables read. ${left} more being read in the background; the facts and the models carry on meanwhile.</div>
+    ${d.tables_started_at ? `<div class="small muted" data-timer="${d.tables_started_at}|${pct ?? ""}|">${timing(d.tables_started_at, pct, null)}</div>` : ""}`;
+}
 function statusCell(s, step, pct, err, started, took, last) {
   if (s === "error") return `<span class="pill bad">Failed</span><div class="small" style="color:var(--bad)">${esc(err)}</div>`;
   if (s === "done") return `<span class="pill ok">Ready</span>${took ? `<div class="small muted">took ${dur(took)}</div>` : ""}${err ? `<div class="small" style="color:var(--warn)">${esc(err)}</div>` : ""}`;
@@ -589,7 +604,7 @@ function viewFiles() {
     ${docs.length ? `<div class="scroll"><table><thead><tr><th>File</th><th>Pages</th><th>Tables</th><th>Status</th><th></th></tr></thead><tbody>
     ${docs.map(d => `<tr><td><b>${esc(d.filename)}</b><div class="small muted">${d.kind.toUpperCase()} · ${size(d.size)}</div></td>
       <td class="num">${d.pages ?? ""}</td><td class="num">${d.n_tables ?? ""}${d.n_flagged ? ` <span class="pill warn">${d.n_flagged} to check</span>` : (d.status === "done" && d.n_tables ? ` <span class="pill ok">checked</span>` : "")}</td>
-      <td>${statusCell(d.status, d.step, d.pct, d.error, d.started_at, d.doc_secs, d.doc_secs)}</td>
+      <td>${statusCell(d.status, d.step, d.pct, d.error, d.started_at, d.doc_secs, d.doc_secs)}${restLine(d)}</td>
       <td class="nowrap">${d.status === "done" ? `<button class="btn small" data-view="${d.id}">Review</button>` : ""}
       ${d.status === "error" || (d.status === "done" && d.error) ? `<button class="btn small" data-retry="${d.id}">Retry</button>` : ""}
       ${d.status === "done" && !busy(d.facts_status) ? `<button class="btn small ghost" data-rebuilddoc="${d.id}" title="Read it again from scratch">Rebuild</button>` : ""}
@@ -670,11 +685,13 @@ function tableStatus(t) {
   const s = t.status;
   return s === "verified" ? `<span class="pill ok">Verified</span>` : s === "approved" ? `<span class="pill ok">Approved</span>` : s === "edited" ? `<span class="pill ok">Edited</span>`
     : s === "resolved" ? `<span class="pill ok" title="Settled by the review loop">Resolved by agents</span>`
+    : s === "unread" && t.deferred ? `<span class="pill info" title="Read in the background; the key tables were read first">Reading later</span>`
     : s === "flagged" ? `<span class="pill warn">Check</span>` : s === "figure" ? `<span class="pill">Figure</span>` : s === "error" ? `<span class="pill bad">Not read</span>` : `<span class="pill">${esc(s || "")}</span>`;
 }
 function checkLine(t) {
   const c = t.final_check || t.check, s = t.second_read;
   if (t.status === "figure") return esc(t.description || "");
+  if (t.status === "unread" && t.deferred) return "Queued: the tables with the key figures were read first. Until this one is read, its text comes straight from the PDF.";
   if (c?.method === "native") return esc(c.note);
   if (c?.method === "text layer") {
     const bad = [...(c.not_in_source || []).map(n => `${n} not on the page`), ...(c.not_transcribed || []).map(n => `${n} missed`),
@@ -692,7 +709,7 @@ function loopLine(t) {
 }
 function tablesCard() {
   if (!DOC || DOC.loading) return `<h2>Tables</h2><p class="sub">Loading…</p>`;
-  const ts = DOC.doc.tables, flagged = ts.filter(t => ["flagged", "error", "unread"].includes(t.status));
+  const ts = DOC.doc.tables, flagged = ts.filter(t => ["flagged", "error"].includes(t.status) || (t.status === "unread" && !t.deferred));
   const shown = state.tableFilter === "flagged" && flagged.length ? flagged : ts;
   const sel = ts.find(t => t.id === state.table) || (flagged[0] || null);
   return `<div class="row" style="justify-content:space-between"><div><h2>Tables in ${esc(DOC.filename)}</h2>
@@ -918,8 +935,29 @@ function viewRoles() {
   return `<div class="lede"><div><h1><b>Who's who</b></h1><p>Which file plays which part. The first suggestion comes from the workbooks alone, as soon as they're read: how alike they are (two versions of one client model are mostly the same; a copy with extra valuation sheets holds the overlay), and what each one contains (valuation terms, charts, links to other files, the DCFs that recompute). As the report's facts come in, where its figures sit sharpens it. The overlay is a set of sheets, because it sometimes sits inside a copy of the client model.</p></div></div>
   <div class="row"><button class="btn" id="suggest">Suggest again now</button>
   <button class="btn primary" id="confirmRoles" ${Object.keys(CFG.roles).some(k => roleDraft[k]) ? "" : "disabled"}>Confirm roles</button>${status}</div>
+  ${rolesCheckCard(sug, docs, wbs)}
   <div class="flow">${["prior_report", "prior_overlay", "prior_model", "current_model"].map(node).join("")}</div>
   ${likenessCard(sug, wbs)}${profilesCard(sug, wbs)}`;
+}
+// checks on the suggestion, and the reviewer model's second opinion on the same evidence
+function rolesCheckCard(sug, docs, wbs) {
+  if (!sug?.roles) return "";
+  const checks = sug.checks || [], so = sug.second_opinion;
+  const li = c => `<li class="${c.ok === false ? "no" : c.ok == null ? "unk" : ""}">${esc(c.text)}</li>`;
+  const file = (role, id) => (role === "prior_report" ? docs : wbs).find(x => x.id === id)?.filename || "";
+  const ROLE = {prior_report: "Prior report", prior_model: "Prior client model", prior_overlay: "Prior overlay", current_model: "Current client model", overlay_sheets: "Overlay sheets"};
+  let op = "";
+  if (so?.error) op = `<p class="small muted" style="margin:6px 0 0">Second opinion unavailable: ${esc(so.error)}</p>`;
+  else if (so) {
+    const diff = so.differs || [];
+    op = `<div style="margin-top:8px"><div class="row small"><b>Second opinion</b> <span class="muted">(${esc(so.model)}, same evidence)</span>
+      ${diff.length ? `<span class="pill warn">Would assign differently</span>` : `<span class="pill ok">Agrees</span>`} <span class="pill">${esc(so.confidence)} confidence</span>
+      ${diff.length ? `<button class="btn small" id="useSecond">Use the second opinion</button>` : ""}</div>
+      ${diff.length ? `<ul class="why" style="color:var(--ink)">${diff.map(k => `<li><b>${ROLE[k]}:</b> ${k === "overlay_sheets" ? esc((so.overlay_sheets || []).join(", ")) : esc(so[k] || "none")} <span class="muted">(suggested: ${k === "overlay_sheets" ? esc((sug.roles.prior_overlay?.sheets || []).join(", ")) : esc(file(k, sug.roles[k]?.id) || "none")})</span></li>`).join("")}</ul>` : ""}
+      <ul class="why">${(so.reasons || []).map(r => `<li>${esc(r)}</li>`).join("")}</ul></div>`;
+  }
+  return `<div class="card"><h2>Checks on this suggestion</h2><p class="sub">Plain tests of the assignment above, then a second model's view of the same evidence. Nothing is assigned until you confirm.</p>
+    <ul class="checks">${checks.map(li).join("")}</ul>${op}</div>`;
 }
 const shortName = n => n && n.length > 34 ? n.slice(0, 31) + "…" : (n || "");
 function likenessCard(sug, wbs) {
@@ -980,6 +1018,17 @@ bind.roles = () => {
     const role = c.dataset.role, cur = roleDraft[role], w = E.workbooks.find(x => x.id === cur.id); roleDraft._dirty = true;
     const set = new Set(cur.sheets || w.sheet_names); c.checked ? set.add(c.dataset.sheet) : set.delete(c.dataset.sheet);
     cur.sheets = w.sheet_names.filter(s => set.has(s));
+  });
+  $("#useSecond")?.addEventListener("click", () => {
+    const so = E.roles_suggested.second_opinion, wbs = E.workbooks, docs = E.documents;
+    const wb = n => wbs.find(w => w.filename === n), dc = n => docs.find(d => d.filename === n);
+    const set = (role, x, kind, sheets = null) => { roleDraft[role] = x ? {kind, id: x.id, sheets, why: [`second opinion (${so.model})`]} : null; };
+    if (so.prior_report !== undefined) set("prior_report", dc(so.prior_report), "document");
+    set("prior_overlay", wb(so.prior_overlay), "workbook", so.overlay_sheets?.length ? so.overlay_sheets : null);
+    set("prior_model", wb(so.prior_model), "workbook", so.prior_model && so.prior_model === so.prior_overlay
+      ? (wb(so.prior_model)?.sheet_names || []).filter(x => !(so.overlay_sheets || []).includes(x)) : null);
+    set("current_model", wb(so.current_model), "workbook");
+    roleDraft._dirty = true; toast("The second opinion's assignment is in the boxes below: check it, then confirm."); render();
   });
   $("#confirmRoles").onclick = async () => {
     const out = {}; for (const role of Object.keys(CFG.roles)) out[role] = roleDraft[role] ? {kind: roleDraft[role].kind, id: roleDraft[role].id, sheets: roleDraft[role].sheets} : null;

@@ -15,6 +15,7 @@ import json
 import re
 import sqlite3
 import sys
+import threading
 import zipfile
 from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import unquote
@@ -133,12 +134,26 @@ def build(path: str, db_path: str) -> dict:
             "rows_reading": len({(k[0], k[1]) for k in refs}), "refs": sum(refs.values())}
 
 
-def ensure(path: str, db_path: str) -> None:
-    """Build the tables once per model.db."""
+_BUILDING: dict[str, threading.Lock] = {}
+_GUARD = threading.Lock()
+
+
+def has_tables(db_path: str) -> bool:
     with rodb.connect(db_path) as db:
-        have = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if "extbooks" not in have:
-        build(path, db_path)
+        return bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extbooks'").fetchone())
+
+
+def ensure(path: str, db_path: str) -> None:
+    """Build the tables once per model.db. Workbooks processed since link tables were added have them already
+    (library.py builds them while the workbook is being processed); for older ones this builds them once, one
+    caller at a time, so two callers never write the same file at once."""
+    if has_tables(db_path):
+        return
+    with _GUARD:
+        lock = _BUILDING.setdefault(str(db_path), threading.Lock())
+    with lock:
+        if not has_tables(db_path):
+            build(path, db_path)
 
 
 def summary(db_path: str) -> list[dict]:
