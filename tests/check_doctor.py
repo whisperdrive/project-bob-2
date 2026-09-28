@@ -125,8 +125,8 @@ def main() -> None:
     b = examine(out, "B", overlay_file(out, "overlay_B.xlsx", prior, macro_function), p_prior, p_cur)
     fn = causes(b, "workbook")["function"]
     assert fn["n_cells"] == pack.YEARS and "DISCRATE" in fn["detail"], fn
-    assert not b["holds"]["safe"] and all(("Discount rate" in x["why"] or "timeline" in x["why"])
-                                          for x in b["holds"]["unsafe"]), b["holds"]
+    assert not b["holds"]["safe"] and all(x["why"].endswith("changes between feeds") for x in b["holds"]["unsafe"]), \
+        b["holds"]
     assert b["whole_model"]["not_compiled"] == 1, b["whole_model"]
     version = next(f for f in b["files"] if f["check"].startswith("Last year's client model is the version"))
     assert version["status"] == "ok", version

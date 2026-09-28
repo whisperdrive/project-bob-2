@@ -31,6 +31,7 @@ by recomputing the figures on every feed first.
 import inspect
 import json
 import re
+import time
 from collections import Counter
 from datetime import date
 
@@ -42,6 +43,8 @@ from xlruntime import XLError, same, serial, to_date
 
 WALK_LIMIT = 40000      # cells looked at per figure and feed
 CLOSURE_LIMIT = 20000   # cells looked at to decide a hold is safe
+HOLD_CANDIDATES = 400   # root cells checked for a hold, at most ...
+HOLD_SECONDS = 90       # ... and for at most this long
 # functions that fetch data from a provider's add-in: Excel's saved values are all a file holds of them
 ADDIN = re.compile(r"^(CIQ|CIQ\w+|FDS\w*|BDP|BDH|BDS|BQL\w*|SPG\w*|RDP\.\w+|TR|RHISTORY|DSGRID|PITCHBOOK\w*|MSCI\w*|"
                    r"CAPIQ\w*|IQ_\w+|SNL\w*|REFINITIV\w*|EIKON\w*)$", re.I)
@@ -69,6 +72,7 @@ class Doctor:
         self.feed = None
         self._reads = {}
         self._formula = {}
+        self._depends = {}  # cell -> why it can change between feeds, or None: its whole closure is clean
         self.xlsm = (self.w["overlay"].get("filename") or "").lower().endswith(".xlsm")
 
     # ---- cells -----------------------------------------------------------------------------------------------
@@ -116,10 +120,11 @@ class Doctor:
         return self.labels.get((s, r), "")
 
     # ---- the walk --------------------------------------------------------------------------------------------
-    def walk(self, start, bad) -> tuple[list, int]:
+    def walk(self, start, bad) -> tuple[list, int, bool]:
         """From start, follow the cells read while bad(cell) holds. A bad formula cell none of whose reads is
         bad (or that calls a function Python doesn't have) is a root; so is a bad input or client value.
-        -> ([(root, unsupported functions it calls)], number of bad cells on the way)."""
+        -> ([(root, unsupported functions it calls)], number of bad cells on the way, stopped at WALK_LIMIT:
+        then the roots are the first ones reached, not necessarily all)."""
         memo = {}
 
         def is_bad(k):
@@ -147,7 +152,7 @@ class Doctor:
             if not kids or unknown:
                 roots.append((k, unknown))
             stack.extend(x for x in kids if x not in seen)
-        return roots, n
+        return roots, n, bool(stack)
 
     # ---- a root's cause --------------------------------------------------------------------------------------
     def name_why(self, name: str, sheet: str) -> str:
@@ -287,7 +292,7 @@ class Doctor:
         figs = self.figures()
         feeds = ["workbook"] + (["prior"] if w.get("prior") and not w.get("same_file") else []) + \
             (["current"] if w.get("current") else [])
-        values, roots, logs, bad_counts = {}, {}, {}, {}
+        values, roots, logs, bad_counts, truncated = {}, {}, {}, {}, {}
         wb_memo = {}
         for i, feed in enumerate(feeds):
             self.progress(0.05 + 0.5 * i / len(feeds), f"Following each figure back on the {feed} feed")
@@ -307,8 +312,10 @@ class Doctor:
                 for f, v in zip(figs, vals):
                     if not bad(f["key"]):
                         continue
-                    rs, n = self.walk(f["key"], bad)
+                    rs, n, cut = self.walk(f["key"], bad)
                     n_bad += n
+                    if cut:
+                        truncated.setdefault(feed, []).append(f["label"])
                     found += [(f["label"], self.classify(k, unk, feed)) for k, unk in rs]
                 values[feed] = [_show(v) for v in vals]
                 roots[feed] = self.group(found)
@@ -349,7 +356,8 @@ class Doctor:
                  "not_compiled_examples": (self.summary.get("not_compiled") or [])[:5],
                  "circular": v.get("cycles"), "held": len(sess.holds)}
         sess.configure("workbook")
-        return {"feeds": feeds, "layers": layers, "roots": roots, "bad_cells": bad_counts, "files": files,
+        return {"feeds": feeds, "layers": layers, "roots": roots, "bad_cells": bad_counts, "truncated": truncated,
+                "files": files,
                 "rows": rows, "holds": holds, "whole_model": whole,
                 "wiring": {k: (w.get(k) or {}).get("filename") for k in ("overlay", "prior", "current")}}
 
@@ -540,8 +548,12 @@ class Doctor:
         self.use("workbook")
         _, _, months = _feed(self.summary, "current", None, None)
         moving = set(self.levers) | (set(sess.rolled_timeline(months)) if self.w.get("current") else set())
-        safe, unsafe = [], []
-        for c in cand:
+        safe, unsafe, skipped = [], [], 0
+        t0 = time.time()
+        for i, c in enumerate(cand):
+            if i >= HOLD_CANDIDATES or time.time() - t0 > HOLD_SECONDS:
+                skipped = len(cand) - i
+                break
             k = c["key"]
             w = self.saved(k)
             if w is None or _err(w):
@@ -557,26 +569,42 @@ class Doctor:
             check = self.try_holds({x["key"][1:]: x["value"] for x in safe})
         for x in safe + unsafe:
             x.pop("key", None)
-        return {"safe": safe, "unsafe": unsafe[:30], "check": check}
+        return {"safe": safe, "unsafe": unsafe[:30], "n_unsafe": len(unsafe), "not_checked": skipped, "check": check}
 
     def depends(self, k, moving: set) -> str | None:
-        """Why a cell's value can change between feeds (it reads the client model or an assumption), or None."""
+        """Why a cell's value can change between feeds (it reads the client model or an assumption), or None.
+        Remembered: a closure walked to the end with nothing found is clean for every cell in it."""
+        memo = self._depends
+        if k in memo:
+            return memo[k]
         seen, stack = set(), [k]
         while stack:
             if len(seen) > CLOSURE_LIMIT:
-                return "it reads too many cells to check"
+                memo[k] = "it reads too many cells to check"
+                return memo[k]
             x = stack.pop()
             if x in seen:
                 continue
             seen.add(x)
+            if x in memo:
+                if memo[x]:
+                    memo[k] = memo[x]
+                    return memo[k]
+                continue
             kind = self.kind(x)
+            why = None
             if kind == "client":
-                return f"it reads the client model ({_a1k(x)} {self.label(x)})".strip()
-            if x[0] == "" and x[1:] in moving:
+                why = f"it reads the client model ({_a1k(x)} {self.label(x)})".strip()
+            elif x[0] == "" and x[1:] in moving:
                 lev = self.levers.get(x[1:])
-                return f"it reads {'the assumption ' + lev['label'] if lev else 'the timeline'} ({_a1k(x)}), which changes between feeds"
+                why = f"it reads {'the assumption ' + lev['label'] if lev else 'the timeline'} ({_a1k(x)}), which changes between feeds"
+            if why:
+                memo[k] = why
+                return why
             if kind == "formula":
                 stack.extend(self.reads(x)[0])
+        for x in seen:
+            memo[x] = None
         return None
 
     def try_holds(self, held: dict) -> dict:
@@ -649,7 +677,11 @@ How to read it:
   answer: a runtime difference), client_error / client_differs (the client file), unmatched (a client line item
   not found this year), excel_error (Excel shows it too).
 - files: checks on which files are read. rows: client line items followed into this year's model, with their
-  history compared. holds: roots that can be held at Excel's saved value on every feed (safe) or not (why).
+  history compared. A row flagged "history differs", "sign" or "units" is most likely the wrong line item picked
+  this year (or its sign or units changed): say so plainly and name it. "forecast differs" is weaker: a check.
+  "missing" means the line item wasn't found this year, so its values count as blank. holds: roots that can be held at Excel's saved value on every feed (safe) or not (why).
+- truncated: per feed, figures whose walk stopped at its cell limit: the roots found are the first ones reached,
+  not necessarily all of them, and bad_cells is a floor. Say so if it matters to a finding.
 - whole_model: counts for all formula cells, not only the figures'.
 
 Reply with:
@@ -740,7 +772,10 @@ def report_text(res: dict) -> str:
     for feed, groups in (ev.get("roots") or {}).items():
         if not groups:
             continue
-        L += ["", f"Where it starts, {feed} feed ({ev.get('bad_cells', {}).get(feed, 0):,} wrong cell(s) on the way):"]
+        cut = (ev.get("truncated") or {}).get(feed)
+        L += ["", f"Where it starts, {feed} feed ({ev.get('bad_cells', {}).get(feed, 0):,} wrong cell(s) on the way"
+                  + (f"; stopped at {WALK_LIMIT:,} cells for {', '.join(cut)}: the first causes reached, maybe not all"
+                     if cut else "") + "):"]
         for g in groups[:10]:
             ex = g["example"]
             L.append(f"- {g['title']}: {g['detail']}")
@@ -775,7 +810,8 @@ def report_text(res: dict) -> str:
     h = ev.get("holds") or {}
     if h.get("safe") or h.get("unsafe"):
         L += ["", f"Holds: {len(h.get('safe') or [])} cell(s) safe to hold at Excel's value; "
-                  f"{len(h.get('unsafe') or [])} not safe"]
+                  f"{h.get('n_unsafe', len(h.get('unsafe') or []))} not safe"
+                  + (f"; {h['not_checked']} not checked (too many to check in time)" if h.get("not_checked") else "")]
         if h.get("check"):
             L.append("  with them held: " + "; ".join(f"{k} errors {v['errors_before']} -> {v['errors_after']}"
                                                      for k, v in h["check"].items()))
