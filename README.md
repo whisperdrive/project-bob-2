@@ -265,10 +265,21 @@ steps, each checked by a person before the next relies on it:
      bridge items and low / high rates, with the cumulative PV chart. This adds the cash-flow levers (growth,
      CPI, the roll-forward) that the Model Desk's Scenarios step couldn't reach. `rodb.patched()` shows the
      module's values to `dcf.py` through a temporary view over model.db.
+     The tab starts from the report: `bench/dcftrace.py` takes the cell a report conclusion was matched to in
+     the Map, preferring one that ties at the report's printed precision and never one that differs. It follows
+     every cell that cell's formula reads, down to the discounting: a `SUMPRODUCT` of cash flows and a factor
+     row, or of cash flows and factors computed in the formula; an `XNPV`; an `NPV`; or the `SUM` of a
+     present-value row. The tree shows each formula in line-item words, e.g. equity value (ex-div) = cum-div
+     less the distribution payable; cum-div = the mid value; mid = the average of the PVs at the low and the
+     high rate. Every cell is checked against the Python overlay. Each discounting is recomputed independently,
+     with its rate, valuation date and convention read back from its factors, and its cash-flow row is broken
+     into the rows it adds up. Those discountings join the anchors above, so Validate and the methods work for
+     overlays whose DCF isn't a labelled `SUMPRODUCT`. The chat has the same trace as `overlay_value`.
+     `tests/make_trace_workbook.py` writes a synthetic overlay with each of these shapes.
    - **Ask**: the Model Desk's chat agent (`bench/overlay_chat.py` on `bench/agent.py`). It has the workbook tools
      on any of the three workbooks, and tools that run the overlay: `overlay_run`, `overlay_chart` (a row saved
      vs recomputed, several feeds on one chart, and optionally the rows that add up to it as stacked columns
-     underneath), `overlay_dcf`, `overlay_formula` and `overlay_inputs`. When the prior client model, recomputed
+     underneath), `overlay_dcf`, `overlay_value` (the trace above), `overlay_formula` and `overlay_inputs`. When the prior client model, recomputed
      in Python, gives the values Excel saved in every period, the chart draws them as one line; where they
      differ it keeps both and says where (the overlay's saved link values are out of date there, or the Python
      differs). It knows

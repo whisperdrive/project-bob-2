@@ -321,6 +321,12 @@ async def overlay_valuation(eid: int, cell: str | None = None):
     return await _run(engagement.overlay_valuation, eid, cell)
 
 
+@app.get("/api/engagements/{eid}/overlay/value-trace")
+async def overlay_value_trace(eid: int, start: str | None = None):
+    """How a report figure is built in the overlay, traced down to its discounting."""
+    return await _run(engagement.overlay_value_trace, eid, start)
+
+
 @app.post("/api/engagements/{eid}/overlay/dcf")
 async def overlay_dcf(eid: int, body: OverlayDcf):
     """A DCF on the live module (feed + changes), checked against the module, and under another method."""

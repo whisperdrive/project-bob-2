@@ -74,6 +74,16 @@ OVERLAY_TOOLS = [
          "cutoff": {"type": "string", "description": "'model' (default), 'none', or YYYY-MM-DD"},
          "drop_bridge": {"type": "array", "items": {"type": "string"}, "description": "labels of bridge items to leave out"}},
          "required": []}},
+    {"type": "function", "name": "overlay_value",
+     "description": "How a valuation figure is built in the overlay: from the cell a report conclusion was matched "
+                    "to (default: the conclusions that tie to the report) down through every cell it reads to the "
+                    "discounting (SUMPRODUCT, XNPV, NPV or a sum of present values). Gives each formula in line-item "
+                    "words, Excel's and the Python overlay's values, each discounting recomputed with its rate, "
+                    "valuation date and convention, and the rows its cash flows add up. Use it first for how the "
+                    "value is derived, which cash flows sit behind it, or before charting a valuation's cash flows.",
+     "parameters": {"type": "object", "properties": {
+         "cell": {"type": "string", "description": "the figure's cell, e.g. Valuation!F12 (default: the report's)"}},
+         "required": []}},
     {"type": "function", "name": "overlay_formula",
      "description": "The Python compiled for an overlay cell's line item (one function per row, the Excel formula "
                     "beside each branch), its value, and the client-model values it reads.",
@@ -95,7 +105,9 @@ Two kinds of tools:
 - Workbook tools (find, rows, trace, cells, sql, chart, dcf) read a workbook's saved formulas and values. Pass
   workbook="prior_model" or "current_model" to read a client model; the default is the overlay workbook. The
   guidance further down for these tools applies to every workbook.
-- Overlay tools run the Python overlay: overlay_run, overlay_chart, overlay_dcf, overlay_formula, overlay_inputs.
+- Overlay tools run the Python overlay: overlay_run, overlay_chart, overlay_dcf, overlay_value, overlay_formula,
+  overlay_inputs. For how the value is derived or which cash flows sit behind it, start with overlay_value: it
+  traces the report's figure down to the discounting in one call.
 Use overlay_run or overlay_chart for any what-if that changes the cash flows or rolls the valuation forward
 (growth, CPI, volumes, the discount rate or growth levers, the valuation date, this year's model); the dcf tool
 only re-discounts saved cash flows. Use overlay_dcf for discounting-method questions on the live numbers
@@ -297,6 +309,15 @@ def extra_tool(eid: int):
             return tools.chart_note(spec), [{"type": "chart", "spec": spec}]
         if name == "overlay_formula":
             return _formula_text(engagement.overlay_trace(eid, a["cell"])), []
+        if name == "overlay_value":
+            r = engagement.overlay_value_trace(eid, a.get("cell"))
+            if not r.get("selected"):
+                return "No report conclusion is matched to an overlay cell that ties to the report; pass a cell.", []
+            others = [f"{x['cell']} {x.get('label') or ''} (report {x.get('report') or '-'})" for x in r["starts"]
+                      if x["cell"] != r["selected"]]
+            return (f"Traced from {r['selected']}" + (f", the cell the report's {r['start'].get('report')} was matched to"
+                                                      if r["start"].get("report") else "") + ":\n" + r["text"]
+                    + (f"\nOther report figures to trace: {'; '.join(others)}" if others else ""))[:14000], []
         if name == "overlay_inputs":
             found = engagement.overlay_inputs(eid, a.get("text") or "")
             return ("\n".join(f"{x['cell']} {x['label']} = {_n(x['value'], 6)}" for x in found[:60])

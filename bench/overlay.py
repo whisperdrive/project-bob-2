@@ -576,6 +576,8 @@ def _dcf_cells(db, inputs: dict) -> set[tuple]:
 
     for ref in inputs["cashflow"]:
         row(ref)
+    if inputs.get("dates"):
+        row(inputs["dates"])
     for k in ("rate", "valuation_date", "terminal_date", "compare_to"):
         one(inputs.get(k))
     for a in inputs.get("adjustments") or []:
@@ -617,7 +619,7 @@ def _flows(db, inputs: dict) -> tuple[dict, dict]:
                                (sheet, r, cols[0], cols[-1])):
             if dcf._num(v) is not None:
                 flows[c] = flows.get(c, 0.0) + dcf._num(v)
-    return flows, dcf.period_ends(db, sheet0, cols0)[0]
+    return flows, dcf.period_ends(db, sheet0, cols0, inputs.get("dates"))[0]
 
 
 def _brief(r: dict) -> dict:
@@ -628,12 +630,36 @@ def _brief(r: dict) -> dict:
             "first_period": iso(r["first_period"]), "last_period": iso(r["last_period"]), "undiscounted": r["undiscounted"]}
 
 
+def trace_starts(summary: dict) -> list[dict]:
+    """Where to start tracing the valuation: the cells the report's conclusions were matched to, those that tie
+    to the report at its printed precision first, then label matches with no report figure to tie to. A match
+    that differs from the report is never used (it's likely the wrong cell)."""
+    outs = [o for o in summary.get("outputs") or [] if o.get("fact_id")]
+    tied = [o for o in outs if (o.get("tie") or {}).get("ok")]
+    rest = [o for o in outs if not o.get("tie") and re.search(r"value|valuation|\bnpv\b", o.get("label") or "", re.I)]
+    out, seen = [], set()
+    for o in tied + rest:
+        if o["cell"] not in seen:
+            seen.add(o["cell"])
+            out.append({"cell": o["cell"], "label": o.get("label"), "report": o.get("report"), "key": o.get("key"),
+                        "ties": bool((o.get("tie") or {}).get("ok")), "value": o.get("value")})
+    return out
+
+
 def dcf_anchors(summary: dict) -> list[dict]:
-    """The DCFs valuation.py finds on the overlay sheets (all of the workbook's if none are there)."""
+    """The DCFs valuation.py finds on the overlay sheets (all of the workbook's if none are there), then the
+    discountings traced down from the report's conclusions (dcftrace.py) that those don't already cover."""
+    import dcftrace
     import valuation
-    cat = valuation.catalogue(summary["wiring"]["overlay"]["db_path"])
-    mine = [a for a in cat if a["cell"].split("!")[0].strip("'") in set(summary["sheets"])]
-    return mine or cat
+    path = summary["wiring"]["overlay"]["db_path"]
+    cat = valuation.catalogue(path)
+    mine = [a for a in cat if a["cell"].split("!")[0].strip("'") in set(summary["sheets"])] or cat
+    have = {a["cell"] for a in mine} | {a.get("pv_cell") for a in mine}
+    try:
+        traced = dcftrace.anchors(path, [s["cell"] for s in trace_starts(summary)])
+    except Exception:  # the trace is extra: the label-based ones still stand
+        traced = []
+    return mine + [a for a in traced if a["cell"] not in have]
 
 
 FEED_WORDS = {"workbook": "the values saved in the overlay", "prior": "the prior client model",
@@ -720,7 +746,7 @@ def dcf_live(sess: Session, summary: dict, mode: str = "workbook", changes: dict
         runs.append(("Cumulative PV (Python overlay)", live, f1, e1))
     if method:
         runs.append(("Cumulative PV (scenario method)", sc, f1, e1))
-    chart = valuation._chart(db0, path, inputs["cashflow"][0], runs, cumulative=True)
+    chart = valuation._chart(db0, path, inputs["cashflow"][0], runs, cumulative=True, dates=inputs.get("dates"))
     if mode == "current":
         chart["note"] = (chart.get("note") or "") + (f" Periods are labelled with last year's dates; rolled forward "
                                                      f"they each move on {months} months.")

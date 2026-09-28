@@ -1158,9 +1158,44 @@ def overlay_valuation(eid: int, cell: str | None) -> dict:
     if not usable:
         return {"anchors": valuation._listing(anchors), "selected": None}
     pick = next((a for a in usable if a["cell"] == cell), usable[0])
-    v = valuation.validation(summary["wiring"]["overlay"]["db_path"], pick["cell"])
+    v = valuation.validation(summary["wiring"]["overlay"]["db_path"], pick["cell"], anchors=anchors)
     v["anchors"] = valuation._listing(anchors)
     return v
+
+
+def overlay_value_trace(eid: int, start: str | None = None) -> dict:
+    """How a report figure is built in the overlay, from the cell it was matched to down to the discounting
+    (dcftrace.py), with the Python overlay's value for every cell on the way."""
+    import dcftrace
+    import overlay as ovmod
+    import rodb
+    sess, summary = overlay_session(eid)
+    starts = ovmod.trace_starts(summary)
+    if start and start not in {x["cell"] for x in starts}:
+        starts.append({"cell": start, "label": None, "report": None, "key": None, "ties": False, "value": None})
+    if not starts:
+        return {"starts": [], "selected": None}
+    pick = next((x for x in starts if x["cell"] == start), starts[0])
+    db = rodb.connect(summary["wiring"]["overlay"]["db_path"])
+    tree = dcftrace.trace(db, pick["cell"])
+    nodes, sheets = [], set(summary["sheets"])
+
+    def walk(n):
+        if not n.get("again"):
+            nodes.append(n)
+        for c in n.get("children", []):
+            walk(c)
+    walk(tree)
+    mine = [n for n in nodes if n["cell"].rsplit("!", 1)[0].strip("'") in sheets]
+    keys = [ovmod.parse_a1(n["cell"]) for n in mine]
+
+    def run():
+        sess.configure("workbook")
+        return sess.values(keys)
+    for n, v in zip(mine, ovmod.deep(run)):
+        n["python"] = v if isinstance(v, float) else None
+    return {"starts": starts, "selected": pick["cell"], "start": pick, "tree": tree, "cores": dcftrace.cores(tree),
+            "text": dcftrace.text(tree)}
 
 
 def overlay_dcf(eid: int, mode: str = "workbook", changes: dict | None = None, valuation_date: str | None = None,

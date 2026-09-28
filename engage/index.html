@@ -150,6 +150,16 @@ tr.click:hover td { background: var(--raised); }
 .checks li.no::before { content: "✗ "; color: var(--bad); }
 .checks li.unk::before { content: "? "; color: var(--warn); font-weight: 700; }
 .checks li.over { color: var(--muted); }
+.vtree, .vtree ul { list-style: none; margin: 0; padding: 0; }
+.vtree ul { margin-left: 10px; padding-left: 14px; border-left: 1px solid var(--rule); }
+.vtree li { margin: 8px 0; }
+.vtree li.leaf > .vt-head b { font-weight: 500; }
+.vt-head { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.vt-val { font-variant-numeric: tabular-nums; }
+.vt-words { color: var(--muted); font-family: var(--mono, ui-monospace, monospace); margin: 2px 0 0; overflow-wrap: anywhere; }
+.vt-core { margin: 6px 0 4px; padding: 8px 10px; border: 1px solid var(--rule); border-left: 3px solid var(--blue); border-radius: 4px; background: var(--raised); }
+.vt-parts { list-style: none; margin: 2px 0 0; padding-left: 14px; border-left: 1px dashed var(--rule); }
+.vt-parts li { margin: 3px 0; font-size: 13px; }
 .checks li.over::before { content: "↷ "; color: var(--muted); font-weight: 700; }
 details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
 .quote { font-size: 12.5px; color: var(--muted); border-left: 3px solid var(--rule-strong); padding-left: 8px; margin-top: 4px; }
@@ -1603,16 +1613,58 @@ const TIMING = {end: "End of period", mid: "Mid-period"};
 const DAYCOUNT = {"actual/actual": "Actual/actual (YEARFRAC)", "actual/365": "Actual/365 (XNPV)"};
 const FEED_NAME = {workbook: "As saved", prior: "Prior client model", current: "Current model, rolled forward"};
 function ovValuationPane() {
-  if (VAL.eid !== E.id) Object.assign(VAL, {eid: E.id, cell: null, step: "validate", v: null, sc: {}, dcf: null});
+  if (VAL.eid !== E.id) Object.assign(VAL, {eid: E.id, cell: null, step: "validate", v: null, sc: {}, dcf: null, trace: undefined, traceStart: null});
   const v = VAL.v;
-  if (!v) return `<div class="card"><p class="muted" style="margin:0">Finding and checking the overlay's DCFs…</p></div>`;
-  if (!v.selected) return `<div class="card"><p style="margin:0">No DCF found on the overlay sheets. This tab looks for cells labelled like a valuation (enterprise value, equity value, NPV) whose formula is a <span class="mono">SUMPRODUCT</span> of a cash-flow row and a discount-factor row, possibly plus other amounts.</p></div>${anchorTable(v)}`;
+  if (!v) return `${traceCard()}<div class="card"><p class="muted" style="margin:0">Finding and checking the overlay's DCFs…</p></div>`;
+  if (!v.selected) return `${traceCard()}<div class="card"><p style="margin:0">No discounting the Python can recompute was found: neither a cell labelled like a valuation whose formula is a <span class="mono">SUMPRODUCT</span> of a cash-flow row and a discount-factor row, nor a <span class="mono">SUMPRODUCT</span>, <span class="mono">XNPV</span> or sum of present values under the report's figures (above).</p></div>${anchorTable(v)}`;
   const step = VAL.step === "methods" && v.validated ? "methods" : "validate";
-  return `<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-end">
-    <label class="small muted" style="flex:1 1 320px;min-width:0">Anchor value<br><select class="in" id="valCell" style="width:100%">${v.anchors.filter(a => a.ok).map(a => `<option value="${esc(a.cell)}" ${a.cell === v.selected ? "selected" : ""}>${a.matches ? "✓" : "✗"} ${esc(a.label || a.cell)} · ${esc(a.cell)} · ${vN(a.value)}</option>`).join("")}</select></label>
+  return `${traceCard()}<div class="card" id="valAnchorCard"><div class="row" style="justify-content:space-between;align-items:flex-end">
+    <label class="small muted" style="flex:1 1 320px;min-width:0">Anchor value<br><select class="in" id="valCell" style="width:100%">${v.anchors.filter(a => a.ok).map(a => `<option value="${esc(a.cell)}" ${a.cell === v.selected ? "selected" : ""}>${a.matches ? "✓" : "✗"} ${esc(a.label || a.cell)} · ${esc(a.cell)} · ${vN(a.value)}${a.traced_from ? ` · under the report's figure (${esc(a.traced_from)})` : ""}</option>`).join("")}</select></label>
     <div class="seg" role="tablist" aria-label="Step"><button role="tab" data-vstep="validate" class="${step === "validate" ? "on" : ""}">1 · Validate</button><button role="tab" data-vstep="methods" class="${step === "methods" ? "on" : ""}" ${v.validated ? "" : `disabled title="Validate the anchor first"`}>2 · Live module and methods</button></div></div>
     <p class="small muted" style="margin:10px 0 0">${step === "validate" ? "The DCF found in the overlay, recomputed step by step from the values Excel saved (the Model Desk's Validate step)." : "The same DCF on the Python overlay's own numbers (the feed and input changes from <b>Run it live</b>), checked against the module, then under another discounting method."}</p></div>
   <div id="valBody" class="stack">${step === "validate" ? validateHtml(v) : methodsHtml(v)}</div>`;
+}
+function traceCard() {
+  const t = VAL.trace, head = `<h2>How the report's figure is built</h2>`;
+  if (t === undefined) return `<div class="card" id="vtCard">${head}<p class="muted small" style="margin:0">Tracing the report's figure through the overlay…</p></div>`;
+  if (!t || t.error) return `<div class="card" id="vtCard">${head}<div class="callout warn small">Couldn't trace it: ${esc(t?.error || "no answer")}</div></div>`;
+  if (!t.selected) return `<div class="card" id="vtCard">${head}<p class="small muted" style="margin:0">No report conclusion is matched to an overlay cell that ties to the report. Approve the conclusions in step 2, check the Map, and rebuild the Python overlay.</p></div>`;
+  const s = t.start, anchors = new Set((VAL.v?.anchors || []).filter(a => a.ok).map(a => a.cell));
+  return `<div class="card" id="vtCard"><div class="row" style="justify-content:space-between;align-items:flex-end"><div style="flex:1 1 360px">${head}
+    <p class="sub" style="margin:0">Traced from <span class="mono">${esc(t.selected)}</span>, the cell ${s.report ? `the report's <b>${esc(s.report)}</b>` : "this figure"} was matched to${s.ties ? " (it ties at the report's printed precision)" : ""}, down through every cell it reads to the discounting. Each cell shows Excel's value, checked against the Python overlay.</p></div>
+    ${t.starts.length > 1 ? `<label class="small muted" style="flex:0 1 380px;min-width:0">Report figure<br><select class="in" id="vtStart" style="width:100%">${t.starts.map(x => `<option value="${esc(x.cell)}" ${x.cell === t.selected ? "selected" : ""}>${esc(x.label || x.cell)} · ${esc(x.report || "no report figure")} · ${esc(x.cell)}${x.ties ? " · ties" : ""}</option>`).join("")}</select></label>` : ""}</div>
+    <ul class="vtree" style="margin-top:12px">${vtNode(t.tree, anchors)}</ul></div>`;
+}
+function vtNode(n, anchors) {
+  const num = typeof n.value === "number", val = num ? vN(n.value) : esc(n.value ?? "");
+  const same = num && n.python != null && Math.abs(n.python - n.value) <= 1e-6 * Math.max(1, Math.abs(n.value));
+  const py = n.python == null ? "" : same ? `<span class="pill ok" title="The Python overlay gives the same value">✓ Python</span>` : `<span class="pill bad">Python ${vN(n.python)}</span>`;
+  const head = `<span class="vt-head"><b>${esc(n.label || n.cell)}</b><span class="mono small muted">${esc(n.cell)}</span><span class="vt-val">${val}</span>${py}</span>`;
+  if (n.again) return `<li>${head} <span class="small muted">(shown above)</span></li>`;
+  return `<li class="${n.on_path ? "path" : "leaf"}">${head}${n.words ? `<div class="vt-words small">${esc(n.words)}</div>` : ""}
+    ${(n.cores || []).map(c => vtCore(c, anchors, n.value)).join("")}${n.children?.length ? `<ul>${n.children.map(c => vtNode(c, anchors)).join("")}</ul>` : ""}</li>`;
+}
+function vtCore(c, anchors, excel) {
+  const m = c.method, parts = ps => `<ul class="vt-parts">${ps.map(x => `<li>${x.sign < 0 ? "less " : ""}<b>${esc(x.label || x.row)}</b> <span class="mono small muted">${esc(x.row)}</span>${x.total == null ? "" : ` <span class="vt-val">${vN(x.total)}</span>`}${x.words ? ` <span class="small muted">${esc(x.words)}</span>` : ""}${x.parts?.length ? parts(x.parts) : ""}</li>`).join("")}</ul>`;
+  const rate = c.rate_value ?? c.rate, tie = c.whole && typeof excel === "number" ? (Math.abs(c.pv - excel) <= 1e-6 * Math.max(1, Math.abs(excel)) ? ` <span class="pill ok">✓ same as Excel</span>` : ` <span class="pill bad">Excel ${vN(excel)}</span>`) : "";
+  return `<div class="vt-core"><div><b>Discounting:</b> ${esc(c.what)}</div>
+    <div class="small" style="margin-top:4px">Cash flows <b>${esc(c.cashflow_label || "")}</b> <span class="mono">${esc(c.cashflow)}</span>: ${c.periods} periods${c.first_period ? `, ${esc(c.first_period)} to ${esc(c.last_period)}` : ""}, ${vN(c.undiscounted)} undiscounted.
+      ${m ? `Rate <b>${typeof rate === "number" ? vPct(rate) : esc(rate)}</b> <span class="mono small muted">${esc(typeof m.rate === "string" ? m.rate : "")}</span>, valuation date <b>${esc(c.valuation_date_value || c.valuation_date || m.valuation_date)}</b>, ${m.timing === "mid" ? "middle" : "end"} of each period, ${esc(DAYCOUNT[m.day_count] || m.day_count)}.` : esc(c.note || "Its rate and convention couldn't be read back from the factors.")}
+      Recomputed in Python: <b>${vN(c.pv)}</b>${tie}</div>
+    ${c.parts?.length ? `<div class="small muted" style="margin-top:6px">The cash flows are made of</div>${parts(c.parts)}` : ""}
+    ${anchors.has(c.cell) ? `<button class="btn small" style="margin-top:6px" data-vt-anchor="${esc(c.cell)}">Validate it and try other methods</button>` : ""}</div>`;
+}
+async function loadTrace() {
+  try { VAL.trace = await api(`/api/engagements/${E.id}/overlay/value-trace${VAL.traceStart ? "?start=" + encodeURIComponent(VAL.traceStart) : ""}`); }
+  catch (e) { VAL.trace = {error: e.message}; }
+  const c = $("#vtCard"); if (c && state.step === "python" && OV.tab === "valuation") { c.outerHTML = traceCard(); bindTrace(); }
+}
+function bindTrace() {
+  $("#vtStart")?.addEventListener("change", e => { VAL.traceStart = e.target.value; VAL.trace = undefined; $("#vtCard").outerHTML = traceCard(); loadTrace(); });
+  document.querySelectorAll("#vtCard [data-vt-anchor]").forEach(b => b.onclick = () => {
+    VAL.cell = b.dataset.vtAnchor; VAL.v = null; VAL.dcf = null; VAL.sc = {}; VAL.step = "validate";
+    $("#ovVal").innerHTML = ovValuationPane(); bindTrace(); loadOvValuation().then(() => $("#valAnchorCard")?.scrollIntoView({behavior: "smooth", block: "start"}));
+  });
 }
 function anchorTable(v) {
   if (!v.anchors.length) return "";
@@ -1721,6 +1773,8 @@ async function runOvDcf() {
   $("#dcfChart").append(chartCard(r.chart)); mountCharts($("#dcfChart"));
 }
 function bindOvValuation() {
+  bindTrace();
+  if (VAL.trace === undefined && !VAL.traceLoading) { VAL.traceLoading = true; loadTrace().finally(() => { VAL.traceLoading = false; }); }
   if (!VAL.v) { loadOvValuation(); return; }
   $("#valCell")?.addEventListener("change", e => { VAL.cell = e.target.value; VAL.v = null; VAL.dcf = null; VAL.sc = {}; $("#ovVal").innerHTML = ovValuationPane(); loadOvValuation(); });
   document.querySelectorAll("#ovVal [data-anchor]").forEach(tr => tr.onclick = () => { if (!tr.classList.contains("pick")) return; VAL.cell = tr.dataset.anchor; VAL.v = null; VAL.dcf = null; VAL.sc = {}; VAL.step = "validate"; $("#ovVal").innerHTML = ovValuationPane(); loadOvValuation(); });

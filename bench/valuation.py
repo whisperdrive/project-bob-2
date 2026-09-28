@@ -200,12 +200,15 @@ def _cell_term(db, ref, pv_key, vd, sign, depth):
 
 # ---- reading the discount factors back into assumptions -----------------------------------------------------
 
-def read_factors(db, df_ref, cols: list[int]) -> dict | None:
-    """Rate, valuation date, convention and cut-off that reproduce the workbook's factor row exactly."""
-    sheet, row = df_ref[0], df_ref[1]
-    theirs = {c: dcf._num(v) or 0.0 for c, v in db.execute(
-        "SELECT col, value FROM cells WHERE sheet=? AND row=?", (sheet, row)) if c in cols}
-    ends, ends_src = dcf.period_ends(db, sheet, cols)
+def read_factors(db, df_ref, cols: list[int], theirs: dict | None = None, sheet: str | None = None,
+                 dates: str | None = None) -> dict | None:
+    """Rate, valuation date, convention and cut-off that reproduce the workbook's factor row exactly; or, with
+    theirs, factors given by column (e.g. computed inside a formula), timed by sheet's period dates."""
+    sheet, row = (df_ref[0], df_ref[1]) if df_ref else (sheet, None)
+    if theirs is None:
+        theirs = {c: dcf._num(v) or 0.0 for c, v in db.execute(
+            "SELECT col, value FROM cells WHERE sheet=? AND row=?", (sheet, row)) if c in cols}
+    ends, ends_src = dcf.period_ends(db, sheet, cols, dates)
     live = [c for c in sorted(ends) if 0 < theirs.get(c, 0.0) < 1]
     if not live:
         return None
@@ -228,10 +231,12 @@ def read_factors(db, df_ref, cols: list[int]) -> dict | None:
                 if all(abs(ours[c] - theirs.get(c, 0.0)) < 1e-9 for c in ends):
                     rate_cell = next((r for r in rates if abs(dcf._num(r["value"]) - rate) < 1e-9), None)
                     return {"rate": rate_cell["ref"] if rate_cell else round(rate, 12),
-                            "rate_note": None if rate_cell else f"back-solved from the factors in {sheet}!r{row}",
+                            "rate_note": None if rate_cell else f"back-solved from the factors"
+                                                                + (f" in {sheet}!r{row}" if row else ""),
                             "valuation_date": vd_c["ref"], "timing": timing, "day_count": dc,
                             "terminal_date": td.isoformat() if td else None, "ends_source": ends_src,
-                            "factor_row": f"{sheet}!r{row} {dcf._row_label(db, sheet, row)}".strip()}
+                            "factor_row": f"{sheet}!r{row} {dcf._row_label(db, sheet, row)}".strip() if row
+                            else "factors computed in the formula"}
     return None
 
 
@@ -348,7 +353,8 @@ def _rank(label: str) -> int:
 
 def _listing(cat):
     return [{"cell": b["cell"], "label": b["label"], "value": b["value"], "total": b.get("total"),
-             "ok": b.get("ok", False), "matches": b.get("matches", False), "reason": b.get("reason")} for b in cat]
+             "ok": b.get("ok", False), "matches": b.get("matches", False), "reason": b.get("reason"),
+             "traced_from": b.get("traced_from"), "what": b.get("what")} for b in cat]
 
 
 def _pick(cat, cell):
@@ -356,7 +362,7 @@ def _pick(cat, cell):
     return next((b for b in usable if b["cell"] == cell), usable[0] if usable else None)
 
 
-def _chart(db, db_path, cf_range, runs: list[tuple], cumulative: bool = False) -> dict:
+def _chart(db, db_path, cf_range, runs: list[tuple], cumulative: bool = False, dates: str | None = None) -> dict:
     """The workbook's cash flows and each run's present value per period; or, with cumulative, only each run's
     running total of present value (how the value builds up; the last point is the PV of cash flows), which
     shows where runs diverge. runs: [(series name, compute() result)], or (name, result, flows, ends) for a run
@@ -367,7 +373,7 @@ def _chart(db, db_path, cf_range, runs: list[tuple], cumulative: bool = False) -
         spec = tools.chart("Cash flows and present values", [{"range": cf_range, "name": "Cash flow (workbook)"}],
                            kind="bar")
     sheet, _, cf_cols = dcf._row_range(db, cf_range)
-    ends, _ = dcf.period_ends(db, sheet, cf_cols)
+    ends, _ = dcf.period_ends(db, sheet, cf_cols, dates)
     cols = spec.get("columns") or []
     cfd = spec["series"][0]["data"]
     live = set()
@@ -423,17 +429,19 @@ def _assumptions(pick, r) -> dict:
             "undiscounted": r["undiscounted"], "units": r.get("units") or []}
 
 
-def validation(db_path: str, cell: str | None = None) -> dict:
+def validation(db_path: str, cell: str | None = None, anchors: list[dict] | None = None) -> dict:
     """Step 1: can the workbook's own numbers be reproduced? Every anchor value, and for the selected one the
-    approach found and a check of each step (cash flows, discount factors, PV, bridge, the anchor itself)."""
-    cat = catalogue(db_path)
+    approach found and a check of each step (cash flows, discount factors, PV, bridge, the anchor itself).
+    anchors: the anchors to choose from (default: this workbook's catalogue)."""
+    cat = catalogue(db_path) if anchors is None else anchors
     pick = _pick(cat, cell)
     if not pick:
         return {"anchors": _listing(cat), "selected": None}
     db = rodb.connect(db_path)
     r = dcf.compute(db, **pick["inputs"], fix=False)
     sheet, row, cols = dcf._row_range(db, pick["inputs"]["cashflow"][0])
-    ends, _ = dcf.period_ends(db, sheet, cols)
+    dates = pick["inputs"].get("dates")
+    ends, _ = dcf.period_ends(db, sheet, cols, dates)
     checks = []
 
     # cash flows: the row's own total column, if it has one (e.g. =SUM(L173:HO173))
@@ -454,15 +462,21 @@ def validation(db_path: str, cell: str | None = None) -> dict:
                    "note": None if total_cell else "the row has no total column to compare with"})
 
     # discount factors, period by period
-    dfr = pick["df"]
-    theirs = {c: dcf._num(v) or 0.0 for c, v in db.execute(
-        "SELECT col, value FROM cells WHERE sheet=? AND row=?", (dfr[0], dfr[1])) if c in ends}
+    dfr = pick.get("df")
     ours = dcf.factors(ends, r["valuation_date"], r["rate"], r["timing"], r["day_count"], r["terminal_date"])
-    worst = max((abs(ours[c] - theirs.get(c, 0.0)), c) for c in ours)
-    checks.append({"step": "Discount factors", "what": f"{sum(1 for c in ours if ours[c])} non-zero factors vs "
-                   f"{dfr[0]}!r{dfr[1]}, {r['timing']}-of-period, {r['day_count']}",
-                   "ours": None, "theirs": None, "where": f"{dfr[0]}!r{dfr[1]}", "ok": worst[0] < 1e-9,
-                   "note": f"largest difference {worst[0]:.1e} ({ends[worst[1]]})"})
+    if dfr:
+        theirs = {c: dcf._num(v) or 0.0 for c, v in db.execute(
+            "SELECT col, value FROM cells WHERE sheet=? AND row=?", (dfr[0], dfr[1])) if c in ends}
+        worst = max((abs(ours[c] - theirs.get(c, 0.0)), c) for c in ours)
+        checks.append({"step": "Discount factors", "what": f"{sum(1 for c in ours if ours[c])} non-zero factors vs "
+                       f"{dfr[0]}!r{dfr[1]}, {r['timing']}-of-period, {r['day_count']}",
+                       "ours": None, "theirs": None, "where": f"{dfr[0]}!r{dfr[1]}", "ok": worst[0] < 1e-9,
+                       "note": f"largest difference {worst[0]:.1e} ({ends[worst[1]]})"})
+    else:  # computed inside the formula (XNPV, or an expression): the present value below checks them
+        checks.append({"step": "Discount factors", "what": f"{sum(1 for c in ours if ours[c])} factors, "
+                       f"{r['timing']}-of-period, {r['day_count']}: {pick.get('what') or 'computed in the formula'}",
+                       "ours": None, "theirs": None, "where": pick["pv_cell"], "ok": None,
+                       "note": "the workbook computes them inside the formula, so the present value checks them"})
 
     # PV: the workbook's SUMPRODUCT cell
     pv_ref = dcf._ref(pick["pv_cell"], "")
@@ -482,7 +496,7 @@ def validation(db_path: str, cell: str | None = None) -> dict:
     A = _assumptions(pick, r)
     return {"anchors": _listing(cat), "selected": pick["cell"], "validated": checks[-1]["ok"],
             "assumptions": A, "checks": checks, "bridge": r["bridge"], "pv": r["pv"], "total": r["total"],
-            "chart": _chart(db, db_path, pick["inputs"]["cashflow"][0], [("Present value (model)", r)])}
+            "chart": _chart(db, db_path, pick["inputs"]["cashflow"][0], [("Present value (model)", r)], dates=dates)}
 
 
 def scenario(db_path: str, cell: str | None = None, rate: float | None = None, valuation_date: str | None = None,
