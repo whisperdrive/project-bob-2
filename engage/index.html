@@ -468,7 +468,7 @@ function viewReference() {
   if (!ready.length) return `<div class="card empty">Upload last year's report (PDF or PPTX) in step 1 first.</div>`;
   if (!state.doc || !ready.some(d => d.id === state.doc)) state.doc = (ready.find(d => d.id === E.roles.prior_report?.id) || ready[0]).id;
   const d = ready.find(x => x.id === state.doc);
-  if (!DOC || DOC.id !== d.id || DOC._stamp !== `${d.n_flagged}|${d.processed_at}`) loadDoc(d);
+  if (!DOC || DOC.id !== d.id || DOC._stamp !== docStamp(d)) loadDoc(d);
   return `<div class="lede"><div><h1><b>Report reference</b></h1><p>The report's conclusions and assumptions are the guide for finding the valuation in last year's overlay. Tables the checks flag and facts the reviewer disputes go through a review loop: the extractor fixes, code re-checks, the reviewer checks again, until they agree or hand it to you. Every fact shows its page, quote, checks and the loop's rounds; what the loop teaches is kept, anonymised, for next time.</p></div></div>
   ${ready.length > 1 ? `<div class="row"><label class="small muted">Report</label><select class="in" id="docSel">${ready.map(x => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.filename)}</option>`).join("")}</select></div>` : ""}
   <div class="card" id="tablesCard"><h2>Tables in ${esc(d.filename)}</h2><p class="sub">Loading…</p></div>
@@ -476,10 +476,12 @@ function viewReference() {
   <div class="card" id="lessonsCard">${lessonsCard()}</div>
   <div class="card"><details id="docMd"><summary>Read the document as Markdown (what the extraction model sees)</summary><div class="md" id="docMdBody"><p class="muted">Loading…</p></div></details></div>`;
 }
+// a table decision, a re-read or a finished table loop (even one that settles nothing) reloads the tables
+const docStamp = d => `${d.n_flagged}|${d.processed_at}|${d.loop?.tables?.at || ""}`;
 async function loadDoc(d) {
-  DOC = {id: d.id, _stamp: `${d.n_flagged}|${d.processed_at}`, loading: true};
+  DOC = {id: d.id, _stamp: docStamp(d), loading: true};
   const full = await api(`/api/documents/${d.id}`);
-  DOC = {...full, _stamp: `${full.n_flagged}|${full.processed_at}`};
+  DOC = {...full, _stamp: docStamp(full)};
   if (state.step === "reference") { $("#tablesCard") && ($("#tablesCard").innerHTML = tablesCard()); bindTables(); fillDocMd(); }
 }
 function tableStatus(t) {
@@ -569,7 +571,7 @@ function bindTables() {
 }
 async function settle(tid, action, markdown) {
   try { const full = await api(`/api/documents/${DOC.id}/tables/${encodeURIComponent(tid)}`, {method: "PUT", body: {action, markdown}});
-    DOC = {...full, _stamp: `${full.n_flagged}|${full.processed_at}`}; state.table = tid; toast("Table saved; facts re-checked against it."); }
+    DOC = {...full, _stamp: docStamp(full)}; state.table = tid; toast("Table saved; facts re-checked against it."); }
   catch (e) { toast(e.message, 6000); }
   await refresh(true);
 }

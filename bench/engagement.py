@@ -297,6 +297,7 @@ def document(did: int) -> dict | None:
         return None
     doc = json.loads(d.pop("doc_json") or "null")
     d.pop("source_path")
+    d["loop"] = json.loads(d.pop("loop_json", None) or "null")
     return {**d, "doc": doc}
 
 
