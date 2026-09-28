@@ -39,19 +39,31 @@ LEVER_KEYS = re.compile(r"discount|wacc|terminal|growth|multiple|rab|valuation_d
                         r"inflation|beta|premium", re.I)
 
 sys.setrecursionlimit(1_000_000)
-STACK = 256 * 1024 * 1024
+# Windows accepts a thread stack strictly under 256 MB (and commits all of it up front); other systems want a whole
+# number of pages. 255 MB suits both, and smaller sizes are tried if a system refuses it.
+STACK = 255 * 1024 * 1024
+STACK_FALLBACKS = (STACK, 192 * 1024 * 1024, 128 * 1024 * 1024, 64 * 1024 * 1024)
 _EXEC = None
 
 
+def _big_stack() -> int:
+    """Set the next thread's stack to the largest size this system accepts; returns the size it had."""
+    for size in STACK_FALLBACKS:
+        try:
+            return threading.stack_size(size)
+        except ValueError:  # "size not valid" (Windows: 256 MB or more; some systems: not a page multiple)
+            continue
+    return threading.stack_size()
+
+
 def deep(fn, *args, **kw):
-    """Run fn on a thread with a 256 MB stack: a timeline recurrence can nest thousands of cells deep. (Windows
-    commits a thread's whole stack up front, so it isn't larger.) One thread, so runs don't interleave: a
-    Session's settings belong to the run that set them."""
+    """Run fn on a thread with a 255 MB stack: a timeline recurrence can nest thousands of cells deep. One thread,
+    so runs don't interleave: a Session's settings belong to the run that set them."""
     global _EXEC
     if threading.current_thread().name.startswith("overlay-eval"):
         return fn(*args, **kw)
     if _EXEC is None:
-        old = threading.stack_size(STACK)
+        old = _big_stack()
         try:
             _EXEC = ThreadPoolExecutor(1, thread_name_prefix="overlay-eval")
             _EXEC.submit(lambda: None).result()  # create the thread while the big stack size is set
