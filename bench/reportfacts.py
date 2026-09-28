@@ -290,12 +290,20 @@ def source_tables(f: dict, pg: dict[int, str]) -> list[tuple[str, str]]:
 # ---- model passes -------------------------------------------------------------------------------------------
 
 def _call(model: str, prompt: str, schema: dict, purpose: str, on_usage) -> dict:
+    """One structured call. A reply that isn't valid JSON (a model sometimes runs on in whitespace until it hits
+    the output limit) is asked for once more before the step fails."""
     from llm import client, create
-    r = create(client(interactive=False), model, input=prompt, text={"format": schema}, max_output_tokens=12000,
-               purpose=purpose)
-    if r.usage and on_usage:
-        on_usage(model, r.usage, purpose)
-    return json.loads(r.output_text)
+    for attempt in (1, 2):
+        r = create(client(interactive=False), model, input=prompt, text={"format": schema}, max_output_tokens=12000,
+                   purpose=purpose if attempt == 1 else f"{purpose} (again: the first reply wasn't valid JSON)")
+        if r.usage and on_usage:
+            on_usage(model, r.usage, purpose)
+        try:
+            return json.loads(r.output_text)
+        except json.JSONDecodeError:
+            if attempt == 2:
+                raise
+    raise AssertionError("unreachable")
 
 
 def extract(markdown: str, model: str, on_usage=None) -> dict:

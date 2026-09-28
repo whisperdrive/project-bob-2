@@ -118,13 +118,19 @@ def _yearfrac(a, b, basis=0):
     return np.array(out).reshape(a.shape) if a.shape else out[0]
 
 
-_FUNCS = {"YEARFRAC": _yearfrac, "EXP": np.exp, "LN": np.log, "ABS": np.abs}
+_flat = lambda args: np.concatenate([np.atleast_1d(np.asarray(x, dtype=float)).ravel() for x in args])
+_FUNCS = {"YEARFRAC": _yearfrac, "EXP": np.exp, "LN": np.log, "ABS": np.abs,
+          "SUM": lambda *a: float(np.sum(_flat(a))), "AVERAGE": lambda *a: float(np.mean(_flat(a))),
+          "MIN": lambda *a: float(np.min(_flat(a))), "MAX": lambda *a: float(np.max(_flat(a))),
+          "ROUND": lambda x, n=0: float(np.round(x, int(n)))}
 
 
-def evaluate(db, expr: str, here: str):
+def evaluate(db, expr: str, here: str, given: dict | None = None):
     """An arithmetic expression over cells: a number, or an array when it reads a row (one value per column of
     that row, in order). Dates count as Excel serial numbers. Only + - * / ^, brackets and a few functions
-    (YEARFRAC, EXP, LN, ABS); anything else raises ValueError."""
+    (YEARFRAC, EXP, LN, ABS, SUM, AVERAGE, MIN, MAX, ROUND); anything else raises ValueError. given: values to use
+    for some cells instead of the workbook's ({(sheet, row, col): value})."""
+    given = given or {}
     code, vals, pos = [], [], 0
     text = expr.strip().lstrip("=")
     while pos < len(text):
@@ -137,14 +143,19 @@ def evaluate(db, expr: str, here: str):
             if not r:
                 raise ValueError(m["ref"])
             sheet, r1, c1, r2, c2 = r
+            one = lambda rr, cc: given[(sheet, rr, cc)] if (sheet, rr, cc) in given else (
+                _num(v) if (v := _cell(db, sheet, rr, cc)[1]) is not None else 0.0)
             if r1 == r2 and c1 == c2:
-                vals.append(_num(_cell(db, sheet, r1, c1)[1]))
+                vals.append(float(one(r1, c1)))
             elif r1 == r2:
                 got = dict(db.execute("SELECT col, value FROM cells WHERE sheet=? AND row=? AND col BETWEEN ? AND ?",
                                       (sheet, r1, c1, c2)))
-                vals.append(np.array([_num(got.get(c)) if got.get(c) is not None else 0.0 for c in range(c1, c2 + 1)]))
+                vals.append(np.array([given.get((sheet, r1, c), _num(got.get(c)) if got.get(c) is not None else 0.0)
+                                      for c in range(c1, c2 + 1)]))
+            elif (r2 - r1 + 1) * (c2 - c1 + 1) <= SHORT:  # a short block (AVERAGE(F10:F11)): its values in order
+                vals.append(np.array([one(rr, cc) for rr in range(r1, r2 + 1) for cc in range(c1, c2 + 1)]))
             else:
-                raise ValueError("a range over several rows")
+                raise ValueError("a block of several rows")
             code.append(f"_v[{len(vals) - 1}]")
         elif m["num"]:
             code.append(f"({float(m['num'].rstrip('%')) / (100 if m['num'].endswith('%') else 1)!r})")
@@ -532,3 +543,37 @@ def anchors(db_path: str, starts: list[str]) -> list[dict]:
     with _LOCK:
         _CACHE[key] = out
     return out
+
+
+# ---- carrying new discounting results up to the figure --------------------------------------------------------
+
+def recompute(db, tree: dict, pv: dict[str, float]) -> float | None:
+    """The figure at the top of the tree again, with these discountings' results ({core cell: value}) in place of
+    theirs: every cell on the way up re-evaluated from its formula (evaluate()), the cells off the path as db has
+    them. None when a formula on the way can't be evaluated here (IF, INDEX, ...)."""
+    names = _names(db)
+    given: dict[tuple, float] = {}
+
+    def value(n):
+        r = dcf._ref(n["cell"], "")
+        key = (r[0], r[1], r[2])
+        if key in given:
+            return given[key]
+        if n["cell"] in pv:
+            given[key] = pv[n["cell"]]
+            return given[key]
+        if not n.get("on_path") or n.get("again") or not n.get("formula"):
+            return dcf._num(_cell(db, *key)[1])
+        for c in n.get("children", []):
+            v = value(c)
+            if v is None:
+                raise ValueError(c["cell"])
+            rc = dcf._ref(c["cell"], "")
+            given[(rc[0], rc[1], rc[2])] = v
+        out = evaluate(db, _expand(db, _STR.sub('""', n["formula"]), names), key[0], given)
+        given[key] = float(out)
+        return given[key]
+    try:
+        return value(tree)
+    except (ValueError, ZeroDivisionError, TypeError, OverflowError):
+        return None

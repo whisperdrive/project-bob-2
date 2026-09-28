@@ -83,6 +83,10 @@ def _conn() -> sqlite3.Connection:
     for col in ("overlay_status", "overlay_step", "overlay_error", "overlay_json"):  # databases made before step 6
         if col not in have:
             db.execute(f"ALTER TABLE engagements ADD COLUMN {col} TEXT")
+    for col, kind in (("charts_status", "TEXT"), ("charts_step", "TEXT"), ("charts_error", "TEXT"),
+                      ("charts_started_at", "REAL"), ("charts_secs", "REAL")):  # ... and before the Summary page
+        if col not in have:
+            db.execute(f"ALTER TABLE engagements ADD COLUMN {col} {kind}")
     for table, col in (("facts", "agent_json"), ("documents", "loop_json"), ("facts", "decided_by")):  # ... and before the loop
         if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
@@ -1170,6 +1174,85 @@ def overlay_valuation(eid: int, cell: str | None) -> dict:
     return v
 
 
+# ---- the Summary page: the report's summary table and charts, rebuilt and rolled forward ----------------------
+
+def _charts_file(eid: int) -> Path | None:
+    r = roles(eid).get("prior_report")
+    d = _doc(r["id"]) if r and r.get("kind") == "document" else None
+    return Path(d["out_dir"]) / "report_charts.json" if d else None
+
+
+def recreate_charts(eid: int) -> None:
+    """Queue the report's charts: found, read, recreated from the prior client model, checked, redrawn on this
+    year's model (reportcharts.py)."""
+    r = roles(eid)
+    if not r.get("prior_report") or not r.get("prior_model"):
+        raise ValueError("assign last year's report and client model (step 3) first")
+    _set("engagements", eid, charts_status="queued", charts_step="Waiting to start", charts_error=None)
+    _jobs.put(("charts", eid))
+
+
+def _charts_job(eid: int) -> None:
+    import reportcharts
+    rl = roles(eid)
+    d = _doc(rl["prior_report"]["id"])
+    doc = json.loads(d["doc_json"])
+    e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+    books = []
+    for role, name in (("prior_model", "last year's client model"), ("prior_overlay", "the overlay")):
+        w = _role_wb(eid, role)
+        if w and w.get("db_path") and not any(b["db_path"] == w["db_path"] for b in books):
+            books.append({"key": role, "name": name, "db_path": w["db_path"]})
+    cur = _role_wb(eid, "current_model")
+    _set("engagements", eid, charts_status="running", charts_step="Finding the charts in the report")
+    reader = docingest.Reader(e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER, _logger(eid))
+    res = reportcharts.run(reader, doc, d["source_path"], d["out_dir"], books, (cur or {}).get("db_path"),
+                           lambda f, m: _set("engagements", eid, charts_step=m))
+    res["document"] = d["id"]
+    _charts_file(eid).write_text(json.dumps(res, default=str), encoding="utf-8")
+    _set("engagements", eid, charts_status="done", charts_step="Done")
+
+
+def summary_view(eid: int, changes: dict | None = None, valuation_date: str | None = None, months: int | None = None,
+                 method: dict | None = None) -> dict:
+    """The Summary page: the report's summary table rebuilt on last year's model, rolled forward onto this
+    year's, and as a scenario (overlay.summary_table), with the report's charts recreated (reportcharts.py). The
+    charts are recreated by themselves the first time the page asks, once the overlay is built."""
+    import overlay as ovmod
+    rows = _q("SELECT overlay_status, charts_status, charts_step, charts_error FROM engagements WHERE id=?", eid)
+    if not rows:
+        raise ValueError("no such engagement")
+    e = rows[0]
+    out = {"charts": None, "charts_status": e.get("charts_status"), "charts_step": e.get("charts_step"),
+           "charts_error": e.get("charts_error")}
+    f = _charts_file(eid)
+    if f and f.exists():
+        out["charts"] = json.loads(f.read_text(encoding="utf-8"))
+    elif f and e.get("overlay_status") == "done" and not e.get("charts_status"):
+        recreate_charts(eid)
+        out.update(charts_status="queued", charts_step="Waiting to start")
+    if e.get("overlay_status") != "done":
+        out["table"] = None
+        out["why"] = "build the Python overlay (step 6) first: the summary is recomputed from it"
+        return out
+    sess, summary = overlay_session(eid)
+    clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
+    out["table"] = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid), clean, valuation_date, months, method)
+    out["identity"] = {f["key"]: f.get("value_text") for f in reference(eid) if f.get("category") == "identity"}
+    return out
+
+
+def chart_png(eid: int, name: str) -> Path | None:
+    """A chart image of the Summary page (the report's crop or a recreation), inside the report's folder."""
+    f = _charts_file(eid)
+    if not f or not re.fullmatch(r"[\w.-]+\.png", name):
+        return None
+    p = f.parent / "charts" / name
+    if not p.is_file():
+        p = next((x for x in (f.parent / "tables").glob(name)), None) if (f.parent / "tables").is_dir() else None
+    return p if p and p.is_file() else None
+
+
 def overlay_value_trace(eid: int, start: str | None = None) -> dict:
     """How a report figure is built in the overlay, from the cell it was matched to down to the discounting
     (dcftrace.py), with the Python overlay's value for every cell on the way."""
@@ -1308,12 +1391,12 @@ def _process_facts(did: int) -> None:
 
 _STEP = {"doc": "read the report", "resolve_tables": "table review loop", "facts": "key facts",
          "resolve_facts": "fact review loop", "compare": "compare models", "map": "map", "overlay": "python overlay",
-         "roles": "roles"}
+         "roles": "roles", "charts": "report charts"}
 # where each job's start time and duration go: (table, started column, seconds column)
 _TIMED = {"doc": ("documents", "started_at", "doc_secs"), "resolve_tables": ("documents", "started_at", "doc_secs"),
           "facts": ("documents", "facts_started_at", "facts_secs"),
           "resolve_facts": ("documents", "facts_started_at", "facts_secs"),
-          **{k: ("engagements", f"{k}_started_at", f"{k}_secs") for k in ("compare", "map", "overlay")}}
+          **{k: ("engagements", f"{k}_started_at", f"{k}_secs") for k in ("compare", "map", "overlay", "charts")}}
 
 
 def _run(kind: str, rid: int) -> None:
@@ -1333,7 +1416,8 @@ def _run_job(kind: str, rid: int) -> bool:
     """Run one job; a failure is recorded where the page shows it. True if it finished."""
     try:
         {"doc": _process_doc, "facts": _process_facts, "compare": _compare, "map": _map, "overlay": _overlay,
-         "resolve_tables": _resolve_tables_job, "resolve_facts": _resolve_facts_job, "roles": _suggest_job}[kind](rid)
+         "resolve_tables": _resolve_tables_job, "resolve_facts": _resolve_facts_job, "roles": _suggest_job,
+         "charts": _charts_job}[kind](rid)
         return True
     except Exception as e:
         traceback.print_exc()
@@ -1408,7 +1492,7 @@ def start_worker() -> None:
     for r in _q("SELECT id FROM documents WHERE facts_status IN ('queued','running')"):
         # an interrupted loop reruns as a loop (on the facts saved); an interrupted extraction starts again
         _jobs.put(("resolve_facts" if _q("SELECT 1 FROM facts WHERE document_id=?", r["id"]) else "facts", r["id"]))
-    for kind in ("compare", "map", "overlay"):
+    for kind in ("compare", "map", "overlay", "charts"):
         for r in _q(f"SELECT id FROM engagements WHERE {kind}_status IN ('queued','running')"):
             _jobs.put((kind, r["id"]))
     threading.Thread(target=_worker, daemon=True, name="engagement-worker").start()

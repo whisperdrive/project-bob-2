@@ -282,6 +282,8 @@ def report_content(v: dict, n: dict, vd: date, rate: float, g: float, net_debt: 
                         ["Forecast period", "FY26 - FY45", "20 years"],
                         ["Corporate tax rate", "30.00%", "Statutory"],
                         ["Net debt", f"A${m(net_debt)}m", "At Valuation Date"]],
+        "charts": {"years": [f"FY{(2026 + k) % 100:02d}" for k in range(YEARS)], "ebitda": n["ebitda"], "fcf": n["fcf"],
+                   "revenue": n["revenue"]},
         "sensitivity": [["Equity value (A$m)", f"TGR {(g - .0025) * 100:.2f}%", f"TGR {g * 100:.2f}%",
                          f"TGR {(g + .0025) * 100:.2f}%"]] +
                        [[f"WACC {(rate + dr) * 100:.2f}%"] + row for dr, row in zip((0.0025, 0, -0.0025), sens)],
@@ -351,6 +353,34 @@ def write_pdf(path: Path, c: dict) -> None:
         fig = page("3. Sensitivity analysis", 4)
         y = text(fig, ["Equity value under alternative discount rate and terminal growth assumptions (A$m)."], 0.88)
         table(fig, c["sensitivity"], y - 0.02, 0.14)
+        pdf.savefig(fig); plt.close(fig)
+
+        # Charts of the business plan's forecast, as reports have them: one drawn in the PDF (vector paths, no
+        # picture), one pasted as a picture.
+        ch = c["charts"]
+        fig = page("4. Forecast cash flows", 5)
+        y = text(fig, ["The Company's business plan forecasts steady growth in EBITDA over the forecast period, with free",
+                       "cash flow lower in the years of major maintenance."], 0.88)
+        fig.text(0.08, y - 0.02, "Figure 1: Forecast EBITDA and free cash flow (A$m)", fontsize=10, weight="bold")
+        ax = fig.add_axes([0.1, y - 0.36, 0.82, 0.3])
+        xs = range(len(ch["years"]))
+        ax.bar(xs, ch["ebitda"], color="#1a9afa", label="EBITDA")
+        ax.plot(xs, ch["fcf"], color="#2e2e38", marker="o", markersize=3, label="Free cash flow")
+        ax.set_xticks(list(xs)[::2]); ax.set_xticklabels(ch["years"][::2], fontsize=7)
+        ax.tick_params(axis="y", labelsize=7); ax.legend(fontsize=7, frameon=False)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        y2 = y - 0.44
+        fig.text(0.08, y2, "Figure 2: Forecast toll revenue (A$m)", fontsize=10, weight="bold")
+        f2 = plt.figure(figsize=(7, 3), dpi=160)
+        a2 = f2.add_axes([0.08, 0.15, 0.9, 0.78])
+        a2.bar(range(len(ch["years"])), ch["revenue"], color="#747480")
+        a2.set_xticks(list(range(len(ch["years"])))[::2]); a2.set_xticklabels(ch["years"][::2], fontsize=8)
+        for side in ("top", "right"):
+            a2.spines[side].set_visible(False)
+        buf = io.BytesIO(); f2.savefig(buf, format="png"); plt.close(f2)
+        from PIL import Image
+        ax3 = fig.add_axes([0.08, y2 - 0.3, 0.84, 0.28]); ax3.axis("off"); ax3.imshow(Image.open(buf))
         pdf.savefig(fig); plt.close(fig)
 
 

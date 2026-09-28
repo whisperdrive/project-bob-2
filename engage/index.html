@@ -150,6 +150,14 @@ tr.click:hover td { background: var(--raised); }
 .checks li.no::before { content: "✗ "; color: var(--bad); }
 .checks li.unk::before { content: "? "; color: var(--warn); font-weight: 700; }
 .checks li.over { color: var(--muted); }
+.sumtab td, .sumtab th { vertical-align: top; }
+.sumtab .sec td { background: var(--raised); font-weight: 600; font-size: 12px; color: var(--muted); padding-top: 10px; }
+.sumtab .rng { font-size: 12px; color: var(--muted); }
+.sumtab input { width: 84px; text-align: right; }
+.sumtab .delta { font-size: 12px; }
+.chartrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 8px; }
+.chartrow .src-img { border: 1px solid var(--rule); border-radius: 4px; background: #fff; padding: 6px; }
+.chartrow .src-img img { width: 100%; height: auto; display: block; }
 .vtree, .vtree ul { list-style: none; margin: 0; padding: 0; }
 .vtree ul { margin-left: 10px; padding-left: 14px; border-left: 1px solid var(--rule); }
 .vtree li { margin: 8px 0; }
@@ -360,7 +368,7 @@ async function api(path, opts = {}) {
 
 const STEPS = [
   {id: "files", name: "Files"}, {id: "reference", name: "Report reference"}, {id: "roles", name: "Roles"},
-  {id: "compare", name: "Compare models"}, {id: "map", name: "Map"}, {id: "python", name: "Python overlay"}];
+  {id: "compare", name: "Compare models"}, {id: "map", name: "Map"}, {id: "python", name: "Python overlay"}, {id: "summary", name: "Summary"}];
 const ROLE_HELP = {
   prior_report: "Last year's final report: conclusions and assumptions.",
   prior_model: "The client's model behind last year's valuation.",
@@ -401,7 +409,7 @@ function schedule() {
   clearTimeout(pollTimer);
   if (!E) return;
   const working = E.documents.some(d => busy(d.status) || busy(d.facts_status) || ["queued", "reading"].includes(d.tables_status)) || E.workbooks.some(w => busy(w.status))
-    || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || E.roles_pending || uploads.some(u => !u.done);
+    || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || busy(E.charts_status) || E.roles_pending || uploads.some(u => !u.done);
   if (working) pollTimer = setTimeout(async () => { await refresh(); spend(); }, 1500);
 }
 async function spend() {
@@ -430,6 +438,7 @@ function progress() {
     compare: E.compare_status === "done" ? "done" : (E.compare_status ? "work" : ""),
     map: E.map_status === "done" ? "done" : (E.map_status ? "work" : ""),
     python: E.overlay_status === "done" ? "done" : (E.overlay_status ? "work" : ""),
+    summary: E.charts_status === "done" ? "done" : (E.charts_status ? "work" : ""),
   };
 }
 function renderSteps() {
@@ -447,7 +456,7 @@ function render(creating = false) {
   renderNow();
   const m = $("#main");
   if (!E || creating) { m.innerHTML = viewNew(); bindNew(); $("#now").hidden = true; return; }
-  const views = {files: viewFiles, reference: viewReference, roles: viewRoles, compare: viewCompare, map: viewMap, python: viewPython};
+  const views = {files: viewFiles, reference: viewReference, roles: viewRoles, compare: viewCompare, map: viewMap, python: viewPython, summary: viewSummary};
   keepOpen(m, () => { m.innerHTML = (views[state.step] || viewFiles)(); bind[state.step]?.(); });
 }
 // A redraw (the page refreshes every couple of seconds while work runs) mustn't close a section you opened, or open
@@ -513,7 +522,7 @@ function pipeline() {
   st.push(roles);
   // 4-6 compare, map, python overlay
   const ready = nConf === 4;
-  for (const [id, key, label, verb] of [["compare", "compare", "Compare models", "Compare the client models"], ["map", "map", "Map", "Build the map"], ["python", "overlay", "Python overlay", "Build the Python overlay"]]) {
+  for (const [id, key, label, verb] of [["compare", "compare", "Compare models", "Compare the client models"], ["map", "map", "Map", "Build the map"], ["python", "overlay", "Python overlay", "Build the Python overlay"], ["summary", "charts", "Summary", "Recreate the report's charts"]]) {
     const s = E[`${key}_status`], x = {id, name: label};
     if (busy(s)) Object.assign(x, {state: "running", line: "building", live: `${label}: ${E[`${key}_step`] || "starting"}`,
       timer: s === "running" ? [E[`${key}_started_at`], key === "overlay" ? E.overlay_pct : null, E[`${key}_secs`]] : null});
@@ -1325,6 +1334,114 @@ function leverRaw(l, shown) {
   if (l.unit === "date" || l.key === "valuation_date") return shown;
   return +shown * (l.scale || 1);
 }
+// ---- step 7: the summary: the report's summary table and charts, rebuilt and rolled forward -----------------
+const SUM = {eid: null, data: null, loading: false, changes: {}, vd: null, method: {}, seq: 0, chartsSeen: null};
+function viewSummary() {
+  if (SUM.eid !== E.id) Object.assign(SUM, {eid: E.id, data: null, changes: {}, vd: null, method: {}, chartsSeen: null});
+  const head = `<div class="lede"><div><h1><b>Summary</b></h1><p>Last year's report, rebuilt and rolled forward: its summary table recomputed on last year's client model (it should tie) and on this year's, and its charts redrawn from both models and checked against the report's own by eye. Change an assumption, the valuation date or the discounting method to see your scenario.</p></div></div>`;
+  const d = SUM.data;
+  if (!d) return head + `<div class="card"><p class="muted" style="margin:0">${SUM.loading ? "Recomputing the summary…" : "Loading…"}</p></div>`;
+  return head + summaryCard(d) + chartsCard(d);
+}
+const sumNum = (row, v) => {  // a conclusion as the report prints it: its units and decimals
+  if (v == null || typeof v !== "number") return v == null ? "–" : esc(v);
+  const x = (row.sign || 1) * v / (row.scale || 1), m = String(row.report || "").match(/\d[\d,]*(?:\.(\d+))?/), dp = m && m[1] ? m[1].length : 0;
+  return x.toLocaleString(undefined, {minimumFractionDigits: dp, maximumFractionDigits: dp});
+};
+function summaryCard(d) {
+  const t = d.table;
+  if (!t) return `<div class="card"><p style="margin:0">${esc(d.why || "The summary needs the Python overlay.")}</p></div>`;
+  const cols = t.columns, name = {rebuilt: t.feeds.rebuilt === "prior" ? "Rebuilt on last year's model" : "Rebuilt (as saved)", this_year: "This year, rolled forward", scenario: "Your scenario"};
+  const base = cols.includes("this_year") ? "this_year" : "rebuilt";
+  const conc = t.rows.filter(r => r.kind === "conclusion"), ass = t.rows.filter(r => r.kind === "assumption"), app = t.rows.filter(r => r.kind === "approach");
+  const tick = r => r.tie ? (r.tie.ok ? ` <span class="pill ok" title="Rounds to the report's figure">✓</span>` : ` <span class="pill bad" title="The report says ${esc(r.tie.report)}">✗</span>`) : "";
+  const cell = (r, col) => {
+    const v = r.values?.[col], lo = r.low?.[col], hi = r.high?.[col];
+    const delta = col === "scenario" && typeof v === "number" && typeof r.values?.[base] === "number" && Math.abs(v - r.values[base]) > 1e-9
+      ? `<div class="delta ${v > r.values[base] ? "" : "muted"}">${v > r.values[base] ? "+" : ""}${sumNum(r, v - r.values[base])} vs ${col === base ? "base" : "this year"}</div>` : "";
+    return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "rebuilt" ? tick(r) : ""}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}` : `<span class="muted small">not in the overlay</span>`}</td>`;
+  };
+  const lev = (r, col) => {
+    const l = r.lever; if (!l) return `<td class="num muted small">${col === "scenario" ? "" : "–"}</td>`;
+    const v = r.values?.[col];
+    if (col !== "scenario" || l.key === "valuation_date" || l.unit === "date") return `<td class="num">${esc(leverShown(l, v))}${l.unit === "%" && typeof v === "number" ? " %" : ""}</td>`;
+    const cur = SUM.changes[l.cell];
+    return `<td class="num"><input type="text" data-sumlever="${esc(l.cell)}" value="${esc(cur !== undefined ? leverShown(l, cur) : leverShown(l, v))}" aria-label="${esc(r.label)}">${l.unit === "%" ? " %" : ""}</td>`;
+  };
+  const vdDefault = t.scenario_roll?.valuation_date || t.roll?.valuation_date || "";
+  const sel = (id, opts, cur) => `<select class="in" id="${id}">${opts.map(([v, lab]) => `<option value="${v}" ${v === (cur || "") ? "selected" : ""}>${lab}</option>`).join("")}</select>`;
+  const notes = [...conc.filter(r => r.method_note).map(r => `${r.label}: ${r.method_note}`), ...conc.filter(r => r.range_note).map(r => `${r.label}: ${r.range_note}`)];
+  return `<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-end"><div><h2>Valuation summary</h2>
+    <p class="sub" style="margin:0">Rows from last year's report. ${t.feeds.rebuilt === "prior" ? "The rebuild feeds the overlay from last year's client model;" : "The rebuild uses the values saved in the overlay;"} this year feeds it from this year's client model, rolled forward${t.roll?.valuation_date ? ` to ${esc(t.roll.valuation_date)}` : ""}.</p></div>
+    <div class="row small" style="gap:10px;align-items:flex-end">${t.feeds.scenario === "current" ? `<label class="muted">Valuation date<br><input type="date" id="sumVd" value="${esc(SUM.vd || vdDefault)}"></label>` : ""}
+      <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
+      <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>
+      ${Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length ? `<button class="btn small ghost" id="sumReset">Reset</button>` : ""}</div></div>
+  <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
+    <tr class="sec"><td colspan="${cols.length + 2}">Conclusions</td></tr>
+    ${conc.map(r => `<tr><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
+    <tr class="sec"><td colspan="${cols.length + 2}">Key assumptions</td></tr>
+    ${ass.map(r => `<tr><td>${esc(r.label)}${r.basis ? `<div class="small muted">${esc(r.basis)}</div>` : ""}</td><td class="num">${esc(r.report || "")}</td>${cols.map(c => lev(r, c)).join("")}</tr>`).join("")}
+    <tr class="sec"><td colspan="${cols.length + 2}">Approach</td></tr>
+    ${app.map(r => `<tr><td>${esc(r.label)}</td><td colspan="${cols.length + 1}">${esc(r.report || "")}</td></tr>`).join("")}
+    ${t.detected_method.length ? `<tr><td>Discounting found in the overlay</td><td colspan="${cols.length + 1}">${t.detected_method.map(esc).join("<br>")}${Object.keys(t.method || {}).length ? `<div class="small"><b>Your scenario:</b> ${esc([t.method.timing && (t.method.timing === "mid" ? "mid-period" : "end of period"), t.method.day_count].filter(Boolean).join(", "))}</div>` : ""}</td></tr>` : ""}
+  </tbody></table></div>
+  ${notes.length ? `<ul class="why small" style="margin-top:8px">${notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+  <p class="small muted" style="margin:8px 0 0">Assumptions without an input in the overlay can't be changed here. The discounting method applies to each discounting under a figure and carries through the formulas above it (see how the figure is built in <b>Python overlay → Valuation (DCF)</b>).</p></div>`;
+}
+function chartsCard(d) {
+  const st = d.charts_status || E.charts_status, running = busy(st), ch = d.charts?.charts || [];
+  const img = p => p ? `<div class="src-img"><img src="/api/engagements/${E.id}/charts/${encodeURIComponent(p.split("/").pop())}?v=${encodeURIComponent(d.charts?.at || "")}" alt="The chart in last year's report"></div>` : `<p class="small muted">Its data is in the file itself (no picture).</p>`;
+  const head = `<div class="row" style="justify-content:space-between"><div><h2>The report's charts</h2><p class="sub" style="margin:0">Each chart in last year's report, read by eye, drawn again from the model rows that match it, and checked against the report's own picture by a second model. The report charted last year's client model, so the rebuild should match; the same rows in this year's model give this year's chart.</p></div>
+    ${running ? `<span class="pill info">${esc(d.charts_step || E.charts_step || "Working")}</span>` : `<button class="btn small" id="sumCharts">${ch.length || d.charts ? "Recreate them again" : "Recreate the report's charts"}</button>`}</div>`;
+  if (d.charts_error || E.charts_error) return `<div class="card">${head}<div class="callout bad small" style="margin-top:8px">${esc(d.charts_error || E.charts_error)}</div></div>`;
+  if (!d.charts) return `<div class="card">${head}<p class="muted small">${running ? "Finding the charts in the report and recreating them…" : "Not recreated yet."}</p></div>`;
+  if (!ch.length) return `<div class="card">${head}<p class="muted small">No charts found in the report.</p></div>`;
+  return `<div class="card">${head}${ch.map((c, i) => {
+    const v = (c.tries || []).slice(-1)[0]?.verdict, rows = (c.picks || []).map((p, k) => p ? `${esc(c.read?.series?.[k]?.name || "series " + (k + 1))} → <span class="mono">${esc(p.sheet)}!r${p.row}</span> ${esc(p.label)} <span class="muted">(${(p.error * 100).toFixed(1)}% off the reading${p.scale !== 1 ? `, ×${p.scale}` : ""})</span>` : `${esc(c.read?.series?.[k]?.name || "")}: no matching row`);
+    return `<div style="margin-top:16px;border-top:1px solid var(--rule);padding-top:12px"><h3 style="margin:0;font-size:15px">${esc(c.caption || c.read?.title || "Chart " + (i + 1))} <span class="muted small">page ${c.page} · ${esc(c.source)}</span>
+      ${c.problem ? `<span class="pill warn">${esc(c.problem)}</span>` : c.matches ? `<span class="pill ok">✓ matches the report</span>` : `<span class="pill bad">Doesn't match</span>`}</h3>
+      ${v && !c.matches ? `<ul class="why small">${(v.differences || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : v ? `<p class="small muted" style="margin:4px 0 0">Checked by ${esc(v.by || "")}${(c.tries || []).length > 1 ? ` after ${c.tries.length} tries` : ""}.</p>` : ""}
+      ${rows.length ? `<p class="small" style="margin:4px 0 0">${rows.join("<br>")}</p>` : ""}
+      <div class="chartrow"><div><div class="small muted">In the report</div>${img(c.source !== "pptx chart" ? c.png : null)}</div>
+        <div id="sumRebuilt${i}"><div class="small muted">Rebuilt from last year's model</div></div>
+        <div id="sumCurrent${i}"><div class="small muted">This year's model</div>${c.current_spec ? "" : `<p class="small muted">${esc(c.current_problem || (c.picks ? "Not on this year's model (its rows couldn't be found there)" : ""))}</p>`}</div></div></div>`;
+  }).join("")}</div>`;
+}
+async function loadSummary() {
+  const seq = ++SUM.seq; SUM.loading = true;
+  try {
+    const body = {changes: SUM.changes, valuation_date: SUM.vd || null, method: SUM.method};
+    const d = await api(`/api/engagements/${E.id}/summary`, {method: "POST", body});
+    if (seq !== SUM.seq) return;
+    SUM.data = d; SUM.chartsSeen = d.charts_status;
+  } catch (e) { if (seq === SUM.seq) SUM.data = {table: null, why: e.message}; }
+  SUM.loading = false;
+  if (state.step === "summary") { keepOpen($("#main"), () => { $("#main").innerHTML = viewSummary(); bindSummary(); }); if (busy(SUM.data?.charts_status)) schedule(); }
+}
+function bindSummary() {
+  const d = SUM.data;
+  if (!d) { if (!SUM.loading) loadSummary(); return; }
+  if (busy(E.charts_status) !== busy(SUM.chartsSeen) || (E.charts_status === "done" && SUM.chartsSeen !== "done")) { SUM.chartsSeen = E.charts_status; loadSummary(); }
+  let t;
+  const rerun = () => { clearTimeout(t); t = setTimeout(loadSummary, 400); };
+  document.querySelectorAll("[data-sumlever]").forEach(inp => inp.oninput = () => {
+    const r = d.table.rows.find(x => x.lever?.cell === inp.dataset.sumlever), l = r.lever;
+    if (inp.value === "") delete SUM.changes[l.cell]; else if (!isNaN(+inp.value)) SUM.changes[l.cell] = leverRaw(l, inp.value); else return;
+    rerun();
+  });
+  $("#sumVd")?.addEventListener("change", e => { SUM.vd = e.target.value || null; loadSummary(); });
+  $("#sumTiming")?.addEventListener("change", e => { if (e.target.value) SUM.method.timing = e.target.value; else delete SUM.method.timing; loadSummary(); });
+  $("#sumDc")?.addEventListener("change", e => { if (e.target.value) SUM.method.day_count = e.target.value; else delete SUM.method.day_count; loadSummary(); });
+  $("#sumReset")?.addEventListener("click", () => { SUM.changes = {}; SUM.vd = null; SUM.method = {}; loadSummary(); });
+  $("#sumCharts")?.addEventListener("click", () => act(async () => { await api(`/api/engagements/${E.id}/charts`, {method: "POST"}); SUM.chartsSeen = "queued"; }));
+  (d.charts?.charts || []).forEach((c, i) => {
+    if (c.spec && $(`#sumRebuilt${i}`)) { $(`#sumRebuilt${i}`).append(chartCard(c.spec)); }
+    if (c.current_spec && $(`#sumCurrent${i}`)) { $(`#sumCurrent${i}`).append(chartCard(c.current_spec)); }
+  });
+  mountCharts($("#main"));
+}
+bind.summary = bindSummary;
 function viewPython() {
   const head = `<div class="lede"><div><h1><b>Python overlay</b></h1><p>Last year's overlay rebuilt as a Python module from its own formulas: every formula cell becomes Python, checked against the value Excel saved, then against the report. Run it live: change the assumptions, or feed it from the prior or the current client model to roll the valuation forward.</p></div></div>`;
   if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in step 3 first.</div>`;

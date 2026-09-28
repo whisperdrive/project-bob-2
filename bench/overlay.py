@@ -542,6 +542,170 @@ def scenario(sess: Session, summary: dict, mode: str, changes: dict, valuation_d
             "n_unmatched": len(unmatched)}
 
 
+# ---- the Summary page: the report's summary table, rebuilt and rolled forward --------------------------------
+
+def _range_cells(db, cell: str, texts: list, scale: float, sign: int, sheets: list[str]) -> list[str | None]:
+    """The cells holding a conclusion's low and high ends: the report's printed figures at their precision, near
+    the preferred value first (same area of the sheet), else anywhere on the overlay's sheets (a formula cell
+    before a typed one, then the nearest sheet order)."""
+    s, r, c = parse_a1(cell)
+    out = []
+    for t in texts:
+        n = _num_in(t or "")
+        if not n:
+            out.append(None)
+            continue
+        x, d = n
+        lo, hi = (x - 0.5 * 10 ** -d) * (scale or 1.0) * sign, (x + 0.5 * 10 ** -d) * (scale or 1.0) * sign
+        hits = []
+        for sh, rr, cc, v, f in db.execute(
+                f"SELECT sheet, row, col, value, formula FROM cells WHERE sheet IN ({','.join('?' * len(sheets))}) "
+                f"AND typeof(value) IN ('real','integer') AND value BETWEEN ? AND ?", (*sheets, min(lo, hi) - 1e-9, max(lo, hi) + 1e-9)):
+            if (sh, rr, cc) == (s, r, c) or abs(round(sign * v / (scale or 1.0), d) - x) > 0.5 * 10 ** -d + 1e-9:
+                continue
+            near = sh == s and abs(rr - r) <= 6 and abs(cc - c) <= 8
+            hits.append((not near, f is None, (abs(rr - r) + abs(cc - c)) if sh == s else 999, sh, rr, cc))
+        out.append(_a1(*min(hits)[3:]) if hits else None)
+    return out
+
+
+def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
+                  valuation_date: str | None = None, months: int | None = None, method: dict | None = None) -> dict:
+    """The report's summary, rebuilt and rolled forward. Rows: the report's conclusions (with their ranges), its
+    assumptions and its approach. Columns: the report; rebuilt on last year's model (the prior feed, or the values
+    saved in the overlay without one); this year, rolled forward (the current feed); and a scenario: this year
+    (last year without a current model) with the person's assumption changes, valuation date and discounting
+    method. The method reaches a figure through its trace (dcftrace.recompute): each discounting under it is
+    redone with the new method and the formulas above carry the results up; that is checked first by
+    reproducing the module's own value with the method unchanged."""
+    import dcf
+    import dcftrace
+    w = summary["wiring"]
+    path = w["overlay"]["db_path"]
+    db = rodb.connect(path)
+    base_feed = "prior" if w.get("prior") else "workbook"
+    this_feed = "current" if w.get("current") else None
+    sc_feed = this_feed or base_feed
+    extra = {parse_a1(k): v for k, v in (changes or {}).items()}
+    outs = {o["fact_id"]: o for o in summary.get("outputs") or [] if o.get("fact_id")}
+    levers = {l["key"]: l for l in summary.get("levers") or []}
+    rows, keys = [], set()
+    for f in facts:
+        cat = f.get("category")
+        if cat == "conclusion":
+            o = outs.get(f["id"])
+            row = {"kind": "conclusion", "key": f.get("key"), "label": f.get("label") or f.get("key"),
+                   "report": f.get("value_text"), "report_low": f.get("low_text"), "report_high": f.get("high_text"),
+                   "unit": f.get("unit"), "page": f.get("page"), "cell": o["cell"] if o else None}
+            if o:
+                row.update(scale=o.get("scale") or 1.0, sign=o.get("sign") or 1)
+                row["low_cell"], row["high_cell"] = _range_cells(db, o["cell"], [f.get("low_text"), f.get("high_text")],
+                                                                 row["scale"], row["sign"], summary["sheets"]) \
+                    if f.get("low_text") else (None, None)
+                keys.update(parse_a1(x) for x in (o["cell"], row["low_cell"], row["high_cell"]) if x)
+            rows.append(row)
+        elif cat == "assumption":
+            l = levers.get(f.get("key"))
+            rows.append({"kind": "assumption", "key": f.get("key"), "label": f.get("label") or f.get("key"),
+                         "report": f.get("value_text"), "basis": f.get("basis"), "unit": f.get("unit"),
+                         "page": f.get("page"), "lever": l})
+            if l:
+                keys.add(parse_a1(l["cell"]))
+        elif cat == "approach":
+            rows.append({"kind": "approach", "key": f.get("key"), "label": f.get("label") or f.get("key"),
+                         "report": f.get("value_text"), "page": f.get("page")})
+    keys = sorted(keys)
+
+    def read(feed, with_changes, vd=None, mo=None):
+        defaults, roll, mo = _feed(summary, feed, vd, mo)
+        sess.configure(feed, {**defaults, **(extra if with_changes else {})}, mo or 0)
+        got = dict(zip(keys, sess.values(keys)))
+        return got, roll, defaults, mo
+
+    cols = {}
+    cols["rebuilt"], _, _, _ = read(base_feed, False)
+    roll = None
+    if this_feed:
+        cols["this_year"], roll, _, _ = read(this_feed, False)
+    cols["scenario"], sc_roll, sc_defaults, sc_months = read(sc_feed, True, valuation_date, months)
+    val = lambda col, cell: _show(cols[col].get(parse_a1(cell))) if cell else None
+    for row in rows:
+        if row["kind"] == "conclusion" and row.get("cell"):
+            for part, cell in (("values", row["cell"]), ("low", row.get("low_cell")), ("high", row.get("high_cell"))):
+                if not cell:
+                    continue
+                typed = part != "values" and db.execute("SELECT formula FROM cells WHERE sheet=? AND row=? AND col=?",
+                                                        parse_a1(cell)).fetchone()[0] is None
+                row[part] = {col: val(col, cell) for col in cols if not typed or col == "rebuilt"}
+                if typed:
+                    row["range_note"] = (f"the range ends ({row.get('low_cell')}, {row.get('high_cell')}) are typed into the "
+                                         f"overlay, not calculated, so they don't move with this year's model")
+            if row.get("values"):
+                row["tie"] = tie(cols["rebuilt"].get(parse_a1(row["cell"])), row["report"], row["scale"], row["sign"])
+        elif row["kind"] == "assumption" and row.get("lever"):
+            row["values"] = {col: val(col, row["lever"]["cell"]) for col in cols}
+
+    # the discounting method, through each conclusion's trace
+    detected, notes = [], []
+    method = {k: v for k, v in (method or {}).items() if v}
+    traces = {}
+    for row in rows:
+        if row["kind"] != "conclusion" or not row.get("cell"):
+            continue
+        try:
+            t = dcftrace.trace(db, row["cell"])
+        except ValueError:
+            continue
+        cs = [c for c in dcftrace.cores(t) if c.get("inputs")]
+        traces[row["cell"]] = (t, cs)
+        for c in dcftrace.cores(t):
+            m = c.get("method") or {}
+            d = f"{c['what']}" + (f", {m['timing']} of period, {m['day_count']}" if m else "")
+            if d not in detected:
+                detected.append(d)
+    if method and traces:
+        need = set(keys)
+        for t, cs in traces.values():
+            for c in cs:
+                need |= _dcf_cells(db, c["inputs"])
+
+            def walk(n):
+                if not n.get("again"):
+                    r = dcf._ref(n["cell"], "")
+                    need.add((r[0], r[1], r[2]))
+                for ch in n.get("children", []):
+                    walk(ch)
+            walk(t)
+        sess.configure(sc_feed, {**sc_defaults, **extra}, sc_months or 0)
+        live_db = rodb.patched(path, _module_values(db, sess, need))
+        for row in rows:
+            if row.get("cell") not in traces:
+                continue
+            t, cs = traces[row["cell"]]
+            if not cs:
+                row["method_note"] = "no discounting under it that the method can be applied to"
+                continue
+            try:
+                same = {c["cell"]: dcf.compute(live_db, **{**c["inputs"], "compare_to": None}, fix=False)["total"] for c in cs}
+                redone = {c["cell"]: dcf.compute(live_db, **{**c["inputs"], "compare_to": None, **method}, fix=False)["total"]
+                          for c in cs}
+            except ValueError as e:
+                row["method_note"] = f"couldn't redo its discounting: {e}"
+                continue
+            module = cols["scenario"].get(parse_a1(row["cell"]))
+            again = dcftrace.recompute(live_db, t, same)
+            if again is None or not isinstance(module, float) or not dcf._close(again, module):
+                row["method_note"] = "the formulas above its discounting can't be recomputed here, so the method isn't applied"
+                continue
+            row.setdefault("values", {})["scenario"] = dcftrace.recompute(live_db, t, redone)
+            row["method_applied"] = True
+    sess.configure("workbook")
+    return {"rows": rows, "columns": [c for c in ("rebuilt", "this_year", "scenario") if c in cols],
+            "feeds": {"rebuilt": base_feed, "this_year": this_feed, "scenario": sc_feed},
+            "roll": roll, "scenario_roll": sc_roll, "detected_method": detected, "method": method,
+            "changes": changes or {}, "notes": notes}
+
+
 # ---- the DCF on the live module ----------------------------------------------------------------------------
 # The Model Desk's Valuation tab (valuation.py) on the Python overlay's own numbers. valuation.py finds each DCF's
 # structure in the workbook (cash-flow rows, discount rate, valuation date, convention, cut-off, bridge); dcf.py

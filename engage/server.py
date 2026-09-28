@@ -278,6 +278,34 @@ async def model_rows(eid: int, fid: int, sheet: str | None = None, q: str | None
     return await _run(engagement.model_rows, eid, fid, sheet, q, mapped, limit)
 
 
+class Summary(BaseModel):
+    changes: dict = {}
+    valuation_date: str | None = None
+    months: int | None = None
+    method: dict = {}
+
+
+@app.post("/api/engagements/{eid}/summary")
+async def summary_view(eid: int, body: Summary):
+    """The Summary page: the report's summary table rebuilt, rolled forward and as a scenario, and its charts."""
+    return await _run(engagement.summary_view, eid, body.changes, body.valuation_date, body.months, body.method)
+
+
+@app.post("/api/engagements/{eid}/charts")
+async def recreate_charts(eid: int):
+    """Recreate the report's charts from the models again."""
+    await _run(engagement.recreate_charts, eid)
+    return {"ok": True}
+
+
+@app.get("/api/engagements/{eid}/charts/{name}")
+async def chart_png(eid: int, name: str):
+    p = engagement.chart_png(eid, name)
+    if not p:
+        raise HTTPException(404, "no such chart image")
+    return FileResponse(p, media_type="image/png")
+
+
 @app.post("/api/engagements/{eid}/{kind}")
 async def start_step(eid: int, kind: str):
     if kind not in ("compare", "map", "overlay"):

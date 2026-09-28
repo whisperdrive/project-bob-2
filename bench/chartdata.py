@@ -67,17 +67,23 @@ def enrich(spec: dict, db: sqlite3.Connection) -> dict:
     freq, per_year = next(((f, k) for lo, hi, f, k in ((26, 33, "monthly", 12), (85, 95, "quarterly", 4),
                                                         (178, 187, "semi-annual", 2), (360, 370, "annual", 1))
                            if lo <= gap <= hi), ("irregular", 0))
-    # Period end = the day before the next period starts. The last period has no successor: step whole
-    # months for monthly/quarterly/semi-annual data (a day count like 92 would overshoot into the next month).
-    ends = [b - timedelta(days=1) for b in starts[1:]]
-    if per_year in (12, 4, 2):
-        k = 12 // per_year
-        y, m = divmod(starts[-1].month - 1 + k, 12)
-        ends.append(date(starts[-1].year + y, m + 1, 1) - timedelta(days=1))
-        ends = [date(e.year, e.month, monthrange(e.year, e.month)[1]) for e in ends]  # month ends ("Sep-2017")
+    if not all(s.day == 1 for s in starts):
+        # the timeline holds period end dates (30 Jun, 30 Sep, ...), not starts: they are the ends
+        ends = [date(e.year, e.month, monthrange(e.year, e.month)[1]) if per_year in (12, 4, 2) else e for e in starts]
     else:
-        ends.append(starts[-1] + timedelta(days=int(gap)) - timedelta(days=1))
+        # Period end = the day before the next period starts. The last period has no successor: step whole
+        # months for monthly/quarterly/semi-annual data (a day count like 92 would overshoot into the next month).
+        ends = [b - timedelta(days=1) for b in starts[1:]]
+        if per_year in (12, 4, 2):
+            k = 12 // per_year
+            y, m = divmod(starts[-1].month - 1 + k, 12)
+            ends.append(date(starts[-1].year + y, m + 1, 1) - timedelta(days=1))
+            ends = [date(e.year, e.month, monthrange(e.year, e.month)[1]) for e in ends]  # month ends ("Sep-2017")
+        else:
+            ends.append(starts[-1] + timedelta(days=int(gap)) - timedelta(days=1))
     fy_m = fy_end_month(db)
+    if fy_m == 12 and freq == "annual" and len({e.month for e in ends}) == 1:
+        fy_m = ends[0].month  # yearly periods all ending in June: a June financial year, whatever the model says
     fy = lambda e: e.year if e.month <= fy_m else e.year + 1  # financial year a period ends in
     year_label = (lambda y: f"FY{y}") if fy_m != 12 else str
     if freq == "annual":

@@ -332,11 +332,17 @@ class Reader:
         if png is not None:
             content.append({"type": "input_image", "image_url": f"data:image/png;base64,{base64.b64encode(png).decode()}",
                             "detail": "high"})
-        r = create(self.llm, model, text={"format": schema}, max_output_tokens=6000, purpose=purpose,
-                   input=[{"role": "user", "content": content}])
-        if r.usage:
-            self.on_usage(model, r.usage, purpose)
-        return json.loads(r.output_text)
+        for attempt in (1, 2):  # a reply that isn't valid JSON is asked for once more
+            r = create(self.llm, model, text={"format": schema}, max_output_tokens=6000,
+                       purpose=purpose if attempt == 1 else f"{purpose} (again)", input=[{"role": "user", "content": content}])
+            if r.usage:
+                self.on_usage(model, r.usage, purpose)
+            try:
+                return json.loads(r.output_text)
+            except json.JSONDecodeError:
+                if attempt == 2:
+                    raise
+        raise AssertionError("unreachable")
 
     def table(self, png: bytes, where: str, second: bool = False, feedback: str | None = None) -> dict:
         note = FEEDBACK_NOTE.format(feedback=feedback) if feedback else ""

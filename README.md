@@ -285,6 +285,27 @@ steps, each checked by a person before the next relies on it:
      differs). It knows
      the report's key facts, the levers, the outputs and the feeds. Charts go through the same chart review as
      on the Model Desk.
+7. **Summary** (`overlay.summary_table`, `bench/reportcharts.py`). Last year's report, rebuilt and rolled forward.
+   - **Valuation summary.** The rows are the report's conclusions (with their low and high ends), its key
+     assumptions and its approach. The columns are the report; the rebuild on last year's client model (it
+     should tie, and each figure says whether it does at the report's printed precision); this year, rolled
+     forward onto this year's client model; and your scenario. In the scenario you can change any assumption
+     that has an input in the overlay, the valuation date, and the discounting method (end or mid-period,
+     actual/actual or actual/365). The method reaches a figure through its trace: each discounting under it is
+     redone, and the formulas above carry the results up (e.g. the mid value as the average of the low- and
+     high-rate PVs). That path is first checked by reproducing the module's own value with the method
+     unchanged; where it can't be, the method isn't applied and the page says so. A range end typed into the
+     overlay, rather than calculated, is shown for last year only.
+   - **The report's charts.** Last year's report charted last year's client model, so the same rows drawn from
+     that model must reproduce each chart. Charts are found in three places: pictures the table reader classed
+     as figures, PPTX charts (whose data is exact), and charts drawn in the PDF itself (bars sharing a baseline
+     or plotted lines, found from the page's drawing, with the axis labels taken in). gpt-6-luna reads each one
+     (title, kind, units, years, each series' values). Code finds the model rows whose financial-year totals
+     follow each series, allowing for units and sign, within 6%. gpt-6-sol then compares the report's picture
+     with the recreation (the data, not the styling). A series it rejects gets the next candidate row, up to
+     three tries. The same rows in this year's client model give this year's chart. They run by themselves the
+     first time the page opens after the overlay is built. `tests/make_engagement_pack.py` puts both kinds of
+     chart in the synthetic report.
 
 A status panel at the top of every step shows where the engagement is. Each stage appears as done, running (with
 what the agents are doing now, step by step, the review loop animated), needing you, or failed. It also shows the
