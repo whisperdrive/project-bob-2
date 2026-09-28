@@ -169,6 +169,21 @@ steps, each checked by a person before the next relies on it:
    note. When the checks improve, existing facts are checked again once (no model calls), and facts that were held
    up only by a check settle.
 
+   **Tables** go through the same loop, with three more rules. First, the text-layer check forgives spacing and
+   nothing else. Letter-spaced labels ("Hi gh"), numbers split at the decimal point ("3. 75%") and numbers run
+   together across columns ("222" for 2 | 2 | 2) match when the characters are the same and in the same order on
+   one line. A misread digit, a dropped % or bracket, or a swapped column still fails. Second, from round two, if
+   the text layer still objects but the extractor's correction and the reviewer's independent read of the image
+   agree on every number, the image wins. The figures in question are then looked for elsewhere in the report:
+   the running text (the table's own page first) and the other tables. The reviewer judges whether each mention
+   is about the same item (same measure, column, date and entity). A mention that contradicts the reads stops
+   the table from settling; one that confirms them is shown with the table. Third, what still isn't settled goes
+   to the arbiter. It looks at the image, both reads, the text layer and those mentions, and gives each reader
+   feedback. The extractor corrects once more and the reviewer reads the image again. If the two now agree, the
+   table is settled. If not, it goes to the person, with the agents' latest correction on screen. When the loop
+   improves, the tables it left for a person go round once more, and any the new check now passes settle
+   without a model call.
+
    **What the agents learn** (`bench/lessons.py`). After each loop the reviewer turns what went wrong and how it was
    fixed into rules about method: where to look, how to read, what to check. Code enforces the anonymity. A
    lesson that names anything from the engagement or carries a figure is sent back once to be rewritten, then

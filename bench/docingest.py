@@ -76,7 +76,50 @@ Transcription:
 
 Rules learned from earlier reviews (list the IDs you apply in rules_applied):
 {rules}"""
+ARBITER_PROMPT = """You are an independent arbiter. Two models read the table in this image, cut from {where} of a
+valuation report, and a review loop couldn't settle it{why}. Look at the image yourself. For every row in question
+(where the two reads differ, or a check below objects), write out what the image shows for that row (every value
+in column order, exactly as printed) and say which read has it right. Then give each model one short piece of
+feedback: what to look at again and what to correct. Other mentions of these figures in the report are below;
+use one only if it clearly states the same item (same measure, same column, same date, same entity): a number
+that merely coincides proves nothing.
+
+Open points:
+{problems}
+
+The extractor's latest transcription:
+{first}
+
+The reviewer's independent read:
+{second}
+{page_text}{mentions}
+Rules learned from earlier reviews (list the IDs you apply in rules_applied):
+{rules}"""
+MENTIONS_PROMPT = """A table in a valuation report ({where}) was read from its image, and the figures below are in
+question: the reads of the image and the PDF's own text disagree on them, or the two reads disagree with each
+other. Other parts of the report contain the same numbers. For each passage, decide whether it states one of
+these figures for the same item: the same measure, the same column (low / mid / high, a year, a scenario), the
+same date and the same entity. If it does, say whether it confirms what the reads of the image show, or
+contradicts them. A number that merely coincides, or the same measure for another period, scenario or entity,
+is "not the same item". When unsure, say "not the same item".
+
+Table: {title}
+{table}
+Figures in question:
+{disputed}
+
+Passages:
+{passages}"""
+FEEDBACK_NOTE = """
+An independent arbiter looked at this image too and noted the points below. Check each against the image
+yourself; transcribe what the image shows, not what the note says.
+{feedback}
+"""
 MAX_ROUNDS = 3
+VISUAL_AFTER = 2  # rounds the extractor gets against the page's text layer before two agreeing reads of the image
+                  # outrank it (the text layer is usually right, but PDFs do glue or split characters)
+LOOP_VERSION = 2  # bump when the loop changes: tables it left for a person go round once more
+                  # (2: agreeing reads of the image outrank the text layer; the arbiter; the report's other mentions)
 _S = {"type": "string"}
 _READ = {"type": "json_schema", "name": "table_read", "strict": True, "schema": {
     "type": "object", "additionalProperties": False, "required": ["is_table", "title", "markdown", "description"],
@@ -89,6 +132,20 @@ _FIX = {"type": "json_schema", "name": "table_fix", "strict": True, "schema": {
     "type": "object", "additionalProperties": False, "required": ["markdown", "changes", "rules_applied"],
     "properties": {"markdown": _S, "changes": _S, "rules_applied": _IDS}}}
 _PROBLEM = {"type": "object", "additionalProperties": False, "required": ["row", "issue"], "properties": {"row": _S, "issue": _S}}
+_ARB_ROW = {"type": "object", "additionalProperties": False, "required": ["row", "image_shows", "right", "note"],
+            "properties": {"row": _S, "image_shows": _S, "note": _S,
+                           "right": {"type": "string", "enum": ["extractor", "reviewer", "both", "neither"]}}}
+_ARBITER = {"type": "json_schema", "name": "table_arbiter", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False,
+    "required": ["rows", "to_extractor", "to_reviewer", "rules_applied"],
+    "properties": {"rows": {"type": "array", "items": _ARB_ROW}, "to_extractor": _S, "to_reviewer": _S,
+                   "rules_applied": _IDS}}}
+_MENTION = {"type": "object", "additionalProperties": False, "required": ["passage", "verdict", "figure", "why"],
+            "properties": {"passage": {"type": "integer"}, "figure": _S, "why": _S,
+                           "verdict": {"type": "string", "enum": ["confirms", "contradicts", "not the same item"]}}}
+_MENTIONS = {"type": "json_schema", "name": "table_mentions", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False, "required": ["passages"],
+    "properties": {"passages": {"type": "array", "items": _MENTION}}}}
 _VERIFY = {"type": "json_schema", "name": "table_verify", "strict": True, "schema": {
     "type": "object", "additionalProperties": False, "required": ["verdict", "problems", "rules_applied"],
     "properties": {"verdict": {"type": "string", "enum": ["accept", "object"]},
@@ -165,30 +222,97 @@ def _words(text: str) -> Counter:
     return Counter(w for w in re.findall(r"[a-z]+", (text or "").lower()))
 
 
-def check_text_layer(md: str, lines: list[str]) -> dict:
+def _sq(s: str) -> str:
+    return re.sub(r"\s+", "", s or "").lower()
+
+
+_NOT_BEFORE, _NOT_AFTER = set("0123456789.,(-−–"), set("0123456789%)")
+
+
+def _find(sq: str, want: str, start: int = 0) -> int:
+    """want in sq from start, not as part of a longer number ("2" inside "12" or "2.5", "5" inside "5%", "12"
+    inside "(12)"); -1 if not there."""
+    j = sq.find(want, start)
+    while j >= 0:
+        e = j + len(want)
+        before, after = sq[j - 1] if j else "", sq[e] if e < len(sq) else ""
+        if before not in _NOT_BEFORE and after not in _NOT_AFTER and not (after in ".," and sq[e + 1:e + 2].isdigit()):
+            return j
+        j = sq.find(want, j + 1)
+    return -1
+
+
+def _take(left: list[list[str]], cells: list[str]) -> bool:
+    """Find a row's cells, spacing ignored, in order on one line of the page; mark those characters used (so no
+    other row can claim them) and say whether they were found. The characters must be the same: only spaces may
+    differ ("3. 75%" is 3.75%, "Hi gh" is High). Cells are looked for one after another, other text allowed
+    between them; failing that, run together ("222" on the page for 2 | 2 | 2)."""
+    want = [w for w in map(_sq, cells) if w]
+    if not want:
+        return False
+    for chars in left:
+        idx = [i for i, ch in enumerate(chars) if not ch.isspace()]
+        sq = "".join(chars[i] for i in idx).lower()
+        spans, pos = [], 0
+        for w in want:
+            j = _find(sq, w, pos)
+            if j < 0:
+                break
+            spans.append((j, j + len(w)))
+            pos = j + len(w)
+        else:
+            for a, b in spans:
+                for k in range(a, b):
+                    chars[idx[k]] = "\x00"
+            return True
+        j = _find(sq, "".join(want))
+        if j >= 0:
+            for k in range(j, j + len("".join(want))):
+                chars[idx[k]] = "\x00"
+            return True
+    return False
+
+
+def _letters(text: str) -> str:
+    return re.sub(r"[^a-z]", "", (text or "").lower())
+
+
+def check_text_layer(md: str, lines: list[str], title: str | None = None) -> dict:
     """Transcription vs the PDF's own text in the table region. lines = the region's text, one entry per line.
-    Numbers must match exactly; words too, so a dropped unit ("$m" for "A$m") or a misread label is caught."""
-    src_all = Counter(n for ln in lines for n in numbers(ln))
+    Numbers must match exactly; words too, so a dropped unit ("$m" for "A$m") or a misread label is caught.
+    Only spacing is forgiven, because PDFs often get it wrong: letter-spaced words ("Hi gh"), numbers split at the
+    decimal point ("3. 75%"), or run together across columns ("222" for 2 | 2 | 2) still match when the characters
+    are the same and in the same order on one line. The table's title may account for words of its caption."""
+    left = [list(ln) for ln in lines]
     src_lines = [numbers(ln) for ln in lines]
-    got_all = Counter()
-    bad_rows = []
+    got, total, bad_rows = Counter(), 0, []
     for cells in md_rows(md):
-        row = numbers(" ".join(cells[1:]))
-        got_all += Counter(numbers(" ".join(cells)))
+        row, every = numbers(" ".join(cells[1:])), numbers(" ".join(cells))
+        total += len(every)
+        if every and _take(left, [c for c in cells if c]):  # the whole row, label included (or no label at all)
+            continue
+        if row and (_take(left, [c for c in cells[1:] if c]) or _take(left, [c for c in cells[1:] if numbers(c)])):
+            got += Counter(numbers(cells[0]))  # the label's own numbers are matched one by one below
+            continue
+        got += Counter(every)
         # the row's numbers, in order, on one source line (so a swapped column or a row's figures under
         # another row's label is caught, not just a misread digit)
         if row and not any(_in_order(row, line) for line in src_lines):
             bad_rows.append({"row": cells[0], "numbers": row})
-    not_in_source = list((got_all - src_all).elements())
-    not_transcribed = list((src_all - got_all).elements())
+    src = Counter(n for chars in left for n in numbers("".join(chars)))
+    not_in_source = list((got - src).elements())
+    not_transcribed = list((src - got).elements())
     src_words, got_words = _words(" ".join(lines)), _words(md)
-    words_not_in_source = sorted(set(got_words - src_words))
-    words_not_transcribed = sorted(set(src_words - got_words))
-    return {"method": "text layer", "numbers": sum(got_all.values()), "rows_not_on_one_line": bad_rows,
+    src_letters = "|".join(_letters(ln) for ln in lines)
+    got_letters = "|".join(_letters(" ".join(c)) for c in md_rows(md))
+    words_not_in_source = sorted(w for w in set(got_words - src_words) if w not in src_letters)
+    words_not_transcribed = sorted(w for w in set(src_words - got_words)
+                                   if w not in got_letters and w not in _letters(title))
+    return {"method": "text layer", "numbers": total, "rows_not_on_one_line": bad_rows,
             "not_in_source": not_in_source, "not_transcribed": not_transcribed,
             "words_not_in_source": words_not_in_source, "words_not_transcribed": words_not_transcribed,
             "ok": not (bad_rows or not_in_source or not_transcribed or words_not_in_source or words_not_transcribed)
-                  and sum(got_all.values()) > 0}
+                  and total > 0}
 
 
 # ---- model calls --------------------------------------------------------------------------------------------
@@ -196,30 +320,52 @@ def check_text_layer(md: str, lines: list[str]) -> dict:
 class Reader:
     """Vision calls through llm.create (rate-limited); usage goes to on_usage(model, usage, purpose)."""
 
-    def __init__(self, model: str, reviewer_model: str, on_usage=None):
+    def __init__(self, model: str, reviewer_model: str, on_usage=None, arbiter_model: str | None = None):
         from llm import client
         self.llm, self.model, self.reviewer_model = client(interactive=False), model, reviewer_model
+        self.arbiter_model = arbiter_model
         self.on_usage = on_usage or (lambda *a: None)
 
-    def _call(self, model, prompt, png: bytes, schema, purpose) -> dict:
+    def _call(self, model, prompt, png: bytes | None, schema, purpose) -> dict:
         from llm import create
-        b64 = base64.b64encode(png).decode()
-        r = create(self.llm, model, text={"format": schema}, max_output_tokens=6000, purpose=purpose, input=[{"role": "user", "content": [
-            {"type": "input_text", "text": prompt},
-            {"type": "input_image", "image_url": f"data:image/png;base64,{b64}", "detail": "high"}]}])
+        content = [{"type": "input_text", "text": prompt}]
+        if png is not None:
+            content.append({"type": "input_image", "image_url": f"data:image/png;base64,{base64.b64encode(png).decode()}",
+                            "detail": "high"})
+        r = create(self.llm, model, text={"format": schema}, max_output_tokens=6000, purpose=purpose,
+                   input=[{"role": "user", "content": content}])
         if r.usage:
             self.on_usage(model, r.usage, purpose)
         return json.loads(r.output_text)
 
-    def table(self, png: bytes, where: str, second: bool = False) -> dict:
+    def table(self, png: bytes, where: str, second: bool = False, feedback: str | None = None) -> dict:
+        note = FEEDBACK_NOTE.format(feedback=feedback) if feedback else ""
         return self._call(self.reviewer_model if second else self.model,
-                          READ_PROMPT.format(where=where, rules=lessons.rules_text("tables")), png, _READ,
+                          READ_PROMPT.format(where=where, rules=lessons.rules_text("tables")) + note, png, _READ,
                           "doc-review" if second else "doc-table")
 
-    def page(self, png: bytes, where: str, second: bool = False) -> dict:
+    def page(self, png: bytes, where: str, second: bool = False, feedback: str | None = None) -> dict:
+        note = FEEDBACK_NOTE.format(feedback=feedback) if feedback else ""
         return self._call(self.reviewer_model if second else self.model,
-                          PAGE_PROMPT.format(where=where, rules=lessons.rules_text("tables")), png, _PAGE,
+                          PAGE_PROMPT.format(where=where, rules=lessons.rules_text("tables")) + note, png, _PAGE,
                           "doc-review" if second else "doc-page")
+
+    def arbitrate(self, png: bytes, where: str, why: str, problems: list[str], first: str, second: str,
+                  page_lines: list[str] | None, mentions: list[dict]) -> dict:
+        page_text = ("\nThe PDF's own text inside the table (exact characters, but its spacing and reading order may "
+                     "be off):\n" + "\n".join(page_lines) + "\n") if page_lines else ""
+        found = ("\nOther mentions in the report:\n" + "\n".join(f"- page {m['page']} ({m['kind']}): {m['text']}"
+                                                                  for m in mentions) + "\n") if mentions else ""
+        return self._call(self.arbiter_model, ARBITER_PROMPT.format(
+            where=where, why=why, problems="\n".join(f"- {p}" for p in problems) or "- (none listed)", first=first,
+            second=second or "(none)", page_text=page_text, mentions=found, rules=lessons.rules_text("tables")),
+            png, _ARBITER, "doc-arbiter")
+
+    def mentions(self, where: str, title: str, table: str, disputed: list[str], passages: list[dict]) -> dict:
+        return self._call(self.reviewer_model, MENTIONS_PROMPT.format(
+            where=where, title=title or "(no title)", table=table, disputed="\n".join(f"- {d}" for d in disputed),
+            passages="\n".join(f"{i}. page {m['page']} ({m['kind']}): {m['text']}" for i, m in enumerate(passages, 1))),
+            None, _MENTIONS, "doc-mentions")
 
     def fix(self, png: bytes, where: str, problems: list[str], markdown: str, page_lines: list[str] | None) -> dict:
         page_text = ("\nThe page's own text inside the table (exact characters; the reading order may differ from the "
@@ -227,9 +373,11 @@ class Reader:
         return self._call(self.model, FIX_PROMPT.format(where=where, page_text=page_text, problems="\n".join(
             f"- {p}" for p in problems), markdown=markdown, rules=lessons.rules_text("tables")), png, _FIX, "doc-fix")
 
-    def verify(self, png: bytes, where: str, problems: list[str], markdown: str) -> dict:
+    def verify(self, png: bytes, where: str, problems: list[str], markdown: str, feedback: str | None = None) -> dict:
+        note = FEEDBACK_NOTE.format(feedback=feedback) if feedback else ""
         return self._call(self.reviewer_model, VERIFY_PROMPT.format(where=where, problems="\n".join(
-            f"- {p}" for p in problems), markdown=markdown, rules=lessons.rules_text("tables")), png, _VERIFY, "doc-verify")
+            f"- {p}" for p in problems), markdown=markdown, rules=lessons.rules_text("tables")) + note, png, _VERIFY,
+            "doc-verify")
 
 
 def _png(img) -> bytes:
@@ -245,7 +393,7 @@ def read_and_check(reader: Reader, t: dict, png: bytes, text_lines: list[str] | 
     if not whole_page and not first["is_table"]:
         return {**t, "is_table": False, "markdown": "", "description": first["description"], "status": "figure",
                 "check": None}
-    check = check_text_layer(first["markdown"], text_lines) if text_lines else None
+    check = check_text_layer(first["markdown"], text_lines, first.get("title")) if text_lines else None
     if check and check["ok"]:  # the PDF's own text confirms every number and word: no second read needed
         return {**t, "is_table": True, "title": first.get("title") or None, "markdown": first["markdown"],
                 "check": check, "status": "verified"}
@@ -259,12 +407,21 @@ def read_and_check(reader: Reader, t: dict, png: bytes, text_lines: list[str] | 
 
 # ---- the review and remediation loop for flagged tables ------------------------------------------------------
 # The first reader fixes its transcription against the problems found; code re-checks it against the page's text
-# layer where there is one (that check is the ground truth for characters); the reviewer model then checks the
-# fix against the image. Up to MAX_ROUNDS; what still fails stays flagged for a person, with every round shown.
+# layer where there is one (that check is the ground truth for characters, spacing aside); the reviewer model then
+# checks the fix against the image. From round VISUAL_AFTER, two reads of the image that agree outrank a text layer
+# that still objects, unless another part of the report states something different for the same item. What that
+# doesn't settle goes to the arbiter, whose feedback both readers get for one more try. The rest stays flagged for
+# a person, with every round shown.
+
+def latest(t: dict) -> str:
+    """The table's text as it stands: settled, else the loop's latest correction, else the first read."""
+    return t.get("final_markdown") or (t.get("resolution") or {}).get("markdown") or t.get("markdown") or ""
+
 
 def problems(t: dict) -> list[str]:
-    """A flagged table's problems, in words for the fixer."""
-    c, s, out = t.get("final_check") or t.get("check"), t.get("second_read"), []
+    """A flagged table's problems, in words for the fixer (from the latest check, if the loop has run)."""
+    r = t.get("resolution") or {}
+    c, s, out = t.get("final_check") or r.get("check") or t.get("check"), r.get("compare") or t.get("second_read"), []
     if c and c.get("method") == "text layer" and not c.get("ok"):
         if c.get("not_in_source"):
             out.append("numbers in your transcription that aren't on the page: " + ", ".join(c["not_in_source"]))
@@ -286,60 +443,193 @@ def problems(t: dict) -> list[str]:
     return out
 
 
-def resolve_table(reader: Reader, t: dict, png: bytes, rounds: int = MAX_ROUNDS) -> dict:
+def _value(n: str):
+    try:
+        return round(float(n.rstrip("%")), 6), n.endswith("%")
+    except ValueError:
+        return None
+
+
+def _telling(n: str) -> bool:
+    """A figure worth looking for elsewhere: not a small whole number or a year, which turn up everywhere."""
+    v = _value(n)
+    return bool(v) and (v[1] or "." in n or not (abs(v[0]) < 10 or 1900 <= v[0] <= 2100))
+
+
+def find_mentions(doc: dict | None, t: dict, figures: list[str], limit: int = 12) -> list[dict]:
+    """Other places in the report that state any of these figures, compared as values (7.7% finds 7.70%): sentences
+    of the running text, the table's own page first, and rows of the other tables. Code only finds them; a model
+    judges whether they are about the same item."""
+    want = {_value(n) for n in figures if _telling(n)}
+    if not doc or not want:
+        return []
+    hit = lambda text: bool(want & {_value(n) for n in numbers(text)})
+    out = []
+    for p in doc.get("pages") or []:
+        text = " ".join(str(b[2]) for b in p["blocks"] if len(b) > 2 and b[1] in ("text", "heading"))
+        for sent in re.split(r"(?<=[.;:!?])\s+(?=[A-Z(•–-])", text):
+            if hit(sent):
+                out.append({"page": p["n"], "kind": "text", "text": sent.strip()[:400]})
+    for t2 in doc.get("tables") or []:
+        if t2["id"] == t["id"] or t2.get("status") in ("figure", "error"):
+            continue
+        rows = md_rows(latest(t2))
+        for cells in rows[1:]:
+            if hit(" ".join(cells)):
+                out.append({"page": t2.get("page"), "kind": f"table “{t2.get('title') or t2['id']}”",
+                            "text": f"columns {' | '.join(rows[0])}; row {' | '.join(cells)}"[:400]})
+    seen, res = set(), []
+    for m in sorted(out, key=lambda m: (m["page"] != t.get("page"), m["kind"] != "text")):
+        if (m["page"], m["text"]) not in seen:
+            seen.add((m["page"], m["text"]))
+            res.append(m)
+    return res[:limit]
+
+
+def _image_over_text(reader: Reader, doc: dict | None, t: dict, md: str, chk: dict) -> dict:
+    """The text layer objects but two reads of the image agree: what it objects to is recorded as overruled, and the
+    report's other mentions of those figures are checked (a model judges whether each is the same item)."""
+    out = {"overruled": problems({"check": chk}), "searched": 0, "confirms": [], "contradicts": []}
+    rows = chk.get("rows_not_on_one_line") or []
+    found = find_mentions(doc, t, chk["not_in_source"] + chk["not_transcribed"] + [n for r in rows for n in r["numbers"]])
+    out["searched"] = len(found)
+    if not found:
+        return out
+    disputed = ([f"as read from the image: {', '.join(chk['not_in_source'])}"] if chk["not_in_source"] else []) + (
+        [f"what the PDF's own text has instead: {', '.join(chk['not_transcribed'])}"] if chk["not_transcribed"] else []) + [
+        f"row {r['row']}: {', '.join(r['numbers'])}" for r in rows]
+    try:
+        got = reader.mentions(t["where"], t.get("title"), md, disputed, found)
+    except Exception as e:  # the other mentions are extra evidence: without them the two reads still stand
+        out["error"] = f"{type(e).__name__}: {e}"
+        return out
+    for x in got["passages"]:
+        if 1 <= x["passage"] <= len(found) and x["verdict"] in ("confirms", "contradicts"):
+            out[x["verdict"]].append({**found[x["passage"] - 1], "figure": x["figure"], "why": x["why"]})
+    return out
+
+
+def _contradicted(v: dict) -> list[str]:
+    return [f"page {m['page']} of the report states a different figure for the same item ({m['figure']}): "
+            f"“{m['text'][:200]}”. {m['why']}" for m in v["contradicts"]]
+
+
+def resolve_table(reader: Reader, t: dict, png: bytes, rounds: int = MAX_ROUNDS, doc: dict | None = None) -> dict | None:
     """Run the loop on one flagged table; updates t (status "resolved" if the agents settle it) and returns the
-    episode for the lessons."""
-    issues, md = problems(t), t.get("final_markdown") or t.get("markdown") or ""
-    lines = t.get("text_lines")
-    thread = []
-    resolved = False
-    for k in range(1, rounds + 1):
-        if not issues:
-            break
+    episode for the lessons. A table that went round before continues from its latest correction; earlier rounds
+    are kept and counted. doc (the whole report) lets the loop look for the figures elsewhere in it."""
+    prev = t.get("resolution") or {}
+    thread = list(prev.get("rounds") or [])
+    k0 = sum(isinstance(x.get("round"), int) for x in thread)
+    issues = (None if prev.get("resolved") else prev.get("open")) or problems(t)
+    if not issues:
+        return None
+    md, lines, title = latest(t), t.get("text_lines"), t.get("title")
+    second = prev.get("second_markdown") or t.get("second_markdown")
+    chk, basis, n0 = None, None, len(thread)
+    for k in range(k0 + 1, k0 + rounds + 1):
         fix = reader.fix(png, t["where"], issues, md, lines)
         lessons.applied(fix["rules_applied"])
         rec = {"round": k, "problems": issues, "fixer": reader.model, "changes": fix["changes"]}
+        thread.append(rec)
         md = fix["markdown"]
-        chk = check_text_layer(md, lines) if lines else None
+        chk = check_text_layer(md, lines, title) if lines else None
+        agree = compare_reads(md, second) if second else None
+        if agree is not None:
+            rec["agrees_with_second_read"] = agree["ok"]
         if chk is not None:
             rec["check_ok"] = chk["ok"]
-            if not chk["ok"]:  # the page's text says it's still wrong: back to the fixer, no review needed
-                issues = problems({"check": chk})
+            if not chk["ok"]:
+                if k >= VISUAL_AFTER and agree and agree["ok"]:  # two reads of the image agree: they outrank it
+                    v = rec["image_over_text"] = _image_over_text(reader, doc, t, md, chk)
+                    if not v["contradicts"]:
+                        basis = "image"
+                        break
+                    issues = _contradicted(v)
+                    rec["verdict"] = {"by": "report", "verdict": "object", "problems": issues}
+                    continue
+                issues = problems({"check": chk})  # the page's text says it's still wrong: back to the fixer
                 rec["verdict"] = {"by": "code", "verdict": "object", "problems": issues}
-                thread.append(rec)
                 continue
-        elif t.get("second_markdown"):
-            rec["agrees_with_second_read"] = compare_reads(md, t["second_markdown"])["ok"]
         ver = reader.verify(png, t["where"], issues, md)
         lessons.applied(ver["rules_applied"])
         rec["verdict"] = {"by": reader.reviewer_model, "verdict": ver["verdict"],
                           "problems": [f"{p['row']}: {p['issue']}" for p in ver["problems"]]}
-        thread.append(rec)
         if ver["verdict"] == "accept":
-            resolved = True
-            t.update(status="resolved", final_markdown=md, final_check=chk)
+            basis = "text layer" if chk is not None else "reviewer"
             break
         issues = rec["verdict"]["problems"] or ["the reviewer objected without saying where; re-read every row"]
-    t["resolution"] = {"resolved": resolved, "rounds": thread, "open": None if resolved else issues}
-    return {"source": t["source"], "text_layer": bool(lines), "rounds": thread, "outcome": "resolved" if resolved else "escalated"}
+    if basis is None and reader.arbiter_model:
+        basis, md, second, chk, issues = _arbiter(reader, doc, t, png, md, second, chk, issues, thread, len(thread) - n0)
+    t["resolution"] = {"resolved": basis is not None, "basis": basis, "rounds": thread, "markdown": md, "check": chk,
+                       "second_markdown": second if second != t.get("second_markdown") else None,
+                       "compare": compare_reads(md, second) if second else None, "open": None if basis else issues}
+    if basis:
+        t.update(status="resolved", final_markdown=md, final_check=chk)
+    return {"source": t["source"], "text_layer": bool(lines), "rounds": thread[n0:],
+            "outcome": f"resolved ({basis})" if basis else "escalated"}
+
+
+def _arbiter(reader: Reader, doc, t: dict, png: bytes, md: str, second: str | None, chk: dict | None,
+             issues: list[str], thread: list, n: int):
+    """The loop didn't settle it: the arbiter looks at the image, both reads, the text layer and the other mentions
+    of the figures, and gives each reader feedback. The extractor corrects, the reviewer reads the image again; if
+    the two now agree and the text layer agrees too (or is outranked, with nothing in the report against it),
+    it's settled. Returns (basis or None, markdown, reviewer's read, check, open issues)."""
+    lines, whole = t.get("text_lines"), t["source"] == "page image"
+    diffs = compare_reads(md, second)["differences"] if second else []
+    figures = [x for d in diffs for x in numbers(d["first"] + " " + d["second"])] + (
+        (chk["not_in_source"] + chk["not_transcribed"]) if chk and not chk["ok"] else [])
+    found = find_mentions(doc, t, figures)
+    why = f" in {n} round{'s' if n != 1 else ''}"
+    arb = reader.arbitrate(png, t["where"], why, issues, md, second, lines, found)
+    lessons.applied(arb["rules_applied"])
+    rows = [f"row {r['row']}: the image shows {r['image_shows']}" + (f" ({r['note']})" if r["note"] else "")
+            for r in arb["rows"]]
+    rec = {"round": "arbiter", "by": reader.arbiter_model, "rows": arb["rows"], "to_extractor": arb["to_extractor"],
+           "to_reviewer": arb["to_reviewer"], "mentions": len(found), "problems": issues}
+    thread.append(rec)
+    fix = reader.fix(png, t["where"], [f"an independent arbiter looked at the image: {x}"
+                                       for x in rows + [arb["to_extractor"]] if x], md, lines)
+    lessons.applied(fix["rules_applied"])
+    md = fix["markdown"]
+    rec.update(fixer=reader.model, changes=fix["changes"])
+    feedback = "\n".join(f"- {x}" for x in rows + [arb["to_reviewer"]] if x)
+    second = (reader.page if whole else reader.table)(png, t["where"], True, feedback)["markdown"]
+    agree = compare_reads(md, second)
+    rec.update(reviewer=reader.reviewer_model, agrees_with_second_read=agree["ok"])
+    chk = check_text_layer(md, lines, t.get("title")) if lines else None
+    if chk is not None:
+        rec["check_ok"] = chk["ok"]
+    if not agree["ok"]:
+        return None, md, second, chk, ["after the arbiter's feedback the two reads of the image still differ on: "
+                                       + "; ".join(d["row"] for d in agree["differences"])]
+    if chk is None or chk["ok"]:
+        return "arbiter", md, second, chk, []
+    v = rec["image_over_text"] = _image_over_text(reader, doc, t, md, chk)
+    if v["contradicts"]:
+        return None, md, second, chk, _contradicted(v)
+    return "arbiter", md, second, chk, []
 
 
 def resolve_tables(doc: dict, out_dir: str | Path, model: str, reviewer_model: str, progress=None, on_usage=None,
-                   ids: set | None = None) -> dict:
+                   ids: set | None = None, arbiter_model: str | None = None) -> dict:
     """The loop on every flagged table of a read document (or those in ids). Returns {"resolved", "escalated",
     "episodes"}."""
     progress = progress or (lambda frac, msg: None)
     todo = [t for t in doc["tables"] if t.get("status") == "flagged" and t.get("png") and (ids is None or t["id"] in ids)]
     if not todo:
         return {"resolved": 0, "escalated": 0, "episodes": []}
-    reader = Reader(model, reviewer_model, on_usage)
+    reader = Reader(model, reviewer_model, on_usage, arbiter_model)
     done, episodes = 0, []
 
     def one(t):
         try:
-            return resolve_table(reader, t, (Path(out_dir) / t["png"]).read_bytes())
+            return resolve_table(reader, t, (Path(out_dir) / t["png"]).read_bytes(), doc=doc)
         except Exception as e:  # the table stays flagged for a person
-            t["resolution"] = {"resolved": False, "rounds": [], "open": [f"the loop failed: {type(e).__name__}: {e}"]}
+            t["resolution"] = {**(t.get("resolution") or {}), "resolved": False,
+                               "open": [f"the loop failed: {type(e).__name__}: {e}"]}
+            t["resolution"].setdefault("rounds", [])
             return None
 
     with ThreadPoolExecutor(READERS) as pool:
@@ -351,6 +641,30 @@ def resolve_tables(doc: dict, out_dir: str | Path, model: str, reviewer_model: s
     doc["markdown"] = render(doc)
     n = sum(t.get("status") == "resolved" for t in todo)
     return {"resolved": n, "escalated": len(todo) - n, "episodes": episodes}
+
+
+def recheck(doc: dict) -> int:
+    """Check every flagged text-layer table again with today's check (e.g. after it learned to forgive spacing):
+    those it now passes are settled. Returns how many."""
+    n = 0
+    for t in doc["tables"]:
+        if t.get("status") != "flagged" or not t.get("text_lines"):
+            continue
+        r = t.get("resolution") or {}
+        if r.get("markdown"):
+            chk = check_text_layer(r["markdown"], t["text_lines"], t.get("title"))
+            if chk["ok"]:
+                r.update(resolved=True, basis="text layer", check=chk, open=None)
+                t.update(status="resolved", final_markdown=r["markdown"], final_check=chk)
+                n += 1
+                continue
+        chk = check_text_layer(t.get("markdown") or "", t["text_lines"], t.get("title"))
+        if chk["ok"]:
+            t.update(status="verified", check=chk)
+            n += 1
+    if n:
+        doc["markdown"] = render(doc)
+    return n
 
 
 # ---- PDF ----------------------------------------------------------------------------------------------------

@@ -353,10 +353,11 @@ def _settle_table(did: int, tid: str, action: str, markdown: str | None = None) 
     t = next((t for t in doc["tables"] if t["id"] == tid), None)
     if t is None:
         raise ValueError("no such table")
-    if action == "approve":
-        t.update(status="approved", final_markdown=t.get("markdown"))
+    if action == "approve":  # the text as it stands: the agents' settled or latest correction, else the first read
+        t.update(status="approved", final_markdown=docingest.latest(t))
     elif action == "use_second":
-        t.update(status="approved", final_markdown=t.get("second_markdown"))
+        t.update(status="approved", final_markdown=(t.get("resolution") or {}).get("second_markdown")
+                 or t.get("second_markdown"))
     elif action == "edit":
         t.update(status="edited", final_markdown=markdown or "")
     elif action == "reset":
@@ -366,7 +367,7 @@ def _settle_table(did: int, tid: str, action: str, markdown: str | None = None) 
     else:
         raise ValueError(f"unknown action {action}")
     if t.get("final_markdown") is not None and t.get("text_lines"):
-        t["final_check"] = docingest.check_text_layer(t["final_markdown"], t["text_lines"])
+        t["final_check"] = docingest.check_text_layer(t["final_markdown"], t["text_lines"], t.get("title"))
     _save_doc(did, doc)
     _recheck_facts(did, doc)
     reopened = [f for f in _q("SELECT agent_json FROM facts WHERE document_id=? AND status='pending'", did)
@@ -411,7 +412,7 @@ def _read_rest_tagged(did: int) -> None:
     try:
         d = _doc(did)
         eid = d["engagement_id"]
-        e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+        e = _q("SELECT model, reviewer_model, arbiter_model FROM engagements WHERE id=?", eid)[0]
         model, reviewer = e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER
         doc = json.loads(d["doc_json"])
         todo = [t["id"] for t in doc["tables"] if t.get("deferred") and t.get("status") == "unread"]
@@ -427,7 +428,8 @@ def _read_rest_tagged(did: int) -> None:
         cur = json.loads(_doc(did)["doc_json"])
         if any(t.get("status") == "flagged" and t["id"] in todo for t in cur["tables"]):
             _set("documents", did, tables_step="Table review loop on the flagged tables")
-            res = docingest.resolve_tables(cur, d["out_dir"], model, reviewer, None, _logger(eid), ids=set(todo))
+            res = docingest.resolve_tables(cur, d["out_dir"], model, reviewer, None, _logger(eid), ids=set(todo),
+                                           arbiter_model=e["arbiter_model"] or DEFAULT_ARBITER)
             _merge_tables(did, [t for t in cur["tables"] if t.get("resolution") and t["id"] in todo],
                           lambda c: c.get("status") == "flagged")
             _learn(did, "tables", res["episodes"])
@@ -435,7 +437,7 @@ def _read_rest_tagged(did: int) -> None:
             res = {"resolved": 0, "escalated": 0}
         prev = (json.loads(_doc(did)["loop_json"] or "{}").get("tables") or {})
         _note_loop(did, tables={"resolved": (prev.get("resolved") or 0) + res["resolved"], "escalated": res["escalated"],
-                                "at": time.time()})  # this reading's loop has run: nothing starts another
+                                "at": time.time(), "version": docingest.LOOP_VERSION})  # nothing starts another
         with _DOC_LOCK:
             _recheck_facts(did, json.loads(_doc(did)["doc_json"]))
         _set("documents", did, tables_status="done", tables_left=0, tables_step="Done",
@@ -632,12 +634,13 @@ def resolve_facts(did: int) -> None:
 def _run_table_loop(did: int, doc: dict) -> None:
     d = _doc(did)
     eid = d["engagement_id"]
-    e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+    e = _q("SELECT model, reviewer_model, arbiter_model FROM engagements WHERE id=?", eid)[0]
     prog = lambda frac, msg: _set("documents", did, pct=round(frac, 3), step=msg)
     res = docingest.resolve_tables(doc, d["out_dir"], e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER,
-                                   prog, _logger(eid))
+                                   prog, _logger(eid), arbiter_model=e["arbiter_model"] or DEFAULT_ARBITER)
     _save_doc(did, doc)
-    _note_loop(did, tables={"resolved": res["resolved"], "escalated": res["escalated"], "at": time.time()},
+    _note_loop(did, tables={"resolved": res["resolved"], "escalated": res["escalated"], "at": time.time(),
+                            "version": docingest.LOOP_VERSION},
                lessons_tables=None)  # this loop's lessons replace the last one's note
     _learn(did, "tables", res["episodes"])
 
@@ -645,15 +648,19 @@ def _run_table_loop(did: int, doc: dict) -> None:
 def _resolve_tables_job(did: int) -> None:
     d = _doc(did)
     _set("documents", did, status="processing", step="Table review loop on the flagged tables", pct=0)
-    doc = json.loads(d["doc_json"])
     eid = d["engagement_id"]
-    e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+    with _DOC_LOCK:  # today's check first: tables it now passes need no model at all
+        doc = json.loads(_doc(did)["doc_json"])
+        rechecked = docingest.recheck(doc)
+        if rechecked:
+            _save_doc(did, doc)
+    e = _q("SELECT model, reviewer_model, arbiter_model FROM engagements WHERE id=?", eid)[0]
     prog = lambda frac, msg: _set("documents", did, pct=round(frac, 3), step=msg)
     res = docingest.resolve_tables(doc, d["out_dir"], e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER,
-                                   prog, _logger(eid))
+                                   prog, _logger(eid), arbiter_model=e["arbiter_model"] or DEFAULT_ARBITER)
     doc = _merge_tables(did, [t for t in doc["tables"] if t.get("resolution")], lambda c: c.get("status") == "flagged")
-    _note_loop(did, tables={"resolved": res["resolved"], "escalated": res["escalated"], "at": time.time()},
-               lessons_tables=None)
+    _note_loop(did, tables={"resolved": res["resolved"] + rechecked, "escalated": res["escalated"], "at": time.time(),
+                            "version": docingest.LOOP_VERSION}, lessons_tables=None)
     _learn(did, "tables", res["episodes"])
     with _DOC_LOCK:
         _recheck_facts(did, json.loads(_doc(did)["doc_json"]))
@@ -765,7 +772,7 @@ def _auto_review(e: dict) -> None:
             auto_decide(did)
             _note_loop(did, check_version=reportfacts.CHECK_VERSION)
             e["facts"] = facts(e["id"])
-        if d["n_flagged"] and not loop.get("tables") and not d["error"]:
+        if d["n_flagged"] and (loop.get("tables") or {}).get("version") != docingest.LOOP_VERSION and not d["error"]:
             job = ("resolve_tables", did)
         elif not d["facts_status"] and not any(f["document_id"] == did for f in e["facts"]):
             job = ("facts", did)
