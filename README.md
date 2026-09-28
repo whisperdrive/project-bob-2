@@ -128,7 +128,9 @@ steps, each checked by a person before the next relies on it:
    A PDF page is read in reading order, not line by line across the page. The page is cut into blocks (XY cut)
    down any tall, clear gutter with running text on both sides, so two columns, a sidebar, or text beside a
    picture are read one after the other instead of interleaved. Tables are cut out first and never split into
-   columns, and label-value lists stay on their lines. Short bold lines are side headings. No model call and no
+   columns, and label-value lists stay on their lines. Short bold lines are side headings. Letter-spaced text
+   (glyphs set one at a time, as some exporters write tables) is rebuilt into words, so a row reads "Net financial
+   debt 5,223.0", not "N e t f i n a n c i a l …". No model call and no
    extra service: Azure Document Intelligence's layout model reads layout better and is an option for later.
    Every table is cropped, rendered at 200 dpi and transcribed by a vision model, then checked. A table with a text
    layer must match it (every number on the page, each row's numbers on one line in order, the same label words,
@@ -154,8 +156,15 @@ steps, each checked by a person before the next relies on it:
    between themselves, up to three rounds. The extractor (gpt-6-luna) answers each open point: it revises, keeps
    or withdraws a fact with a reason, or corrects a table transcription. Code re-checks the answer (a table
    against the page's text layer, a fact's quote against its page), and the reviewer (gpt-6-sol) accepts or
-   objects again. A fact is "agreed" only when the reviewer accepts and the checks pass. What the models can't
-   settle goes to the person with both positions and every round.
+   objects again. A fact is "agreed" only when the reviewer accepts and the checks pass. The code checks tolerate a
+   report's text layer: where letters are spaced or table cells run together, a figure still counts if it's there
+   once spacing is ignored, read by its own shape (so 5,223.0 is found in "5,223.05,223.0"). The sign must still
+   match, and the check says it ignored spacing. Whatever the two models still can't settle goes to an **arbiter**:
+   a third model (gpt-4o by default, set in the header). It can waive a check that failed on a clerical point, with
+   a note kept on the fact and shown beside the check. It can also take the reviewer's correction or keep the
+   extractor's version, but only if the checks then pass. Otherwise it hands the fact to the person with its
+   note. When the checks improve, existing facts are checked again once (no model calls), and facts that were held
+   up only by a check settle.
 
    **What the agents learn** (`bench/lessons.py`). After each loop the reviewer turns what went wrong and how it was
    fixed into rules about method: where to look, how to read, what to check. Code enforces the anonymity. A

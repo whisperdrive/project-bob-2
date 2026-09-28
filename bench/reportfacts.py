@@ -24,6 +24,7 @@ from docingest import numbers
 
 MAX_CHARS = 150_000  # longer reports: send the pages most likely to hold conclusions and assumptions
 MAX_ROUNDS = 3       # review and remediation rounds before a fact goes to a person
+CHECK_VERSION = 2    # bump when check() changes: existing facts are checked again once (2: spacing-tolerant, waivers)
 LOOP_CHARS = 60_000  # the loop sends only the pages the open facts cite, and their neighbours
 KEYWORDS = re.compile(r"valuation|discount|wacc|terminal|growth|multiple|rab|conclu|range|preferred|assumption|"
                       r"enterprise value|equity value|methodolog|approach|summary|cost of capital|cpi|inflation", re.I)
@@ -196,17 +197,47 @@ def _norm(s: str) -> str:
 
 # ---- checks (no model) --------------------------------------------------------------------------------------
 
+def _squash(s: str) -> str:
+    return re.sub(r"\s+", "", _norm(s))
+
+
+def _in_squashed(num: str, text: str) -> bool:
+    """A number (as numbers() gives it: "5223.0", "-70.0", "7.25%") in text with all spacing ignored, reading glued
+    figures by the number's own shape: 5,223.0 is in "5 , 2 2 3 . 0 5 , 2 2 3 . 0" (cells run together)."""
+    neg, pct = num.startswith("-"), num.endswith("%")
+    core = num.lstrip("-").rstrip("%")
+    d = len(core.split(".")[1]) if "." in core else 0
+    frac = rf"\.\d{{{d}}}" if d else ""
+    shape = re.compile(rf"\d{{1,3}}(?:,\d{{3}})+{frac}|\d+{frac}")
+    flat = re.sub(r"\s+", "", text or "")
+    for m in shape.finditer(flat):
+        if abs(float(m.group(0).replace(",", "")) - float(core)) > 1e-9 * max(1, abs(float(core))):
+            continue
+        before, after = flat[max(0, m.start() - 1):m.start()], flat[m.end():m.end() + 1]
+        if neg != (before in ("(", "-", "−", "–")):  # a bracket or minus in front: negative, both ways
+            continue
+        if pct and after != "%":
+            continue
+        return True
+    return False
+
+
 def check(f: dict, pg: dict[int, str]) -> dict:
-    """Is the fact supported by the text it cites? Returns {"ok", "items": [(ok, message)]}."""
+    """Is the fact supported by the text it cites? Returns {"ok", "items": [{"ok", "text"}]}.
+    Strict first; where a report's text layer spaces letters oddly or runs table cells together, a match that
+    ignores spacing still counts, and says so. A check an arbiter waived (f["waivers"]) counts, with its note."""
     items = []
     q = _norm(f.get("quote"))
     where = [n for n, t in pg.items() if q and q in _norm(t)]
+    loose = [] if where or not q else [n for n, t in pg.items() if _squash(f.get("quote")) in _squash(t)]
     if not q:
         items.append((False, "no quote"))
     elif f.get("page") in where:
         items.append((True, f"quote found on page {f['page']}"))
-    elif where:
-        items.append((False, f"quote is on page {where[0]}, not page {f.get('page')}"))
+    elif f.get("page") in loose:
+        items.append((True, f"quote found on page {f['page']} (spacing ignored)"))
+    elif where or loose:
+        items.append((False, f"quote is on page {(where or loose)[0]}, not page {f.get('page')}"))
     else:
         items.append((False, "quote not found in the document"))
     for k in ("value_text", "low_text", "high_text"):
@@ -216,10 +247,18 @@ def check(f: dict, pg: dict[int, str]) -> dict:
         nums = numbers(v)
         if nums:
             missing = [n for n in nums if n not in numbers(f.get("quote") or "")]
-            items.append((not missing, f"{v} in the quote" if not missing else f"{v} is not in the quote"))
+            if not missing:
+                items.append((True, f"{v} in the quote"))
+            elif all(_in_squashed(n, f.get("quote") or "") for n in missing):
+                items.append((True, f"{v} in the quote (spacing ignored)"))
+            else:
+                items.append((False, f"{v} is not in the quote"))
+        elif _norm(v) in q:
+            items.append((True, f"'{v}' in the quote"))
+        elif _squash(v) and _squash(v) in _squash(f.get("quote")):
+            items.append((True, f"'{v}' in the quote (spacing ignored)"))
         else:
-            ok = _norm(v) in q
-            items.append((ok, f"'{v}' in the quote" if ok else f"'{v}' is not in the quote"))
+            items.append((False, f"'{v}' is not in the quote"))
     nums = numbers(f.get("value_text") or "")
     if f.get("value") is not None and nums and f.get("unit") != "date":
         want = float(nums[0].rstrip("%"))
@@ -230,6 +269,9 @@ def check(f: dict, pg: dict[int, str]) -> dict:
     for tid, status in source_tables(f, pg):
         if status not in ("verified", "approved", "edited", "resolved"):
             items.append((False, f"from table {tid}, which is {status}: settle the table first"))
+    waived = {w["check"]: w for w in f.get("waivers") or []}
+    items = [(True, f"{t} — waived by {waived[t]['by']}: {waived[t]['note']}") if not ok and t in waived else (ok, t)
+             for ok, t in items]
     return {"ok": all(ok for ok, _ in items), "items": [{"ok": ok, "text": t} for ok, t in items]}
 
 
@@ -304,8 +346,92 @@ def _open_issue(f: dict) -> dict | None:
             "correction": {k: sug.get(k) for k in ("value_text", "low_text", "high_text", "basis", "page", "quote")} if sug else None}
 
 
+# ---- the arbiter: a third model for what the loop couldn't settle --------------------------------------------------
+
+ARBITER_PROMPT = """You are an independent arbiter for the key facts taken from last year's valuation report. An
+extractor and a reviewer (two other models) went back and forth on each fact below and couldn't settle it: an
+automatic check kept failing, or they disagreed on a detail. Read the cited pages and decide each one:
+- waive: the fact is right and a failing automatic check is wrong on a clerical point (spacing, a table row
+  copied into the quote, separators, formatting). Copy the failing check's text exactly into check, and give a
+  one-sentence note for the file saying why it is clerical.
+- use_correction: the reviewer's latest correction is right.
+- keep: the extractor's version is right as it stands.
+- escalate: a person should decide: the report is ambiguous, the figure may really be wrong, or you can't see
+  the value in the cited text.
+Only waive or pick a version if you can see the value in the page text yourself. When unsure, escalate; a
+person will see your note. The brief (what the reference wants):
+{keys}
+
+Items:
+{items}
+
+Pages:
+{doc}"""
+_ARB = {"id": {"type": "integer"}, "decision": {"type": "string", "enum": ["waive", "use_correction", "keep", "escalate"]},
+        "check": _S, "note": _S}
+ARBITER_SCHEMA = {"type": "json_schema", "name": "arbiter", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False, "required": ["decisions"],
+    "properties": {"decisions": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+                                                            "required": list(_ARB), "properties": _ARB}}}}}
+
+
+def arbitrate(markdown: str, facts: list[dict], model: str, on_usage=None) -> int:
+    """An independent model decides facts the loop escalated (updated in place). A waiver is kept on the fact
+    (f["waivers"]) so every later check honours it and shows its note; nothing is settled unless the checks then
+    pass. Returns how many it settled; the rest stay escalated, with the arbiter's note."""
+    if not facts:
+        return 0
+    pg = pages(markdown)
+    items = []
+    for f in facts:
+        sug = (f.get("review") or {}).get("suggestion")
+        items.append({"id": f["id"], "fact": _fields(f), "checks_failed": _failed(f),
+                      "open_point": (f.get("agent") or {}).get("open", {}).get("reason"),
+                      "reviewer_correction": {k: sug.get(k) for k in _FACT} if sug else None,
+                      "rounds": [{"extractor": t.get("extractor"), "reviewer": t.get("reviewer")}
+                                 for t in (f.get("agent") or {}).get("thread", [])[-3:]]})
+    cites = [f.get("page") for f in facts] + [n for f in facts for n in _quote_pages(f, pg)]
+    out = _call(model, ARBITER_PROMPT.format(keys=KEYS, items=json.dumps(items, indent=1, ensure_ascii=False),
+                                             doc=cited_pages(markdown, [c for c in cites if c] or [1])),
+                ARBITER_SCHEMA, "facts-arbiter", on_usage)
+    by_id, settled = {f["id"]: f for f in facts}, 0
+    for dec in out["decisions"]:
+        f = by_id.get(dec["id"])
+        if not f:
+            continue
+        a = f["agent"]
+        entry = {"round": "arbiter", "arbiter": {"by": model, "decision": dec["decision"], "check": dec["check"],
+                                                 "note": dec["note"]}}
+        a["thread"].append(entry)
+        ok = False
+        if dec["decision"] == "waive" and dec["check"]:
+            waived = {**f, "waivers": (f.get("waivers") or []) + [{"check": dec["check"].strip(), "by": model,
+                                                                 "note": dec["note"]}]}
+            chk = check(waived, pg)
+            if chk["ok"]:
+                f["waivers"], f["check"], ok = waived["waivers"], chk, True
+        elif dec["decision"] == "use_correction":
+            sug = (f.get("review") or {}).get("suggestion")
+            if sug:
+                chk = check({**sug, "waivers": f.get("waivers")}, pg)
+                if chk["ok"]:
+                    f.update({k: sug.get(k) for k in _FACT})
+                    f["check"], ok = chk, True
+        elif dec["decision"] == "keep":
+            chk = check(f, pg)
+            f["check"], ok = chk, chk["ok"]
+        if ok:
+            a.update(status="agreed", round="arbiter", waivers=f.get("waivers") or [])
+            a.pop("open", None)
+            settled += 1
+        else:
+            entry["arbiter"]["outcome"] = "escalated" if dec["decision"] == "escalate" else "didn't pass the checks"
+            a["open"] = {**(a.get("open") or {}), "arbiter": dec["note"]}
+    return settled
+
+
 def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, on_usage=None, progress=None,
-            rounds: int = MAX_ROUNDS) -> dict:
+            rounds: int = MAX_ROUNDS, arbiter_model: str | None = None) -> dict:
     """The loop on reviewed facts (updated in place: each gets "agent" = {status, round, thread}). A fact is
     agreed when the reviewer accepts it and the checks pass, withdrawn when the reviewer accepts the extractor's
     withdrawal, and escalated when rounds run out. Returns {"summary", "episodes"} (episodes feed lessons.py)."""
@@ -378,7 +504,8 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
                         if v.get(x) not in (None, "")}
                 reason = v["reason"] if v["verdict"] == "object" else \
                     "accepted by the reviewer, but the automatic checks still fail: " + "; ".join(_failed(cand))
-                issues[i] = {"verdict": "object", "reason": reason, "correction": corr or None}
+                issues[i] = {"verdict": "object", "reason": reason, "correction": corr or None,
+                             "accepted": v["verdict"] == "accept"}
     for i, iss in issues.items():  # rounds ran out: a person decides, with the reviewer's latest correction to hand
         f = by_id[i]
         f["agent"].update(status="escalated", round=k, open=iss)
@@ -389,9 +516,14 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
                 fix["value"] = float(nums[0].rstrip("%"))
             fix["check"] = check(fix, pg)
             f["review"] = {**(f.get("review") or {}), "suggestion": fix}
+    arbitrated = 0
+    if arbiter_model and issues:
+        progress(0.95, f"Arbiter ({arbiter_model}) on {len(issues)} fact(s) the loop couldn't settle")
+        arbitrated = arbitrate(markdown, [by_id[i] for i in issues], arbiter_model, on_usage)
     count = lambda st: sum(f["agent"]["status"] == st for f in facts)
     summary = {"rounds": k, "agreed": count("agreed"), "withdrawn": count("withdrawn"), "escalated": count("escalated"),
-               "settled_in_loop": sum(f["agent"]["status"] in ("agreed", "withdrawn") and f["agent"]["round"] > 0 for f in facts)}
+               "settled_in_loop": sum(f["agent"]["status"] in ("agreed", "withdrawn") and f["agent"]["round"] not in (0, None)
+                                      for f in facts), "arbitrated": arbitrated}
     episodes = [{"category": f["category"], "key": f["key"], "added_by_reviewer": f.get("origin") == "reviewer",
                  "thread": f["agent"]["thread"], "outcome": f["agent"]["status"]}
                 for f in facts if len(f["agent"]["thread"]) > 1]
@@ -400,7 +532,7 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
 
 
 def run(markdown: str, model: str = "gpt-6-luna", reviewer_model: str = "gpt-6-sol",
-        on_usage=None, progress=None, loop_rounds: int = MAX_ROUNDS) -> dict:
+        on_usage=None, progress=None, loop_rounds: int = MAX_ROUNDS, arbiter_model: str | None = None) -> dict:
     """All four passes. Returns {"facts": [...], "notes", "review_summary", "loop"}; each fact carries check,
     review (with a checked suggestion if the reviewer corrected it) and agent (the loop's outcome and thread)."""
     progress = progress or (lambda f, m: None)
@@ -435,7 +567,7 @@ def run(markdown: str, model: str = "gpt-6-luna", reviewer_model: str = "gpt-6-s
         facts.append(f)
         next_id += 1
     loop = resolve(markdown, facts, model, reviewer_model, on_usage,
-                   lambda f, m: progress(0.75 + 0.25 * f, m)) if loop_rounds else None
+                   lambda f, m: progress(0.75 + 0.25 * f, m), arbiter_model=arbiter_model) if loop_rounds else None
     progress(1.0, "Facts extracted and reviewed")
     return {"facts": facts, "notes": ext.get("notes"), "review_summary": rev.get("summary"), "loop": loop}
 

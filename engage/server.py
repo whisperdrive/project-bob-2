@@ -57,6 +57,7 @@ def index():
 @app.get("/api/config")
 def config():
     return {"models": MODELS, "default_model": engagement.DEFAULT_MODEL, "default_reviewer": engagement.DEFAULT_REVIEWER,
+            "default_arbiter": engagement.DEFAULT_ARBITER,
             "roles": engagement.rolesmod.ROLES}
 
 
@@ -68,6 +69,7 @@ class EngagementPatch(BaseModel):
     name: str | None = None
     model: str | None = None
     reviewer_model: str | None = None
+    arbiter_model: str | None = None
 
 
 @app.get("/api/engagements")
@@ -87,7 +89,7 @@ async def get_engagement(eid: int):
 
 @app.patch("/api/engagements/{eid}")
 async def patch_engagement(eid: int, body: EngagementPatch):
-    for m in (body.model, body.reviewer_model):
+    for m in (body.model, body.reviewer_model, body.arbiter_model):
         if m and m not in MODELS:
             raise HTTPException(400, f"unknown model {m}")
     return await _run(engagement.update, eid, **body.model_dump())

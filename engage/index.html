@@ -309,6 +309,7 @@ details.work[open] summary::before { transform: rotate(90deg); }
     <div class="hctl" id="modelCtl" hidden>
       <label for="mSel">Model</label><select id="mSel"></select>
       <label for="rSel">Reviewer</label><select id="rSel"></select>
+      <label for="aSel" title="Settles what the extractor and reviewer can't: a third, independent model">Arbiter</label><select id="aSel"></select>
       <span class="chip" id="spend" title="Azure model spend for this engagement">$0.00</span>
     </div>
   </div>
@@ -350,7 +351,7 @@ let uploads = [], pollTimer = null;
 // ---- boot / navigation -------------------------------------------------------------------------------------
 async function boot() {
   CFG = await api("/api/config");
-  for (const id of ["mSel", "rSel"]) $("#" + id).innerHTML = CFG.models.map(m => `<option>${esc(m)}</option>`).join("");
+  for (const id of ["mSel", "rSel", "aSel"]) $("#" + id).innerHTML = CFG.models.map(m => `<option>${esc(m)}</option>`).join("");
   const h = new URLSearchParams(location.hash.slice(1));
   state.step = h.get("s") || "files";
   await loadList(+h.get("e") || null);
@@ -391,6 +392,7 @@ $("#engSel").onchange = e => { if (e.target.value) { go(state.step, +e.target.va
 $("#newEng").onclick = () => { E = null; state.step = "files"; render(true); };
 $("#mSel").onchange = async e => { E = {...E, ...await api(`/api/engagements/${E.id}`, {method: "PATCH", body: {model: e.target.value}})}; toast(`Extraction model: ${e.target.value}`); };
 $("#rSel").onchange = async e => { E = {...E, ...await api(`/api/engagements/${E.id}`, {method: "PATCH", body: {reviewer_model: e.target.value}})}; toast(`Reviewer model: ${e.target.value}`); };
+$("#aSel").onchange = async e => { E = {...E, ...await api(`/api/engagements/${E.id}`, {method: "PATCH", body: {arbiter_model: e.target.value}})}; toast(`Arbiter: ${e.target.value}`); };
 function go(step, eid = E?.id) { state.step = step; history.replaceState(null, "", `#e=${eid || ""}&s=${step}`); render(); }
 
 // ---- progress of each step ---------------------------------------------------------------------------------
@@ -417,14 +419,21 @@ function renderSteps() {
 
 function render(creating = false) {
   $("#modelCtl").hidden = !E;
-  if (E) { $("#mSel").value = E.model || CFG.default_model; $("#rSel").value = E.reviewer_model || CFG.default_reviewer; }
+  if (E) { $("#mSel").value = E.model || CFG.default_model; $("#rSel").value = E.reviewer_model || CFG.default_reviewer;
+    $("#aSel").value = E.arbiter_model || CFG.default_arbiter; }
   renderSteps();
   renderNow();
   const m = $("#main");
   if (!E || creating) { m.innerHTML = viewNew(); bindNew(); $("#now").hidden = true; return; }
   const views = {files: viewFiles, reference: viewReference, roles: viewRoles, compare: viewCompare, map: viewMap, python: viewPython};
-  m.innerHTML = (views[state.step] || viewFiles)();
-  bind[state.step]?.();
+  keepOpen(m, () => { m.innerHTML = (views[state.step] || viewFiles)(); bind[state.step]?.(); });
+}
+// A redraw (the page refreshes every couple of seconds while work runs) mustn't close a section you opened, or open
+// one you closed: each <details> has a data-k (or an id), and its state carries over.
+function keepOpen(root, draw) {
+  const was = new Map([...root.querySelectorAll("details")].map(d => [d.dataset.k || d.id, d.open]).filter(([k]) => k));
+  draw();
+  root.querySelectorAll("details").forEach(d => { const k = d.dataset.k || d.id; if (k && was.has(k) && d.open !== was.get(k)) d.open = was.get(k); });
 }
 
 // ---- the status panel: what's happening now, where each stage is, and what needs you ------------------------
@@ -723,7 +732,7 @@ function tableReview(t) {
 }
 function tableThread(t) {
   const r = t.resolution; if (!r || !r.rounds.length) return r?.open ? `<div class="callout warn small" style="margin-top:8px">${esc(r.open.join("; "))}</div>` : "";
-  return `<details ${r.resolved ? "" : "open"} style="margin-top:8px"><summary>Review loop: ${r.resolved ? `resolved in round ${r.rounds.length}` : `not settled after ${r.rounds.length} round(s); over to you`}</summary>
+  return `<details data-k="table-${esc(t.id)}-loop" ${r.resolved ? "" : "open"} style="margin-top:8px"><summary>Review loop: ${r.resolved ? `resolved in round ${r.rounds.length}` : `not settled after ${r.rounds.length} round(s); over to you`}</summary>
   <ol class="why" style="color:var(--ink)">${r.rounds.map(x => `<li><b>Round ${x.round}.</b> Problems: ${esc(x.problems.join("; "))}<br><span class="muted">${esc(x.fixer)} fixed:</span> ${esc(x.changes || "")}
     ${x.check_ok != null ? `<br><span class="muted">Text-layer check:</span> ${x.check_ok ? "passes" : "still fails"}` : ""}${x.agrees_with_second_read != null ? `<br><span class="muted">Matches the independent read:</span> ${x.agrees_with_second_read ? "yes" : "no"}` : ""}
     ${x.verdict ? `<br><span class="muted">${esc(x.verdict.by === "code" ? "Code" : x.verdict.by)}:</span> ${x.verdict.verdict === "accept" ? "accepts" : "objects"}${x.verdict.problems?.length ? ": " + esc(x.verdict.problems.join("; ")) : ""}` : ""}</li>`).join("")}</ol>
@@ -731,7 +740,7 @@ function tableThread(t) {
 }
 function bindTables() {
   $("#loopTables")?.addEventListener("click", () => act(() => api(`/api/documents/${DOC.id}/tables/resolve`, {method: "POST"})));
-  document.querySelectorAll("#tablesCard [data-t]").forEach(r => r.onclick = () => { state.table = r.dataset.t; $("#tablesCard").innerHTML = tablesCard(); bindTables(); });
+  document.querySelectorAll("#tablesCard [data-t]").forEach(r => r.onclick = () => { state.table = r.dataset.t; keepOpen($("#tablesCard"), () => { $("#tablesCard").innerHTML = tablesCard(); bindTables(); }); });
   document.querySelectorAll("#tablesCard input[name=tf]").forEach(r => r.onchange = () => { state.tableFilter = r.value; $("#tablesCard").innerHTML = tablesCard(); bindTables(); });
   const sel = () => DOC.doc.tables.find(t => t.id === state.table) || DOC.doc.tables.find(t => ["flagged", "error", "unread"].includes(t.status));
   document.querySelectorAll("#tablesCard [data-ta]").forEach(b => b.onclick = async () => {
@@ -770,12 +779,12 @@ function factsCard(d) {
   const nAgentsOk = fs.filter(f => f.status === "approved" && byAgents(f)).length, nAgentsNo = fs.filter(f => f.status === "rejected" && byAgents(f)).length;
   let html = head + `<div class="row small" style="margin-bottom:8px">${nAgentsOk ? `<span class="pill ok">${nAgentsOk} approved by the agents</span>` : ""}${n.approved - nAgentsOk ? `<span class="pill ok">${n.approved - nAgentsOk} approved by you</span>` : ""}${nAgreed ? `<span class="pill ok">${nAgreed} agreed, not yet approved</span>` : ""}${nYou ? `<span class="pill warn">${nYou} need you</span>` : `<span class="pill">nothing needs you</span>`}${nWithdrawn ? `<span class="pill">${nWithdrawn} withdrawn by the agents</span>` : ""}${nAgentsNo ? `<span class="pill">${nAgentsNo} rejected by the agents</span>` : ""}${n.rejected - nAgentsNo ? `<span class="pill bad">${n.rejected - nAgentsNo} rejected by you</span>` : ""}</div>`;
   const L = d.loop || {};
-  if (L.facts) html += `<div class="callout info small" style="margin-bottom:8px"><b>Review loop:</b> ${L.facts.rounds ? `${L.facts.rounds} round(s); ${L.facts.settled_in_loop} fact(s) settled between the agents` : "the reviewer and the checks agreed with every fact at first reading"}${L.facts.approved != null ? `; ${L.facts.approved} approved${L.facts.rejected ? ` and ${L.facts.rejected} rejected` : ""} automatically because both agents agree and the checks pass` : ""}${L.facts.escalated ? `; ${L.facts.escalated} they couldn't settle are over to you (shown first below)` : ""}. Undo any decision to take it over.${lessonNote(L.lessons_facts)}</div>`;
+  if (L.facts) html += `<div class="callout info small" style="margin-bottom:8px"><b>Review loop:</b> ${L.facts.rounds ? `${L.facts.rounds} round(s); ${L.facts.settled_in_loop} fact(s) settled between the agents` : "the reviewer and the checks agreed with every fact at first reading"}${L.facts.approved != null ? `; ${L.facts.approved} approved${L.facts.rejected ? ` and ${L.facts.rejected} rejected` : ""} automatically because both agents agree and the checks pass` : ""}${L.facts.arbitrated ? `; the arbiter settled ${L.facts.arbitrated} more` : ""}${L.facts.escalated ? `; ${L.facts.escalated} they couldn't settle are over to you (shown first below)` : ""}. Undo any decision to take it over.${lessonNote(L.lessons_facts)}</div>`;
   if (d.review_summary) html += `<div class="callout info small" style="margin-bottom:10px"><b>Reviewer, first reading:</b> ${esc(d.review_summary)}</div>`;
   for (const [cat, label] of Object.entries(CAT)) {
     const rows = fs.filter(f => f.category === cat).sort((a, b) => needsYou(b) - needsYou(a)); if (!rows.length) continue;
     const collapsed = cat === "sensitivity";
-    html += `<details ${collapsed ? "" : "open"} style="margin-top:10px"><summary style="font-size:14px;color:var(--ink);font-weight:600">${label} <span class="muted small">(${rows.length})</span></summary>
+    html += `<details data-k="facts-${d.id}-${cat}" ${collapsed ? "" : "open"} style="margin-top:10px"><summary style="font-size:14px;color:var(--ink);font-weight:600">${label} <span class="muted small">(${rows.length})</span></summary>
     <div class="scroll"><table><thead><tr><th>Item</th><th>Value</th><th>Source</th><th>Checks</th><th>Review loop</th><th>Decision</th></tr></thead><tbody>${rows.map(factRow).join("")}</tbody></table></div></details>`;
   }
   return html;
@@ -807,10 +816,14 @@ function factLoop(f, rv, verdict) {
   const a = f.agent;
   if (!a) return `${rv.verdict ? `<span class="pill ${verdict}">${esc(rv.verdict)}</span>` : ""} ${esc(rv.reason || "")}`;
   const last = a.thread[a.thread.length - 1] || {}, st = a.status;
-  const pill = st === "agreed" ? `<span class="pill ok">Agreed${a.round ? ` in round ${a.round}` : ""}</span>` : st === "withdrawn" ? `<span class="pill">Withdrawn in round ${a.round}</span>`
+  const pill = st === "agreed" ? `<span class="pill ok">${a.round === "arbiter" ? "Settled by the arbiter" : a.round === "recheck" ? "Agreed; checks now pass" : `Agreed${a.round ? ` in round ${a.round}` : ""}`}</span>` : st === "withdrawn" ? `<span class="pill">Withdrawn in round ${a.round}</span>`
     : st === "escalated" ? `<span class="pill warn">Needs you</span>` : `<span class="pill">${esc(st)}</span>`;
-  const why = st === "escalated" ? a.open?.reason : last.reviewer?.reason;
-  const rounds = a.thread.length > 1 ? `<details style="margin-top:4px"><summary>${a.thread.length - 1} round(s)</summary><ol class="why" style="color:var(--ink)" start="0">${a.thread.map(x => `<li>${x.round === 0
+  const why = st === "escalated" ? [a.open?.reason, a.open?.arbiter && `Arbiter: ${a.open.arbiter}`].filter(Boolean).join(" ") : (last.arbiter?.note || last.reviewer?.reason || last.note);
+  const nRounds = a.thread.filter(x => typeof x.round === "number" && x.round > 0).length;
+  const rounds = a.thread.length > 1 ? `<details data-k="fact-${f.id}-rounds" style="margin-top:4px"><summary>${nRounds} round(s)${a.thread.some(x => x.round === "arbiter") ? " and the arbiter" : ""}</summary><ol class="why" style="color:var(--ink)" start="0">${a.thread.map(x => `<li>${x.round === "arbiter"
+      ? `<span class="muted">Arbiter (${esc(x.arbiter.by)})</span> ${esc({waive: "waives a check", use_correction: "takes the reviewer's correction", keep: "keeps the extractor's version", escalate: "hands it to you"}[x.arbiter.decision] || x.arbiter.decision)}${x.arbiter.check ? `: <i>${esc(x.arbiter.check)}</i>` : ""}. ${esc(x.arbiter.note)}${x.arbiter.outcome ? ` <span class="pill warn">${esc(x.arbiter.outcome)}</span>` : ""}`
+      : x.round === "recheck" ? `<span class="muted">Checked again:</span> ${esc(x.note)}`
+      : x.round === 0
       ? `<span class="muted">First reading:</span> reviewer ${esc(x.reviewer?.verdict || "")}${x.reviewer?.reason ? ": " + esc(x.reviewer.reason) : ""}${x.checks_failed?.length ? `; checks: ${esc(x.checks_failed.join("; "))}` : ""}`
       : `<span class="muted">Extractor</span> ${esc(x.extractor.action)}s${x.fact ? ` → <b>${esc(x.fact.value_text)}</b> p. ${esc(x.fact.page)}` : ""}: ${esc(x.extractor.reason)}<br><span class="muted">Reviewer</span> ${x.reviewer.verdict === "accept" ? "accepts" : "objects"}: ${esc(x.reviewer.reason)}${x.checks_failed?.length ? `<br><span class="muted">Checks still fail:</span> ${esc(x.checks_failed.join("; "))}` : ""}`}</li>`).join("")}</ol></details>` : "";
   return `${pill} ${esc(why || "")}${rounds}`;
@@ -829,7 +842,7 @@ function lessonsCard() {
   const cur = LESSONS.curated, learned = LESSONS.learned.slice().sort((a, b) => (a.status === "retired") - (b.status === "retired") || b.seen - a.seen || b.last - a.last);
   const when = t => new Date(t * 1000).toLocaleDateString(undefined, {day: "numeric", month: "short"});
   return `<h2>What the agents have learned</h2><p class="sub">Rules every report agent reads on every run: the table reader, the extractor, the reviewer and both sides of the review loop. After each loop the reviewer writes down what went wrong and how it was fixed, as method only: code rejects any lesson that names the engagement or carries a figure. Learned lessons stay on this machine (out/lessons.json); promote one to add it to <span class="mono">${esc(LESSONS.rules_file)}</span> in the repo.</p>
-  ${cur.length ? `<details><summary>${cur.length} curated rule(s) in ${esc(LESSONS.rules_file)}</summary><ul class="why" style="color:var(--ink)">${cur.map(r => `<li><b>${esc(r.id)}</b> <span class="pill">${esc(r.scope)}</span> ${esc(r.rule)}</li>`).join("")}</ul></details>` : ""}
+  ${cur.length ? `<details data-k="curated-rules"><summary>${cur.length} curated rule(s) in ${esc(LESSONS.rules_file)}</summary><ul class="why" style="color:var(--ink)">${cur.map(r => `<li><b>${esc(r.id)}</b> <span class="pill">${esc(r.scope)}</span> ${esc(r.rule)}</li>`).join("")}</ul></details>` : ""}
   ${learned.length ? `<div class="scroll" style="margin-top:8px"><table><thead><tr><th>ID</th><th>For</th><th>Lesson</th><th class="num">Seen</th><th class="num">Applied</th><th>Last</th><th></th></tr></thead><tbody>
   ${learned.map(x => `<tr class="${x.status === "retired" ? "muted" : ""}"><td class="mono">${esc(x.id)}</td><td><span class="pill">${esc(x.scope)}</span></td><td>${esc(x.rule)}<div class="small muted">Why: ${esc(x.why)}</div>${x.promoted_to ? `<div class="small">Promoted to ${esc(x.promoted_to)}</div>` : ""}</td>
     <td class="num" title="loops that taught or confirmed it">${x.seen}</td><td class="num" title="times an agent said it applied it">${x.applied || 0}</td><td class="small nowrap">${when(x.last)}</td>
@@ -1111,7 +1124,7 @@ function modelBody(d) {
     <select class="in" id="mdSheet" aria-label="Sheet"><option value="">All sheets</option>${d.sheets.filter(s => s.rows).map(s => `<option ${s.sheet === MD.sheet ? "selected" : ""}>${esc(s.sheet)}</option>`).join("")}</select>
     <label><input type="checkbox" id="mdMapped" ${MD.mapped ? "checked" : ""}> Only rows the map uses</label></div>
   <div id="mdRows">${rowsTable()}</div>
-  ${d.names.length ? `<details style="margin-top:12px"><summary>Named ranges (${nfmt(d.names.length)})</summary><div class="scroll" style="max-height:320px;overflow-y:auto;margin-top:6px"><table><tbody>${d.names.map(n => `<tr><td class="mono small">${esc(n.name)}</td><td class="mono small">${esc(n.ref)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}`;
+  ${d.names.length ? `<details data-k="names-${d.id}" style="margin-top:12px"><summary>Named ranges (${nfmt(d.names.length)})</summary><div class="scroll" style="max-height:320px;overflow-y:auto;margin-top:6px"><table><tbody>${d.names.map(n => `<tr><td class="mono small">${esc(n.name)}</td><td class="mono small">${esc(n.ref)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}`;
 }
 function markTags(ms) {
   return ms.map(m => `<span class="tag ${m.startsWith("lever") ? "lever" : m.startsWith("output") ? "out" : ""}">${esc(m)}</span>`).join("");
@@ -1266,7 +1279,7 @@ function tieCard(O) {
   return `<div class="card"><h2>Tie-out to the report</h2><p class="sub">The module's results rounded to the report's printed precision. Sensitivities are rerun by setting the discount rate and growth levers to the report's values.</p>
   ${outs.length ? `<div class="scroll"><table><thead><tr><th>Conclusion</th><th>Cell</th><th class="num">Report</th><th class="num">Python</th><th></th></tr></thead><tbody>
   ${outs.map(o => `<tr><td>${esc(o.label)}</td><td class="mono">${esc(o.cell)}</td><td class="num">${esc(o.report)}</td><td class="num">${esc(fmt(o.tie?.python, 2))}</td><td>${o.tie ? (o.tie.ok ? `<span class="pill ok">Ties</span>` : `<span class="pill bad">Differs</span>`) : ""}</td></tr>`).join("")}</tbody></table></div>` : ""}
-  ${sens.length ? `<details ${sens.some(p => p.tie && !p.tie.ok) ? "open" : ""} style="margin-top:10px"><summary>Sensitivities (${sens.filter(p => p.tie?.ok).length} of ${sens.length} reproduced)</summary><div class="scroll"><table><thead><tr><th>Scenario</th><th>Levers set</th><th class="num">Report</th><th class="num">Python</th><th></th></tr></thead><tbody>
+  ${sens.length ? `<details data-k="overlay-sensitivities" ${sens.some(p => p.tie && !p.tie.ok) ? "open" : ""} style="margin-top:10px"><summary>Sensitivities (${sens.filter(p => p.tie?.ok).length} of ${sens.length} reproduced)</summary><div class="scroll"><table><thead><tr><th>Scenario</th><th>Levers set</th><th class="num">Report</th><th class="num">Python</th><th></th></tr></thead><tbody>
   ${sens.map(p => `<tr><td>${esc(p.basis)}</td><td class="mono small">${esc(Object.entries(p.set || {}).map(([k, v]) => `${k} = ${+v.toPrecision(10)}`).join(", "))}</td><td class="num">${esc(p.report)}</td><td class="num">${esc(fmt(p.tie?.python, 2))}</td>
     <td>${p.skip ? `<span class="small muted">${esc(p.skip)}</span>` : p.tie ? (p.tie.ok ? `<span class="pill ok">Reproduced</span>` : `<span class="pill bad">Differs</span>`) : ""}</td></tr>`).join("")}</tbody></table></div></details>` : ""}</div>`;
 }
@@ -1319,7 +1332,7 @@ function traceBlock() {
   if (!t) return "";
   return `<div style="margin-top:14px;border-top:1px solid var(--rule);padding-top:12px"><div class="row" style="justify-content:space-between"><h3 style="margin:0;font-size:14px">${esc(t.cell)} ${esc(t.label || "")} = ${esc(fmt(t.value, 4))}</h3><button class="btn small ghost" id="ovTraceClose">Close</button></div>
   <pre class="mono" style="background:var(--code-bg);padding:10px 12px;border-radius:4px;overflow-x:auto;font-size:12px;line-height:1.5">${esc(t.source || "(an input)")}</pre>
-  ${t.n_client_reads ? `<details><summary>${t.n_client_reads} value(s) read from the client model to compute it</summary><div class="scroll"><table><tbody>${t.client_reads.slice(0, 60).map(x => `<tr><td class="small">${esc(x.source)}</td><td class="mono small">${esc(x.cell)}</td><td class="num small">${esc(fmt(x.value, 4))}</td></tr>`).join("")}</tbody></table></div></details>` : `<p class="small muted">Reads nothing from the client model directly (its inputs are the overlay's own).</p>`}</div>`;
+  ${t.n_client_reads ? `<details data-k="trace-reads"><summary>${t.n_client_reads} value(s) read from the client model to compute it</summary><div class="scroll"><table><tbody>${t.client_reads.slice(0, 60).map(x => `<tr><td class="small">${esc(x.source)}</td><td class="mono small">${esc(x.cell)}</td><td class="num small">${esc(fmt(x.value, 4))}</td></tr>`).join("")}</tbody></table></div></details>` : `<p class="small muted">Reads nothing from the client model directly (its inputs are the overlay's own).</p>`}</div>`;
 }
 let ovTimer = null, ovSeq = 0;
 function ovSchedule(delay = 300) { clearTimeout(ovTimer); ovTimer = setTimeout(ovRun, delay); }

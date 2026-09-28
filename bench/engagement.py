@@ -44,6 +44,7 @@ OUT, UPLOADS = ROOT / "out", ROOT / "uploads"
 DB, DOCS = OUT / "engage.db", OUT / "docs"
 DEFAULT_MODEL = "gpt-6-luna"      # extraction and table reads
 DEFAULT_REVIEWER = "gpt-6-sol"    # second reads and fact review: a different, stronger model than the first read
+DEFAULT_ARBITER = "gpt-4o"        # settles what the review loop can't: a third model, independent of both
 REPORT_TYPES = (".pdf", ".pptx")
 
 _lock = threading.Lock()
@@ -83,6 +84,8 @@ def _conn() -> sqlite3.Connection:
     for table, col in (("facts", "agent_json"), ("documents", "loop_json"), ("facts", "decided_by")):  # ... and before the loop
         if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+    if "arbiter_model" not in {r[1] for r in db.execute("PRAGMA table_info(engagements)")}:
+        db.execute("ALTER TABLE engagements ADD COLUMN arbiter_model TEXT")
     timing = [("documents", c) for c in ("started_at", "doc_secs", "facts_started_at", "facts_secs")] + \
         [("engagements", f"{k}_{c}") for k in ("compare", "map", "overlay") for c in ("started_at", "secs")] + \
         [("engagements", "overlay_pct")]
@@ -142,7 +145,7 @@ def all_engagements() -> list[dict]:
 
 
 def update(eid: int, **fields) -> dict:
-    fields = {k: v for k, v in fields.items() if k in ("name", "model", "reviewer_model") and v}
+    fields = {k: v for k, v in fields.items() if k in ("name", "model", "reviewer_model", "arbiter_model") and v}
     if fields:
         _set("engagements", eid, **fields, updated_at=time.time())
     return get(eid)
@@ -376,11 +379,20 @@ def _recheck_facts(did: int, doc: dict) -> None:
     made rested on the checks passing, so if they now fail the fact goes back to a person."""
     pg = reportfacts.pages(doc["markdown"])
     for f in _q("SELECT * FROM facts WHERE document_id=?", did):
-        chk = reportfacts.check(f, pg)
+        agent = json.loads(f["agent_json"] or "null") or {}
+        chk = reportfacts.check({**f, "waivers": agent.get("waivers")}, pg)
         rv = json.loads(f["review_json"] or "null")
         if rv and rv.get("suggestion"):
             rv["suggestion"]["check"] = reportfacts.check(rv["suggestion"], pg)
         fields = {"check_json": json.dumps(chk), "review_json": json.dumps(rv)}
+        o = agent.get("open") or {}
+        if f["status"] == "pending" and agent.get("status") == "escalated" and chk["ok"] and \
+                (o.get("accepted") or (o.get("reason") or "").startswith("accepted by the reviewer")):
+            # the reviewer had accepted it and only a check held it up: that check now passes
+            agent["thread"] = agent.get("thread", []) + [{"round": "recheck", "note": "the checks pass on a fresh check"}]
+            agent.update(status="agreed", round="recheck")
+            agent.pop("open", None)
+            fields["agent_json"] = json.dumps(agent)
         if f["decided_by"] == "agents" and f["status"] == "approved" and not chk["ok"]:
             a = json.loads(f["agent_json"] or "null") or {"thread": []}
             a.update(status="escalated", open={"verdict": "object", "reason": "a table on its page changed and the checks "
@@ -558,8 +570,9 @@ def _resolve_tables_job(did: int) -> None:
 def _resolve_facts_job(did: int) -> None:
     d = _doc(did)
     eid = d["engagement_id"]
-    e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+    e = _q("SELECT model, reviewer_model, arbiter_model FROM engagements WHERE id=?", eid)[0]
     md = json.loads(d["doc_json"])["markdown"]
+    pg = reportfacts.pages(md)
     rows = [r for r in _q("SELECT * FROM facts WHERE document_id=? AND status='pending' ORDER BY n", did)
             if (json.loads(r["agent_json"] or "null") or {}).get("status") not in ("agreed", "withdrawn")]
     if not rows:
@@ -570,12 +583,18 @@ def _resolve_facts_job(did: int) -> None:
         f = {"id": r["id"], "origin": r["origin"], **{k: r[k] for k in FACT_FIELDS},
              "check": json.loads(r["check_json"] or "null"), "review": json.loads(r["review_json"] or "null") or {}}
         prev = json.loads(r["agent_json"] or "null")
+        f["waivers"] = (prev or {}).get("waivers") or []
+        f["check"] = reportfacts.check(f, pg)  # today's checks (spacing-tolerant, waivers honoured)
         if prev and prev.get("status") in ("escalated", "open") and prev.get("open"):
-            f["review"] = {**f["review"], "verdict": prev["open"].get("verdict") or "correct", "reason": prev["open"].get("reason")}
+            o = prev["open"]
+            accepted = o.get("accepted") or (o.get("reason") or "").startswith("accepted by the reviewer")
+            f["review"] = {**f["review"], "verdict": "accept" if accepted else (o.get("verdict") or "correct"),
+                           "reason": o.get("reason")}
         fs.append(f)
     _set("documents", did, facts_status="running", facts_step="Review loop")
     loop = reportfacts.resolve(md, fs, e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER, _logger(eid),
-                               lambda frac, msg: _set("documents", did, facts_step=msg))
+                               lambda frac, msg: _set("documents", did, facts_step=msg),
+                               arbiter_model=e["arbiter_model"] or DEFAULT_ARBITER)
     now = time.time()
     for f, r in zip(fs, rows):
         prev = json.loads(r["agent_json"] or "null")
@@ -619,6 +638,11 @@ def _auto_review(e: dict) -> None:
             continue
         loop = d.get("loop") or {}
         did = d["id"]
+        if loop.get("check_version") != reportfacts.CHECK_VERSION and any(f["document_id"] == did for f in e["facts"]):
+            _recheck_facts(did, json.loads(_doc(did)["doc_json"]))  # checks improved: facts they held up can settle
+            auto_decide(did)
+            _note_loop(did, check_version=reportfacts.CHECK_VERSION)
+            e["facts"] = facts(e["id"])
         if d["n_flagged"] and not loop.get("tables") and not d["error"]:
             job = ("resolve_tables", did)
         elif not d["facts_status"] and not any(f["document_id"] == did for f in e["facts"]):
@@ -1055,11 +1079,12 @@ def _process_doc(did: int) -> None:
 def _process_facts(did: int) -> None:
     d = _doc(did)
     eid = d["engagement_id"]
-    e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+    e = _q("SELECT model, reviewer_model, arbiter_model FROM engagements WHERE id=?", eid)[0]
     doc = json.loads(d["doc_json"])
     _set("documents", did, facts_status="running", facts_step="Extracting key facts")
     res = reportfacts.run(doc["markdown"], e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER, _logger(eid),
-                          lambda frac, msg: _set("documents", did, facts_step=msg))
+                          lambda frac, msg: _set("documents", did, facts_step=msg),
+                          arbiter_model=e["arbiter_model"] or DEFAULT_ARBITER)
     now = time.time()
     with _lock, _conn() as db:
         db.execute("DELETE FROM facts WHERE document_id=?", (did,))

@@ -410,6 +410,50 @@ _BOLD = re.compile(r"bold|black|heavy", re.I)
 PROSE_WORDS = 3.0    # average words per line for a side of a gutter to count as running text
 
 
+def _respace(words: list[dict]) -> list[dict]:
+    """Letter-spaced text (glyphs set one at a time with extra tracking, as some exporters write tables) comes out
+    of the text layer as one-letter words: "N e t f i n a n c i a l d e b t 5 , 2 2 3 . 0". Per line, if most
+    words are single characters, rebuild real words: letters join unless the gap is clearly wider than the line's
+    usual letter gap (a word space adds about a quarter of the type size)."""
+    out, lines = [], []
+    for w in sorted(words, key=lambda w: (round(w["top"]), w["x0"])):
+        if lines and abs(lines[-1][0]["top"] - w["top"]) <= 2.5:
+            lines[-1].append(w)
+        else:
+            lines.append([w])
+    for ln in lines:
+        ln.sort(key=lambda w: w["x0"])
+        if len(ln) < 4 or sum(len(w["text"]) == 1 for w in ln) < 0.6 * len(ln):
+            out.extend(ln)
+            continue
+        gaps = [b["x0"] - a["x1"] for a, b in zip(ln, ln[1:])]
+        letter = sorted(gaps)[len(gaps) // 2]
+        size = sorted(w.get("size", 10) for w in ln)[len(ln) // 2]
+        cut = letter + max(0.25 * size, 1.0)
+        run = [ln[0]]
+        for w, g in zip(ln[1:], gaps):
+            if g <= cut:
+                run.append(w)
+                continue
+            out.append(_joined(run))
+            run = [w]
+        out.append(_joined(run))
+    return out
+
+
+def _joined(run: list[dict]) -> dict:
+    if len(run) == 1:
+        return run[0]
+    w = dict(run[0])
+    w.update(text="".join(x["text"] for x in run), x0=min(x["x0"] for x in run), x1=max(x["x1"] for x in run),
+             top=min(x["top"] for x in run), bottom=max(x["bottom"] for x in run),
+             size=sum(x.get("size", 0) for x in run) / len(run), bold=all(x.get("bold") for x in run))
+    if "doctop" in w:
+        w["doctop"] = min(x["doctop"] for x in run)
+    w["width"], w["height"] = w["x1"] - w["x0"], w["bottom"] - w["top"]
+    return w
+
+
 def _merged(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
     out = []
     for a, b in sorted(spans):
@@ -466,6 +510,7 @@ def _pdf(path: str, out_dir: Path, reader: Reader | None, progress) -> dict:
             for w in words:                                                     # own font mustn't split a word
                 chars = w.pop("chars", None) or []
                 w["bold"] = bool(chars) and sum(bool(_BOLD.search(c.get("fontname", ""))) for c in chars) > len(chars) / 2
+            words = _respace(words)
             lines = _lines(words)
             area = float(page.width * page.height)
             imgs = [(float(i["x0"]), float(i["top"]), float(i["x1"]), float(i["bottom"])) for i in page.images
