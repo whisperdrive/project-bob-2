@@ -113,6 +113,9 @@ class Workbook:
         self._timeline = {}
         self._inverse = {}
 
+    def close(self):
+        self.db.close()
+
     def sheet(self, s):
         if s not in self.sheets:
             self.sheets[s] = {(r, c): from_db(v) for r, c, v in
@@ -275,6 +278,15 @@ class Session:
         return out
 
     # evaluation
+    def close(self):
+        """Let go of the model.db files (a workbook being rebuilt deletes its model.db)."""
+        for wb in (self.ov, self.prior, self.current):
+            if wb:
+                wb.close()
+
+    def paths(self) -> set[str]:
+        return {wb.path for wb in (self.ov, self.prior, self.current) if wb}
+
     def value(self, s, r, c):
         """A cell as the module sees it: overlay sheets computed, other sheets from the feed."""
         return self.B.get("", s, r, c)

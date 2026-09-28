@@ -232,7 +232,15 @@ steps, each checked by a person before the next relies on it:
 
 A status panel at the top of every step shows where the engagement is. Each stage appears as done, running (with
 what the agents are doing now, step by step, the review loop animated), needing you, or failed. It also shows the
-next thing for you to do, as a button that takes you there.
+next thing for you to do, as a button that takes you there. Every running job shows how long it has been going
+and, where it reports progress, roughly how long is left. Other jobs estimate from how long the last run took,
+and finished jobs show how long they took.
+
+Any processed file can be rebuilt from scratch from the Files step. A workbook's build is shared: every
+engagement using it, and the Model Desk, get the new one, and live Python overlays let go of the old file first.
+A report is read again: every table is re-read and re-checked, and its key facts are kept and re-checked against
+the new reading. Uploading the same workbook to another engagement reuses its build. The same report uploaded to
+another engagement is read again.
 
 All model calls run on Azure Foundry through `bench/llm.py`: gpt-6-luna extracts and reads tables, gpt-6-sol reviews
 (second reads of picture tables, fact review), and both can be changed per engagement in the header. Calls are logged

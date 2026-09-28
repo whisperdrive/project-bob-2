@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS files(
   target_name TEXT, project_name TEXT, valuation_date TEXT, identity_json TEXT, identity_confirmed INT DEFAULT 0,
   previous_id INT, diff_json TEXT, diff_summary TEXT);
 """
-LIST_COLS = ("id, sha256, filename, size, uploaded_at, status, step, pct, error, processed_at, sheets, line_items, "
+LIST_COLS = ("id, sha256, filename, size, uploaded_at, status, step, pct, error, processed_at, started_at, sheets, line_items, "
              "build_secs, target_name, project_name, valuation_date, identity_confirmed, previous_id, "
              "json_array_length(diff_json, '$.warnings') AS n_warnings")
 
@@ -48,6 +48,8 @@ def _conn() -> sqlite3.Connection:
     db = sqlite3.connect(REGISTRY, check_same_thread=False, timeout=30)
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
+    if "started_at" not in {r[1] for r in db.execute("PRAGMA table_info(files)")}:  # registries from before timings
+        db.execute("ALTER TABLE files ADD COLUMN started_at REAL")
     return db
 
 
@@ -256,7 +258,7 @@ def summarize(d: dict, prev: dict, me: dict, model: str = SUMMARY_MODEL, session
 def process(fid: int) -> None:
     f = get(fid, full=True)
     try:
-        _update(fid, status="processing", step="Opening workbook", pct=0, error=None)
+        _update(fid, status="processing", step="Opening workbook", pct=0, error=None, started_at=time.time())
         stats = build_map.main(f["source_path"], f["out_dir"], _stage(fid, 0.0, 0.8))
         _update(fid, sheets=stats["sheets"], line_items=stats["line_items"], build_secs=stats["secs"])
 
@@ -275,6 +277,18 @@ def process(fid: int) -> None:
     except Exception as e:
         traceback.print_exc()
         _update(fid, status="error", step="Failed", error=f"{type(e).__name__}: {e}")
+
+
+def rebuild(fid: int) -> dict:
+    """Process a file again from scratch, done or failed (its model.db is rebuilt for everyone using it)."""
+    f = get(fid)
+    if not f:
+        raise ValueError("no such file")
+    if f["status"] in ("queued", "processing"):
+        raise ValueError(f"{f['filename']} is already being processed")
+    _update(fid, status="queued", step="Waiting to start", pct=0, error=None)
+    _jobs.put(fid)
+    return get(fid)
 
 
 def retry(fid: int) -> dict:

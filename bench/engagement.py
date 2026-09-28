@@ -83,6 +83,12 @@ def _conn() -> sqlite3.Connection:
     for table, col in (("facts", "agent_json"), ("documents", "loop_json"), ("facts", "decided_by")):  # ... and before the loop
         if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+    timing = [("documents", c) for c in ("started_at", "doc_secs", "facts_started_at", "facts_secs")] + \
+        [("engagements", f"{k}_{c}") for k in ("compare", "map", "overlay") for c in ("started_at", "secs")] + \
+        [("engagements", "overlay_pct")]
+    for table, col in timing:  # ... and before job timings
+        if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {col} REAL")
     return db
 
 
@@ -150,7 +156,8 @@ def workbooks(eid: int) -> list[dict]:
         if rec:
             w = {k: rec.get(k) for k in ("id", "filename", "size", "uploaded_at", "status", "step", "pct", "error",
                                          "sheets", "line_items", "target_name", "project_name", "valuation_date",
-                                         "db_path", "source_path", "identity", "processed_at")}
+                                         "db_path", "source_path", "identity", "processed_at", "started_at",
+                                         "build_secs")}
             w["sheet_names"] = _sheet_names(w) if w["status"] == "done" and w["db_path"] else []
             out.append(w)
     return out
@@ -174,7 +181,8 @@ def _sheet_names(w: dict) -> list[str]:
 
 def documents(eid: int) -> list[dict]:
     cols = ("id, engagement_id, filename, kind, size, uploaded_at, status, step, pct, error, pages, n_tables, n_flagged, "
-            "processed_at, facts_status, facts_step, facts_error, facts_notes, review_summary, loop_json")
+            "processed_at, facts_status, facts_step, facts_error, facts_notes, review_summary, loop_json, started_at, "
+            "doc_secs, facts_started_at, facts_secs")
     out = _q(f"SELECT {cols} FROM documents WHERE engagement_id=? ORDER BY uploaded_at", eid)
     for d in out:
         d["loop"] = json.loads(d.pop("loop_json") or "null")
@@ -225,7 +233,7 @@ def get(eid: int) -> dict | None:
         ident = w.pop("identity", None) or {}
         w["identity_notes"] = ident.get("notes")
     out = {**e, "documents": documents(eid), "workbooks": wbs, "facts": facts(eid), "roles": roles(eid),
-           "session": _session(eid)}
+           "session": _session(eid), "now": time.time()}
     _auto_review(out)
     _maybe_suggest(eid, out)
     out["roles_pending"] = eid in _ROLE_JOBS
@@ -611,7 +619,7 @@ def _auto_review(e: dict) -> None:
             continue
         loop = d.get("loop") or {}
         did = d["id"]
-        if d["n_flagged"] and "tables" not in loop and not d["error"]:
+        if d["n_flagged"] and not loop.get("tables") and not d["error"]:
             job = ("resolve_tables", did)
         elif not d["facts_status"] and not any(f["document_id"] == did for f in e["facts"]):
             job = ("facts", did)
@@ -900,7 +908,8 @@ def _wiring(eid: int) -> dict:
 def _overlay(eid: int) -> None:
     import overlay as ovmod
     e = _q("SELECT name FROM engagements WHERE id=?", eid)[0]
-    step = lambda frac, msg: _set("engagements", eid, overlay_status="running", overlay_step=msg)
+    step = lambda frac, msg: _set("engagements", eid, overlay_status="running", overlay_step=msg,
+                                  overlay_pct=round(frac, 3))
     step(0, "Reading the roles")
     w = _wiring(eid)
     _SESSIONS.pop(eid, None)
@@ -1026,6 +1035,8 @@ def _process_doc(did: int) -> None:
         doc = docingest.process(*args, read=False)
         note = "Tables not read. " + friendly(ex)
     _save_doc(did, doc)
+    if _q("SELECT 1 FROM facts WHERE document_id=?", did):  # read again: the facts are checked against the new text
+        _recheck_facts(did, doc)
     if note is None and any(t.get("status") == "flagged" for t in doc["tables"]):
         _set("documents", did, step="Review loop on the flagged tables", pct=0.95)
         try:
@@ -1066,10 +1077,28 @@ def _process_facts(did: int) -> None:
     _touch(eid)
 
 
+# where each job's start time and duration go: (table, started column, seconds column)
+_TIMED = {"doc": ("documents", "started_at", "doc_secs"), "resolve_tables": ("documents", "started_at", "doc_secs"),
+          "facts": ("documents", "facts_started_at", "facts_secs"),
+          "resolve_facts": ("documents", "facts_started_at", "facts_secs"),
+          **{k: ("engagements", f"{k}_started_at", f"{k}_secs") for k in ("compare", "map", "overlay")}}
+
+
 def _run(kind: str, rid: int) -> None:
+    t0 = time.time()
+    timed = _TIMED.get(kind)
+    if timed:
+        _set(timed[0], rid, **{timed[1]: t0})
+    if _run_job(kind, rid) and timed:  # how long it took: the page's estimate for the next run of the same job
+        _set(timed[0], rid, **{timed[2]: round(time.time() - t0, 1)})
+
+
+def _run_job(kind: str, rid: int) -> bool:
+    """Run one job; a failure is recorded where the page shows it. True if it finished."""
     try:
         {"doc": _process_doc, "facts": _process_facts, "compare": _compare, "map": _map, "overlay": _overlay,
          "resolve_tables": _resolve_tables_job, "resolve_facts": _resolve_facts_job, "roles": _suggest_job}[kind](rid)
+        return True
     except Exception as e:
         traceback.print_exc()
         msg = friendly(e)
@@ -1084,6 +1113,7 @@ def _run(kind: str, rid: int) -> None:
             _set("documents", rid, facts_status="error", facts_step="Failed", facts_error=msg)
         else:
             _set("engagements", rid, **{f"{kind}_status": "error", f"{kind}_step": "Failed", f"{kind}_error": msg})
+        return False
 
 
 def _worker() -> None:
@@ -1093,6 +1123,38 @@ def _worker() -> None:
             _run(kind, rid)
         finally:
             _jobs.task_done()
+
+
+def rebuild_document(did: int) -> dict:
+    """Read a report again from scratch (every table read again, the table loop again); its key facts are kept and
+    re-checked against the new reading."""
+    d = _doc(did)
+    if not d:
+        raise ValueError("no such document")
+    if d["status"] in ("queued", "processing") or d["facts_status"] in ("queued", "running"):
+        raise ValueError(f"{d['filename']} is already being worked on")
+    _note_loop(did, tables=None, lessons_tables=None)
+    retry_document(did)
+    return document(did)
+
+
+def rebuild_workbook(eid: int, fid: int) -> dict:
+    """Process a workbook again from scratch. Its model.db is shared (other engagements, the Model Desk), so every
+    live Python overlay reading it lets go of it first: the build deletes the file, which Windows won't do while
+    it's open."""
+    w = next((w for w in workbooks(eid) if w["id"] == fid), None)
+    if not w:
+        raise ValueError("that workbook isn't in this engagement")
+    for other, (sess, _) in list(_SESSIONS.items()):
+        if w["db_path"] in sess.paths():
+            try:
+                import overlay as ovmod
+                ovmod.deep(sess.close)
+            finally:
+                _SESSIONS.pop(other, None)
+    for key in [k for k in _SHEET_NAMES if k[0] == w["db_path"]]:
+        _SHEET_NAMES.pop(key, None)
+    return library.rebuild(fid)
 
 
 def retry_document(did: int) -> None:

@@ -361,7 +361,7 @@ async function loadList(select) {
   const id = select && list.some(e => e.id === select) ? select : list[0]?.id;
   if (id) { $("#engSel").value = id; await open(id); } else { E = null; render(); }
 }
-async function open(id) { E = await api(`/api/engagements/${id}`); state.doc = null; state.table = null; render(); schedule(); spend(); }
+async function open(id) { E = await api(`/api/engagements/${id}`); E._fetched = Date.now(); state.doc = null; state.table = null; render(); schedule(); spend(); }
 // While someone is typing (a fact or table edit, or any focused field), polling updates the data and the step
 // dots but doesn't rebuild the page, so the edit isn't lost.
 function editing() {
@@ -370,7 +370,7 @@ function editing() {
 }
 async function refresh(force = false) {
   if (!E) return;
-  E = await api(`/api/engagements/${E.id}`);
+  E = await api(`/api/engagements/${E.id}`); E._fetched = Date.now();
   if (!force && editing()) { renderSteps(); renderNow(); } else render();
   schedule();
 }
@@ -445,8 +445,9 @@ function pipeline() {
     const x = bDoc || bWb;
     Object.assign(files, {state: "running", line: `${docs.filter(d => busy(d.status)).length + wbs.filter(w => busy(w.status)).length || 1} being read`,
       live: x ? `Reading ${name(x)}: ${x.step || "waiting to start"}` : "Uploading…",
+      timer: x && x.status === "processing" ? [x.started_at, x.pct, x === bWb ? null : x.doc_secs] : null,
       flow: x === bWb ? [WB_FLOW, stageOf(x?.step, [[/Opening/i, 0], [/Identif/i, 2], [/earlier version|Comparing/i, 3], [/./, 1]])]
-        : x ? [DOC_FLOW, stageOf(x.step, [[/Reading page/i, 0], [/table/i, 1]])] : null});
+        : x ? [DOC_FLOW, stageOf(x.step, [[/Reading (page|slide)/i, 0], [/table/i, 1]])] : null});
   } else if (bad.length) Object.assign(files, {state: "error", line: `${bad.length} failed`, todo: {text: `Retry ${name(bad[0])}`, go: "files"}});
   else if (!docs.length || wbs.length < 2) Object.assign(files, {state: "you", line: !docs.length ? "no report yet" : "models missing",
     todo: {text: !docs.length ? "Upload last year's report" : "Upload the client models and the overlay", go: "files"}});
@@ -456,8 +457,10 @@ function pipeline() {
   const rep = {id: "reference", name: "Report reference"};
   const tLoop = docs.find(d => busy(d.status) && /review loop/i.test(d.step || "")), fBusy = docs.find(d => busy(d.facts_status));
   const you = f.filter(needsYou).length, flagged = docs.filter(d => d.status === "done").reduce((a, d) => a + (d.n_flagged || 0), 0);
-  if (tLoop) Object.assign(rep, {state: "running", line: "review loop on tables", live: `${tLoop.step}. luna corrects each flagged table, code checks it against the page, sol checks it against the image.`, flow: [TABLE_LOOP, 1], loop: true});
+  if (tLoop) Object.assign(rep, {state: "running", line: "review loop on tables", live: `${tLoop.step}. luna corrects each flagged table, code checks it against the page, sol checks it against the image.`, flow: [TABLE_LOOP, 1], loop: true,
+    timer: [tLoop.started_at, null, null]});
   else if (fBusy) Object.assign(rep, {state: "running", line: "key facts", live: fBusy.facts_step || "Starting",
+    timer: fBusy.facts_status === "running" ? [fBusy.facts_started_at, null, fBusy.facts_secs] : null,
     flow: [FACT_FLOW, stageOf(fBusy.facts_step, [[/Extracting/i, 0], [/Reviewing/i, 2], [/review loop/i, 3], [/Writing down/i, 5]])], loop: /review loop/i.test(fBusy.facts_step || "")});
   else if (you || flagged) Object.assign(rep, {state: "you", line: [you && `${you} fact(s)`, flagged && `${flagged} table(s)`].filter(Boolean).join(", ") + " need you",
     todo: {text: you ? `Decide ${you} fact(s) the agents couldn't settle` : `Check ${flagged} table(s) the agents couldn't settle`, go: "reference"}});
@@ -475,7 +478,8 @@ function pipeline() {
   const ready = nConf === 4;
   for (const [id, key, label, verb] of [["compare", "compare", "Compare models", "Compare the client models"], ["map", "map", "Map", "Build the map"], ["python", "overlay", "Python overlay", "Build the Python overlay"]]) {
     const s = E[`${key}_status`], x = {id, name: label};
-    if (busy(s)) Object.assign(x, {state: "running", line: "building", live: `${label}: ${E[`${key}_step`] || "starting"}`});
+    if (busy(s)) Object.assign(x, {state: "running", line: "building", live: `${label}: ${E[`${key}_step`] || "starting"}`,
+      timer: s === "running" ? [E[`${key}_started_at`], key === "overlay" ? E.overlay_pct : null, E[`${key}_secs`]] : null});
     else if (s === "error") Object.assign(x, {state: "error", line: "failed", todo: {text: `Retry: ${verb.toLowerCase()}`, go: id}});
     else if (s === "done") Object.assign(x, {state: "done", line: "built"});
     else if (ready && st.every(y => y.state !== "you" && y.state !== "error")) Object.assign(x, {state: "you", line: "ready to build", todo: {text: verb, go: id}});
@@ -498,13 +502,14 @@ function renderNow() {
   const html = `<ol class="pipe" aria-label="Where the engagement is">${st.map((s, i) => `${i ? `<li class="link ${st[i - 1].state === "done" ? "done" : ""} ${s.state === "running" ? "flowing" : ""}" aria-hidden="true"></li>` : ""}
       <li><button class="st ${s.state}" data-go="${s.id}" title="${esc(s.name)}: ${esc(s.line || "")}"><span class="ic">${ICON[s.state] || i + 1}</span><span class="nm">${esc(s.name)}</span><span class="ln">${esc(s.line || "")}</span></button></li>`).join("")}</ol>
     <div class="now-row">
-      <div class="live">${run ? `<div class="live-head"><span class="pulse"></span><b>Now</b><span>${esc(run.live)}</span></div>${run.flow && run.flow[1] >= 0 ? flowHtml(run.flow, run.loop) : ""}`
+      <div class="live">${run ? `<div class="live-head"><span class="pulse"></span><b>Now</b><span>${esc(run.live)}</span>${run.timer ? runTimer(...run.timer, false) : ""}</div>${run.flow && run.flow[1] >= 0 ? flowHtml(run.flow, run.loop) : ""}`
         : `<div class="live-head muted"><span class="dot-idle"></span>${todos.length ? "The agents are waiting for you." : "Nothing running. Everything built so far is up to date."}</div>`}</div>
       <div class="todo">${todos.length ? `<span class="small muted">Next for you</span>${todos.map((t, i) => `<button class="btn ${i ? "small" : "primary"}" data-go="${t.todo.go}">${esc(t.todo.text)}</button>`).join("")}` : ""}</div>
     </div>`;
   if (html === nowHtml) return;
   nowHtml = html;
   box.innerHTML = html;
+  tickTimers(box);
   box.querySelectorAll("[data-go]").forEach(b => b.onclick = () => go(b.dataset.go));
 }
 
@@ -522,11 +527,46 @@ function bindNew() {
 }
 
 // ---- step 1: files -----------------------------------------------------------------------------------------
-function statusCell(s, step, pct, err) {
-  if (s === "error") return `<span class="pill bad">Failed</span><div class="small" style="color:var(--bad)">${esc(err)}</div>`;
-  if (s === "done") return `<span class="pill ok">Ready</span>${err ? `<div class="small" style="color:var(--warn)">${esc(err)}</div>` : ""}`;
-  return `<span class="pill info">${s === "queued" ? "Queued" : "Processing"}</span><div class="small muted">${esc(step || "")}</div><div class="bar"><i style="width:${Math.round((pct || 0) * 100)}%"></i></div>`;
+// ---- time: elapsed, an estimate of what's left, and how long a finished job took ------------------------------
+// The server's clock (E.now when the engagement was fetched), so timers agree with the recorded start times.
+const clock = () => E ? E.now + (Date.now() - (E._fetched || Date.now())) / 1000 : Date.now() / 1000;
+function dur(secs) {
+  if (secs == null || !isFinite(secs) || secs < 0) return "";
+  secs = Math.round(secs);
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60), h = Math.floor(m / 60);
+  return h ? `${h}h ${String(m % 60).padStart(2, "0")}m` : `${m}m ${String(secs % 60).padStart(2, "0")}s`;
 }
+function left(secs) {
+  if (secs == null || !isFinite(secs)) return "";
+  if (secs < 45) return "under a minute left";
+  if (secs < 90) return "about a minute left";
+  return secs < 3600 ? `about ${Math.round(secs / 60)} min left` : `about ${(secs / 3600).toFixed(1)} h left`;
+}
+// started: when it began (server seconds); pct: progress 0-1 if the job reports it; last: the last run's seconds
+function timing(started, pct, last) {
+  if (!started) return "";
+  const el = Math.max(0, clock() - started), bits = [`${dur(el)} elapsed`];
+  if (pct >= 0.05 && pct < 1 && el >= 5) bits.push(left(el * (1 - pct) / pct));
+  else if (last && last > el) bits.push(`${left(last - el)} (last run took ${dur(last)})`);
+  else if (last) bits.push(`last run took ${dur(last)}`);
+  return bits.join(" · ");
+}
+function statusCell(s, step, pct, err, started, took, last) {
+  if (s === "error") return `<span class="pill bad">Failed</span><div class="small" style="color:var(--bad)">${esc(err)}</div>`;
+  if (s === "done") return `<span class="pill ok">Ready</span>${took ? `<div class="small muted">took ${dur(took)}</div>` : ""}${err ? `<div class="small" style="color:var(--warn)">${esc(err)}</div>` : ""}`;
+  return `<span class="pill info">${s === "queued" ? "Queued" : "Processing"}</span><div class="small muted">${esc(step || "")}</div><div class="bar"><i style="width:${Math.round((pct || 0) * 100)}%"></i></div>
+    ${s === "processing" && started ? `<div class="small muted" data-timer="${started}|${pct ?? ""}|${last ?? ""}">${timing(started, pct, last)}</div>` : ""}`;
+}
+// running timers tick every second between polls (only the timer text changes, nothing is redrawn)
+function tickTimers(root = document) {
+  root.querySelectorAll("[data-timer]").forEach(el => {
+    const [st, pc, la] = el.dataset.timer.split("|"); el.textContent = timing(+st, pc === "" ? null : +pc, la === "" ? null : +la);
+  });
+}
+setInterval(() => tickTimers(), 1000);
+const runTimer = (started, pct, last, filled = true) => started ? `<span class="small muted nowrap" data-timer="${started}|${pct ?? ""}|${last ?? ""}">${filled ? timing(started, pct, last) : ""}</span>` : "";
+const builtIn = (status, secs, prefix = "built in") => status === "done" && secs ? `<span class="small muted">${prefix} ${dur(secs)}</span>` : "";
 function viewFiles() {
   const docs = E.documents, wbs = E.workbooks;
   const up = uploads.filter(u => !u.done || u.error);
@@ -540,16 +580,17 @@ function viewFiles() {
     ${docs.length ? `<div class="scroll"><table><thead><tr><th>File</th><th>Pages</th><th>Tables</th><th>Status</th><th></th></tr></thead><tbody>
     ${docs.map(d => `<tr><td><b>${esc(d.filename)}</b><div class="small muted">${d.kind.toUpperCase()} · ${size(d.size)}</div></td>
       <td class="num">${d.pages ?? ""}</td><td class="num">${d.n_tables ?? ""}${d.n_flagged ? ` <span class="pill warn">${d.n_flagged} to check</span>` : (d.status === "done" && d.n_tables ? ` <span class="pill ok">checked</span>` : "")}</td>
-      <td>${statusCell(d.status, d.step, d.pct, d.error)}</td>
+      <td>${statusCell(d.status, d.step, d.pct, d.error, d.started_at, d.doc_secs, d.doc_secs)}</td>
       <td class="nowrap">${d.status === "done" ? `<button class="btn small" data-view="${d.id}">Review</button>` : ""}
       ${d.status === "error" || (d.status === "done" && d.error) ? `<button class="btn small" data-retry="${d.id}">Retry</button>` : ""}
+      ${d.status === "done" && !busy(d.facts_status) ? `<button class="btn small ghost" data-rebuilddoc="${d.id}" title="Read it again from scratch">Rebuild</button>` : ""}
       ${!busy(d.status) ? `<button class="btn small ghost" data-rmdoc="${d.id}" title="Remove">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No report yet.</p>`}</div>
     <div class="card"><h2>Models</h2><p class="sub">Shared with Model Desk: a workbook uploaded in either app is processed once.</p>
     ${wbs.length ? `<div class="scroll"><table><thead><tr><th>File</th><th>Sheets</th><th>Target · valuation date</th><th>Status</th><th></th></tr></thead><tbody>
     ${wbs.map(w => `<tr><td><b>${esc(w.filename)}</b><div class="small muted">${size(w.size || 0)}${w.line_items ? ` · ${w.line_items.toLocaleString()} line items` : ""}</div></td>
       <td class="num">${w.sheets ?? ""}</td><td class="small">${esc(w.target_name || "")}${w.valuation_date ? `<div class="muted">${esc(w.valuation_date)}</div>` : ""}</td>
-      <td>${statusCell(w.status, w.step, w.pct, w.error)}</td>
-      <td class="nowrap">${w.status === "error" ? `<button class="btn small" data-retrywb="${w.id}">Retry</button>` : ""}${!busy(w.status) ? `<button class="btn small ghost" data-rmwb="${w.id}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No models yet.</p>`}</div>
+      <td>${statusCell(w.status, w.step, w.pct, w.error, w.started_at, w.started_at && w.processed_at > w.started_at ? w.processed_at - w.started_at : w.build_secs, null)}</td>
+      <td class="nowrap">${w.status === "error" ? `<button class="btn small" data-retrywb="${w.id}">Retry</button>` : ""}${w.status === "done" ? `<button class="btn small ghost" data-rebuildwb="${w.id}" title="Process it again from scratch">Rebuild</button>` : ""}${!busy(w.status) ? `<button class="btn small ghost" data-rmwb="${w.id}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No models yet.</p>`}</div>
   </div>
   ${docs.some(d => d.status === "done") && wbs.filter(w => w.status === "done").length >= 2 ? `<div class="row"><button class="btn primary" id="toRef">Next: check the report</button></div>` : ""}`;
 }
@@ -564,6 +605,16 @@ const bind = {
     document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { state.doc = +b.dataset.view; go("reference"); });
     document.querySelectorAll("[data-retry]").forEach(b => b.onclick = async () => { await api(`/api/documents/${b.dataset.retry}/retry`, {method: "POST"}); refresh(); });
     document.querySelectorAll("[data-retrywb]").forEach(b => b.onclick = () => act(() => api(`/api/engagements/${E.id}/workbooks/${b.dataset.retrywb}/retry`, {method: "POST"})));
+    document.querySelectorAll("[data-rebuilddoc]").forEach(b => b.onclick = () => {
+      const d = E.documents.find(x => x.id === +b.dataset.rebuilddoc);
+      if (!confirm(`Read ${d.filename} again from scratch?\n\nEvery table is read again (Azure model calls${d.doc_secs ? `; last time this took ${dur(d.doc_secs)}` : ""}) and the review loop runs on any it flags. Table decisions you made are replaced. The key facts are kept and re-checked against the new reading.`)) return;
+      act(() => api(`/api/documents/${d.id}/rebuild`, {method: "POST"}));
+    });
+    document.querySelectorAll("[data-rebuildwb]").forEach(b => b.onclick = () => {
+      const w = E.workbooks.find(x => x.id === +b.dataset.rebuildwb), took = w.started_at && w.processed_at > w.started_at ? w.processed_at - w.started_at : w.build_secs;
+      if (!confirm(`Process ${w.filename} again from scratch?\n\nIts row map, dependencies, target and valuation date are rebuilt${took ? ` (last time this took ${dur(took)})` : ""}. The build is shared: every engagement using this file, and the Model Desk, get the new one. Rebuild the map and the Python overlay afterwards if they use it.`)) return;
+      act(() => api(`/api/engagements/${E.id}/workbooks/${w.id}/rebuild`, {method: "POST"}));
+    });
     document.querySelectorAll("[data-rmdoc]").forEach(b => b.onclick = async () => { if (!confirm("Remove this report and its extracted facts?")) return; await act(() => api(`/api/documents/${b.dataset.rmdoc}`, {method: "DELETE"})); });
     document.querySelectorAll("[data-rmwb]").forEach(b => b.onclick = async () => { if (!confirm("Remove this model from the engagement? (It stays in the shared library.)")) return; await act(() => api(`/api/engagements/${E.id}/workbooks/${b.dataset.rmwb}`, {method: "DELETE"})); });
     $("#toRef")?.addEventListener("click", () => go("reference"));
@@ -708,7 +759,7 @@ function factsCard(d) {
   const fs = E.facts.filter(f => f.document_id === d.id);
   const running = busy(d.facts_status);
   const head = `<div class="row" style="justify-content:space-between"><div><h2>Key facts</h2><p class="sub">Extracted by <b>${esc(E.model)}</b>, reviewed by <b>${esc(E.reviewer_model)}</b> (change them in the header). Approved facts are the reference for the next steps.</p></div>
-    <div class="row">${running ? `<span class="pill info">${esc(d.facts_step || "Working")}</span>` : `<button class="btn ${fs.length ? "" : "primary"}" id="runFacts" ${d.n_flagged ? "title='Some tables are still to check; facts quoted from them will be marked.'" : ""}>${fs.length ? "Extract again" : "Extract key facts"}</button>`}
+    <div class="row">${running ? `<span class="pill info">${esc(d.facts_step || "Working")}</span> ${runTimer(d.facts_started_at, null, d.facts_secs)}` : `${builtIn(d.facts_status, d.facts_secs, "last run took")}<button class="btn ${fs.length ? "" : "primary"}" id="runFacts" ${d.n_flagged ? "title='Some tables are still to check; facts quoted from them will be marked.'" : ""}>${fs.length ? "Extract again" : "Extract key facts"}</button>`}
     ${!running && fs.some(needsYou) ? `<button class="btn" id="loopFacts" title="The extractor answers the reviewer's open points, code re-checks, the reviewer decides again (up to 3 rounds)">Run the review loop on the open facts</button>` : ""}
     ${fs.some(f => f.status === "pending" && agreedFact(f)) ? `<button class="btn primary" id="approvePassed" title="Facts both models agree on and that pass the checks, not yet approved (from before auto-approval, or undone)">Approve all the agents agreed (${fs.filter(f => f.status === "pending" && agreedFact(f)).length})</button>` : ""}</div></div>`;
   if (d.facts_status === "error") return head + `<div class="callout bad">${esc(d.facts_error)}</div>`;
@@ -931,7 +982,7 @@ function viewCompare() {
   const head = `<div class="lede"><div><h1><b>Prior vs current client model</b></h1><p>${pm && cm ? `<b>${esc(name(pm.id))}</b> → <b>${esc(name(cm.id))}</b>. ` : ""}Line items are aligned by sheet and label, so inserted rows don't shift everything. Inputs changed, results that moved, formulas rewritten and rows added or removed are listed with their cells.</p></div></div>`;
   if (!pm || !cm) return head + `<div class="card empty">Assign the prior and current client models in step 3 first.</div>`;
   const run = `<div class="row"><button class="btn ${E.compare_status === "done" ? "" : "primary"}" id="runCompare" ${busy(E.compare_status) ? "disabled" : ""}>${E.compare_status === "done" ? "Compare again" : "Compare the models"}</button>
-    ${busy(E.compare_status) ? `<span class="pill info">${esc(E.compare_step || "Working")}</span>` : ""}${E.compare_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.compare_error)}</span>` : ""}</div>`;
+    ${busy(E.compare_status) ? `<span class="pill info">${esc(E.compare_step || "Working")}</span> ${runTimer(E.compare_started_at, null, E.compare_secs)}` : builtIn(E.compare_status, E.compare_secs, "compared in")}${E.compare_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.compare_error)}</span>` : ""}</div>`;
   const d = E.compare; if (!d) return head + run;
   const c = d.counts;
   const tbl = (rows, cols) => rows?.length ? `<div class="scroll"><table><thead><tr>${cols.map(x => `<th>${x[0]}</th>`).join("")}</tr></thead><tbody>${rows.slice(0, 60).map(r => `<tr>${cols.map(x => `<td class="${x[2] || ""}">${x[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>${rows.length > 60 ? `<p class="small muted">and ${rows.length - 60} more</p>` : ""}` : `<p class="muted small">None.</p>`;
@@ -959,7 +1010,7 @@ function viewMap() {
 }
 function viewMapBody(head) {
   const run = `<div class="row"><button class="btn ${E.map_status === "done" ? "" : "primary"}" id="runMap" ${busy(E.map_status) ? "disabled" : ""}>${E.map_status === "done" ? "Rebuild the map" : "Build the map"}</button>
-    ${busy(E.map_status) ? `<span class="pill info">${esc(E.map_step || "Working")}</span>` : ""}${E.map_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.map_error)}</span>` : ""}
+    ${busy(E.map_status) ? `<span class="pill info">${esc(E.map_step || "Working")}</span> ${runTimer(E.map_started_at, null, E.map_secs)}` : builtIn(E.map_status, E.map_secs)}${E.map_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.map_error)}</span>` : ""}
     ${!Object.values(E.roles).every(r => r.confirmed) ? `<span class="small muted">Roles aren't all confirmed yet; the map uses the current assignment.</span>` : ""}</div>`;
   const m = E.map; if (!m) return head + run;
   const f = m.files;
@@ -1167,7 +1218,7 @@ function viewPython() {
   if (OV.eid !== E.id) Object.assign(OV, {mode: "workbook", changes: {}, vd: null, months: null, result: null, trace: null, q: "", found: [], eid: E.id, tab: "live"});
   const O = E.overlay;
   const run = `<div class="row"><button class="btn ${E.overlay_status === "done" ? "" : "primary"}" id="buildOv" ${busy(E.overlay_status) ? "disabled" : ""}>${E.overlay_status === "done" ? "Rebuild the Python overlay" : "Build the Python overlay"}</button>
-    ${busy(E.overlay_status) ? `<span class="pill info">${esc(E.overlay_step || "Working")}</span>` : ""}${E.overlay_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.overlay_error)}</span>` : ""}
+    ${busy(E.overlay_status) ? `<span class="pill info">${esc(E.overlay_step || "Working")}</span> ${runTimer(E.overlay_started_at, E.overlay_pct, E.overlay_secs)}` : builtIn(E.overlay_status, E.overlay_secs)}${E.overlay_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.overlay_error)}</span>` : ""}
     ${O ? `<a class="btn" href="/api/engagements/${E.id}/overlay/module.py" target="_blank" rel="noopener">Open the Python module</a>` : ""}
     ${!Object.values(E.roles).every(r => r.confirmed) ? `<span class="small muted">Roles aren't all confirmed; the build uses the current assignment.</span>` : ""}</div>`;
   if (!O) return head + run + `<div class="card"><h2>What the build does</h2><ul class="why" style="color:var(--ink);font-size:14px">
@@ -1673,6 +1724,37 @@ async function ovAsk(text) {
   if (!$("#newChat") && CHAT.history.length && state.step === "python" && OV.tab === "ask") { $("#ovAsk").innerHTML = ovAskPane(); bindOvAsk(); }
   spend();
 }
+
+// ---- tables: a header sits the way its column does -------------------------------------------------------------
+// App tables mark figure cells "num" (right-aligned); the header over such a column is right-aligned to match, and
+// one over text isn't. Tables the app didn't write (report transcriptions, chat answers) have their figure
+// columns right-aligned by content. Runs on every table drawn, by watching the page.
+const FIGURE = /^[\s(−–-]*(?:[A-Z]{1,3}\s?)?[$€£]?\s?\d[\d,]*(?:\.\d+)?\s?(?:%|x|m|bn|k|pp|bp)?\)?\*?\s*$/i;
+function alignColumns(root) {
+  root.querySelectorAll("table").forEach(t => {
+    if (t.classList.contains("heat") || !t.rows.length) return;
+    const head = t.tHead?.rows[0] || ([...t.rows[0].cells].every(c => c.tagName === "TH") ? t.rows[0] : null);
+    if (!head || [...head.cells].some(c => c.colSpan > 1)) return;
+    const rows = [...t.rows].filter(r => r !== head && r.parentElement?.tagName !== "THEAD");
+    if (!rows.length) return;
+    const byContent = !!t.closest(".md, .answer");
+    [...head.cells].forEach((th, i) => {
+      let n = 0, right = 0;
+      for (const tr of rows) {
+        const td = tr.cells[i];
+        if (!td || td.colSpan > 1 || !td.textContent.trim()) continue;
+        n++;
+        if (td.classList.contains("num") || (byContent && FIGURE.test(td.textContent.trim()))) right++;
+      }
+      const isFigures = n > 0 && right / n >= 0.6;
+      th.classList.toggle("num", isFigures);
+      if (byContent && isFigures) rows.forEach(tr => { const td = tr.cells[i]; if (td && td.colSpan === 1) td.classList.add("num"); });
+    });
+  });
+}
+let alignTimer = null;
+new MutationObserver(() => { clearTimeout(alignTimer); alignTimer = setTimeout(() => alignColumns($("#main")), 20); })
+  .observe($("#main"), {childList: true, subtree: true});
 
 boot().catch(e => { $("#main").innerHTML = `<div class="callout bad">Couldn't start: ${esc(e.message)}</div>`; });
 </script>

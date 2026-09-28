@@ -127,6 +127,20 @@ async def retry_workbook(eid: int, fid: int):
     return {"ok": True}
 
 
+@app.post("/api/engagements/{eid}/workbooks/{fid}/rebuild")
+async def rebuild_workbook(eid: int, fid: int):
+    """Process a workbook again from scratch (shared: every engagement using it gets the new build)."""
+    await _run(lambda: engagement.rebuild_workbook(eid, fid) and True)
+    return {"ok": True}
+
+
+@app.post("/api/documents/{did}/rebuild")
+async def rebuild_document(did: int):
+    """Read a report again from scratch; its key facts are kept and re-checked."""
+    await _run(lambda: engagement.rebuild_document(did) and True)
+    return {"ok": True}
+
+
 @app.get("/api/documents/{did}")
 async def get_document(did: int):
     return await _run(engagement.document, did)
