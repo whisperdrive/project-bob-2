@@ -1139,9 +1139,9 @@ def _live(eid: int, mode: str, changes: dict | None) -> tuple:
     if mode not in ("workbook", "prior", "current"):
         raise ValueError("the feed must be workbook, prior or current")
     if mode == "current" and not summary["wiring"].get("current"):
-        raise ValueError("assign the current client model (step 3) and rebuild to roll forward")
+        raise ValueError("assign the current client model (Roles) and rebuild in Python to roll forward")
     if mode == "prior" and not summary["wiring"].get("prior"):
-        raise ValueError("assign the prior client model (step 3) to feed from it")
+        raise ValueError("assign the prior client model (Roles) to feed from it")
     clean = {}
     for cell, v in (changes or {}).items():
         if isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", v):
@@ -1187,7 +1187,7 @@ def recreate_charts(eid: int) -> None:
     year's model (reportcharts.py)."""
     r = roles(eid)
     if not r.get("prior_report") or not r.get("prior_model"):
-        raise ValueError("assign last year's report and client model (step 3) first")
+        raise ValueError("assign last year's report and client model (Roles) first")
     _set("engagements", eid, charts_status="queued", charts_step="Waiting to start", charts_error=None)
     _jobs.put(("charts", eid))
 
@@ -1233,13 +1233,28 @@ def summary_view(eid: int, changes: dict | None = None, valuation_date: str | No
         out.update(charts_status="queued", charts_step="Waiting to start")
     if e.get("overlay_status") != "done":
         out["table"] = None
-        out["why"] = "build the Python overlay (step 6) first: the summary is recomputed from it"
+        out["why"] = "rebuild in Python first: the summary is recomputed from the Python overlay"
         return out
     sess, summary = overlay_session(eid)
     clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
     out["table"] = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid), clean, valuation_date, months, method)
     out["identity"] = {f["key"]: f.get("value_text") for f in reference(eid) if f.get("category") == "identity"}
     return out
+
+
+def bridge_view(eid: int, changes: dict | None = None, valuation_date: str | None = None, months: int | None = None,
+                method: dict | None = None) -> dict:
+    """The value bridge from last year's value to this year's (overlay.value_bridge), with the Summary page's
+    scenario as its last step."""
+    import overlay as ovmod
+    rows = _q("SELECT overlay_status FROM engagements WHERE id=?", eid)
+    if not rows:
+        raise ValueError("no such engagement")
+    if rows[0]["overlay_status"] != "done":
+        return {"bridges": [], "why": "build the Python overlay first: the bridge is recomputed from it"}
+    sess, summary = overlay_session(eid)
+    clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
+    return ovmod.deep(ovmod.value_bridge, sess, summary, reference(eid), clean, valuation_date, months, method)
 
 
 def chart_png(eid: int, name: str) -> Path | None:

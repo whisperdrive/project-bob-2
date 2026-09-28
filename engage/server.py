@@ -291,6 +291,12 @@ async def summary_view(eid: int, body: Summary):
     return await _run(engagement.summary_view, eid, body.changes, body.valuation_date, body.months, body.method)
 
 
+@app.post("/api/engagements/{eid}/bridge")
+async def bridge_view(eid: int, body: Summary):
+    """Last year's value to this year's, step by step."""
+    return await _run(engagement.bridge_view, eid, body.changes, body.valuation_date, body.months, body.method)
+
+
 @app.post("/api/engagements/{eid}/charts")
 async def recreate_charts(eid: int):
     """Recreate the report's charts from the models again."""

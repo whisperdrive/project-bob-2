@@ -706,6 +706,100 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             "changes": changes or {}, "notes": notes}
 
 
+def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
+                 valuation_date: str | None = None, months: int | None = None, method: dict | None = None) -> dict:
+    """Last year's value to this year's, step by step, for each of the report's conclusions in the overlay:
+      last year           the rebuild on last year's model (it ties to the report)
+      time value          each discounting under it grows at its own rate from last year's valuation date to this
+                          year's (dcftrace.recompute carries that up to the figure)
+      cash flows          each discounting redone at the new valuation date, so last year's forecast cash flows up
+                          to it drop out
+      this year's forecast  the engine's roll-forward onto this year's client model (new cash flows, a longer
+                          horizon), less the step before: last year's forecast at the new date
+      your changes        the Summary page's scenario, if it has one
+    Sequential, so the steps add up exactly. Where the formulas above a figure's discountings can't be recomputed
+    here, the first three steps are shown as one."""
+    import dcf
+    import dcftrace
+    w = summary["wiring"]
+    if not w.get("current"):
+        return {"bridges": [], "why": "assign this year's client model (Roles) and rebuild in Python"}
+    table = summary_table(sess, summary, facts, changes, valuation_date, months, method)
+    path = w["overlay"]["db_path"]
+    db = rodb.connect(path)
+    base_feed = table["feeds"]["rebuilt"]
+    vd1 = (table.get("roll") or {}).get("valuation_date")
+    rows = [r for r in table["rows"] if r["kind"] == "conclusion" and r.get("cell") and r.get("values")]
+    traced, need = {}, set()
+    for r in rows:
+        try:
+            t = dcftrace.trace(db, r["cell"])
+        except ValueError:
+            continue
+        cs = [c for c in dcftrace.cores(t) if c.get("inputs")]
+        traced[r["cell"]] = (t, cs)
+        for c in cs:
+            need |= _dcf_cells(db, c["inputs"])
+
+        def walk(n):
+            if not n.get("again"):
+                x = dcf._ref(n["cell"], "")
+                need.add((x[0], x[1], x[2]))
+            for ch in n.get("children", []):
+                walk(ch)
+        walk(t)
+    sess.configure(base_feed)
+    prior_db = rodb.patched(path, _module_values(db, sess, need)) if need else db
+    sess.configure("workbook")
+    out = []
+    for r in rows:
+        v = r["values"]
+        v0, v2, v3 = v.get("rebuilt"), v.get("this_year"), v.get("scenario")
+        if not all(isinstance(x, float) for x in (v0, v2)):
+            continue
+        steps = [{"key": "last_year", "label": "Last year (rebuilt; ties to the report)" if (r.get("tie") or {}).get("ok")
+                  else "Last year (rebuilt)", "value": v0, "total": True}]
+        note, split = None, False
+        t_cs = traced.get(r["cell"])
+        if t_cs and t_cs[1] and vd1:
+            t, cs = t_cs
+            try:
+                base = {c["cell"]: dcf.compute(prior_db, **{**c["inputs"], "compare_to": None}, fix=False) for c in cs}
+                again = dcftrace.recompute(prior_db, t, {k: x["total"] for k, x in base.items()})
+                if again is None or not dcf._close(again, v0):
+                    note = "the formulas above its discountings can't be recomputed here, so the roll-forward is one step"
+                else:
+                    vd1d = date.fromisoformat(vd1[:10])
+                    grown = {k: x["total"] * (1 + x["rate"]) ** dcf.yearfrac(x["valuation_date"], vd1d, x["day_count"])
+                             for k, x in base.items()}
+                    rolled = {c["cell"]: dcf.compute(prior_db, **{**c["inputs"], "compare_to": None, "valuation_date": vd1},
+                                                     fix=False)["total"] for c in cs}
+                    vu, v1 = dcftrace.recompute(prior_db, t, grown), dcftrace.recompute(prior_db, t, rolled)
+                    if vu is not None and v1 is not None:
+                        years = dcf.yearfrac(next(iter(base.values()))["valuation_date"], vd1d, "actual/actual")
+                        steps += [{"key": "time", "label": f"Time value: {years:.2f} years of unwind at the discount rate",
+                                   "value": vu - v0},
+                                  {"key": "cash", "label": f"Last year's forecast cash flows up to {vd1[:10]}", "value": v1 - vu},
+                                  {"key": "forecast", "label": "This year's client model (new forecast, rolled forward)",
+                                   "value": v2 - v1}]
+                        split = True
+            except (ValueError, ZeroDivisionError, OverflowError) as e:
+                note = f"couldn't split the roll-forward: {e}"
+        elif not t_cs or not t_cs[1]:
+            note = "no discounting found under it, so the roll-forward is one step"
+        if not split:
+            steps.append({"key": "roll", "label": "Roll-forward onto this year's model (time, cash flows and forecast)",
+                          "value": v2 - v0})
+        steps.append({"key": "this_year", "label": f"This year, rolled forward{f' to {vd1[:10]}' if vd1 else ''}",
+                      "value": v2, "total": True})
+        if isinstance(v3, float) and not dcf._close(v3, v2):
+            steps.append({"key": "changes", "label": "Your changes (the Summary page's scenario)", "value": v3 - v2})
+            steps.append({"key": "scenario", "label": "Your scenario", "value": v3, "total": True})
+        out.append({"label": r["label"], "cell": r["cell"], "report": r.get("report"), "scale": r.get("scale") or 1.0,
+                    "sign": r.get("sign") or 1, "unit": r.get("unit"), "steps": steps, "note": note})
+    return {"bridges": out, "valuation_date": vd1, "feeds": table["feeds"]}
+
+
 # ---- the DCF on the live module ----------------------------------------------------------------------------
 # The Model Desk's Valuation tab (valuation.py) on the Python overlay's own numbers. valuation.py finds each DCF's
 # structure in the workbook (cash-flow rows, discount rate, valuation date, convention, cut-off, bridge); dcf.py

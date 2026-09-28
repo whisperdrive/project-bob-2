@@ -70,18 +70,52 @@ header { background: var(--bar); color: var(--bar-ink); position: sticky; top: 0
 .chip { background: #2e2e38; border: 1px solid #4a4a57; color: #fff; border-radius: 99px; padding: 3px 10px; font-size: 12.5px; cursor: default; white-space: nowrap; }
 .yellow-rule { height: 3px; background: var(--yellow); }
 
-/* steps */
-nav.steps { display: flex; gap: 0; max-width: 1360px; margin: 0 auto; padding: 0 24px; overflow-x: auto; }
-nav.steps button { background: none; border: 0; border-bottom: 3px solid transparent; color: var(--bar-muted); padding: 10px 16px 9px;
-  cursor: pointer; font-size: 14px; white-space: nowrap; display: flex; gap: 8px; align-items: center; }
-nav.steps button:hover { color: #fff; }
-nav.steps button.on { color: #fff; border-bottom-color: var(--yellow); font-weight: 600; }
-nav.steps button:disabled { opacity: .45; cursor: not-allowed; }
+.hbtn { background: #2e2e38; color: #fff; border: 1px solid #4a4a57; border-radius: 4px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
+.hbtn:hover, .hbtn[aria-expanded="true"] { border-color: var(--yellow); }
+.hbtn.ask { background: var(--yellow); border-color: var(--yellow); color: var(--on-yellow); font-weight: 600; }
+.popover { position: absolute; right: 24px; top: 58px; z-index: 30; background: var(--surface); color: var(--ink); border: 1px solid var(--rule-strong);
+  border-radius: 6px; padding: 12px 14px; width: 260px; display: grid; gap: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.popover label { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+/* the shell: navigation on the left, the page, and Ask on the right when it's open */
+.shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); max-width: 1600px; margin: 0 auto; }
+.shell.asking { grid-template-columns: 220px minmax(0, 1fr) minmax(360px, 34%); }
+.content { min-width: 0; }
+nav.side { position: sticky; top: 62px; align-self: start; max-height: calc(100vh - 62px); overflow-y: auto; padding: 18px 10px 30px 18px; }
+nav.side .sec { font-size: 11.5px; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); margin: 16px 8px 4px; }
+nav.side button { display: flex; width: 100%; gap: 8px; align-items: center; background: none; border: 0; border-radius: 4px; padding: 7px 8px;
+  color: var(--ink); cursor: pointer; font-size: 14px; text-align: left; }
+nav.side button:hover { background: var(--raised); }
+nav.side button.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--yellow); font-weight: 600; }
+nav.side button:disabled { opacity: .45; cursor: not-allowed; }
+nav.side .nm { flex: 1; }
+nav.side .cnt { background: var(--warn-bg); color: var(--warn); border-radius: 99px; font-size: 11.5px; padding: 0 7px; font-weight: 600; }
+.drawer { position: sticky; top: 62px; align-self: start; height: calc(100vh - 62px); overflow-y: auto; border-left: 1px solid var(--rule); background: var(--ground); padding: 12px 14px; }
+.drawer-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 8px; }
+.drawer-head .btn { margin-left: auto; }
+.drawer .card { padding: 12px; }
+.heads { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.head { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; }
+.head .k { font-size: 12.5px; color: var(--muted); }
+.head .v { font-size: 24px; font-weight: 600; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.head .s { font-size: 12.5px; color: var(--muted); }
+.needs { list-style: none; margin: 0; padding: 0; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+.needs li { border-top: 1px solid var(--rule); }
+.needs li:first-child { border-top: 0; }
+.needs button { display: flex; width: 100%; justify-content: space-between; gap: 10px; background: none; border: 0; padding: 9px 12px; cursor: pointer; text-align: left; font-size: 14px; color: var(--ink); }
+.needs button:hover { background: var(--raised); }
+.needs .where { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.conf { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.conf li::before { content: "✓ "; color: var(--ok); font-weight: 700; }
+.conf li.no::before { content: "✗ "; color: var(--bad); }
+.conf li.wait::before { content: "… "; color: var(--muted); }
+@media (max-width: 900px) { .shell, .shell.asking { grid-template-columns: minmax(0, 1fr); } nav.side { position: static; max-height: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 16px; }
+  nav.side .sec { display: none; } nav.side button { width: auto; } .drawer { position: static; height: auto; border-left: 0; border-top: 1px solid var(--rule); } }
 .dot { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #74747f; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; }
 .dot.done { background: var(--yellow); border-color: var(--yellow); color: #2e2e38; }
 .dot.work { border-color: var(--blue); color: var(--blue); }
 
-main { max-width: 1360px; margin: 0 auto; padding: 22px 24px 60px; display: grid; gap: 18px; }
+main { max-width: 1360px; margin: 0; padding: 22px 24px 60px; display: grid; gap: 18px; }
 .lede { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
 .lede h1 { font-size: 24px !important; margin: 0; font-weight: 300; }
 .lede h1 b { font-weight: 600; }
@@ -285,7 +319,7 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
 .dlg-body { padding: 16px 18px 22px; display: grid; gap: 16px; }
 .transcript pre { white-space: pre-wrap; word-break: break-word; background: var(--code-bg); padding: 10px 12px; border-radius: 4px; font: 12px/1.5 var(--mono); max-height: 420px; overflow: auto; margin: 4px 0 10px; }
 /* the status panel: stages, what's happening now, what needs you */
-.nowbox { max-width: 1360px; margin: 16px auto 0; padding: 0 24px; }
+.nowbox { max-width: 1360px; margin: 16px 0 0; padding: 0 24px; }
 .pipe { list-style: none; margin: 0; padding: 12px 14px 10px; display: flex; align-items: flex-start; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px 6px 0 0; overflow-x: auto; }
 .pipe > li { flex: none; }
 .pipe > li.link { flex: 1 1 24px; min-width: 14px; height: 2px; background: var(--rule-strong); margin: 15px 2px 0; }
@@ -335,19 +369,26 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
       <label for="engSel">Engagement</label><select id="engSel"></select>
       <button class="btn small" id="newEng" style="background:#2e2e38;color:#fff;border-color:#4a4a57">New</button>
     </div>
-    <div class="hctl" id="modelCtl" hidden>
-      <label for="mSel">Model</label><select id="mSel"></select>
-      <label for="rSel">Reviewer</label><select id="rSel"></select>
-      <label for="aSel" title="Settles what the extractor and reviewer can't: a third, independent model">Arbiter</label><select id="aSel"></select>
+    <div class="hctl" id="hdrCtl" hidden>
       <button class="chip" id="spend" type="button" title="Tokens, time and the log of every model call" style="cursor:pointer">$0.00</button>
+      <button class="hbtn" id="modelsBtn" type="button" aria-haspopup="true" aria-expanded="false" title="Which Azure models read, review and arbitrate">⚙ Models</button>
+      <button class="hbtn ask" id="askBtn" type="button" aria-expanded="false">Ask</button>
     </div>
   </div>
-  <nav class="steps" id="steps"></nav>
   <div class="yellow-rule"></div>
+  <div class="popover" id="modelCtl" hidden role="dialog" aria-label="Models">
+    <p class="small muted" style="margin:0 0 8px">The Azure models this engagement uses.</p>
+    <label for="mSel">Reads (extractor)</label><select id="mSel" class="in"></select>
+    <label for="rSel">Reviews</label><select id="rSel" class="in"></select>
+    <label for="aSel" title="Settles what the extractor and reviewer can't">Arbitrates</label><select id="aSel" class="in"></select>
+  </div>
 </header>
 <dialog id="callsDlg" aria-labelledby="callsTitle"><div class="dlg-head"><h2 id="callsTitle">Tokens, time and the call log</h2><button class="btn small" type="button" id="callsClose">Close</button></div><div class="dlg-body" id="callsBody"><p class="muted">Loading…</p></div></dialog>
-<div id="now" class="nowbox" hidden aria-live="polite"></div>
-<main id="main"></main>
+<div class="shell" id="shell">
+  <nav class="side" id="steps" aria-label="Engagement"></nav>
+  <div class="content"><div id="now" class="nowbox" hidden aria-live="polite"></div><main id="main"></main></div>
+  <aside class="drawer" id="askDrawer" hidden aria-label="Ask about the engagement"><div class="drawer-head"><b>Ask</b><span class="small muted">about this engagement</span><button class="btn small ghost" id="askClose" type="button" aria-label="Close">Close</button></div><div id="askBody"></div></aside>
+</div>
 <div id="tip"></div>
 <input type="file" id="picker" multiple accept=".pdf,.pptx,.xlsx,.xlsm" hidden>
 
@@ -366,9 +407,12 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
-const STEPS = [
-  {id: "files", name: "Files"}, {id: "reference", name: "Report reference"}, {id: "roles", name: "Roles"},
-  {id: "compare", name: "Compare models"}, {id: "map", name: "Map"}, {id: "python", name: "Python overlay"}, {id: "summary", name: "Summary"}];
+const NAV = [
+  {id: "overview", name: "Overview"},
+  {sec: "Setup"}, {id: "files", name: "Files"}, {id: "roles", name: "Roles"},
+  {sec: "Last year"}, {id: "reference", name: "The report"}, {id: "python", name: "Rebuild in Python"}, {id: "map", name: "Map"},
+  {sec: "This year"}, {id: "summary", name: "Summary"}, {id: "bridge", name: "Value bridge"}, {id: "compare", name: "What changed"}];
+const STEPS = NAV.filter(x => x.id);
 const ROLE_HELP = {
   prior_report: "Last year's final report: conclusions and assumptions.",
   prior_model: "The client's model behind last year's valuation.",
@@ -383,7 +427,7 @@ async function boot() {
   CFG = await api("/api/config");
   for (const id of ["mSel", "rSel", "aSel"]) $("#" + id).innerHTML = CFG.models.map(m => `<option>${esc(m)}</option>`).join("");
   const h = new URLSearchParams(location.hash.slice(1));
-  state.step = h.get("s") || "files";
+  state.step = h.get("s") || "overview";
   await loadList(+h.get("e") || null);
 }
 async function loadList(select) {
@@ -392,7 +436,8 @@ async function loadList(select) {
   const id = select && list.some(e => e.id === select) ? select : list[0]?.id;
   if (id) { $("#engSel").value = id; await open(id); } else { E = null; render(); }
 }
-async function open(id) { E = await api(`/api/engagements/${id}`); E._fetched = Date.now(); state.doc = null; state.table = null; render(); schedule(); spend(); }
+async function open(id) { E = await api(`/api/engagements/${id}`); E._fetched = Date.now(); state.doc = null; state.table = null; render(); schedule(); spend();
+  if (!$("#askDrawer").hidden) drawAsk(); }
 // While someone is typing (a fact or table edit, or any focused field), polling updates the data and the step
 // dots but doesn't rebuild the page, so the edit isn't lost.
 function editing() {
@@ -439,24 +484,28 @@ function progress() {
     map: E.map_status === "done" ? "done" : (E.map_status ? "work" : ""),
     python: E.overlay_status === "done" ? "done" : (E.overlay_status ? "work" : ""),
     summary: E.charts_status === "done" ? "done" : (E.charts_status ? "work" : ""),
+    bridge: E.overlay_status === "done" && E.roles.current_model ? "done" : "",
   };
 }
 function renderSteps() {
   const p = progress();
-  $("#steps").innerHTML = STEPS.map((s, i) => `<button data-s="${s.id}" class="${state.step === s.id ? "on" : ""}" ${!E ? "disabled" : ""}>
-      <span class="dot ${p[s.id] || ""}">${p[s.id] === "done" ? "✓" : i + 1}</span>${esc(s.name)}</button>`).join("");
+  const counts = E ? needs().reduce((a, n) => (a[n.go] = (a[n.go] || 0) + 1, a), {}) : {};
+  $("#steps").innerHTML = NAV.map(s => s.sec ? `<div class="sec">${esc(s.sec)}</div>` : `<button data-s="${s.id}" class="${state.step === s.id ? "on" : ""}" ${!E ? "disabled" : ""} ${state.step === s.id ? 'aria-current="page"' : ""}>
+      <span class="dot ${p[s.id] || ""}" aria-hidden="true">${p[s.id] === "done" ? "✓" : ""}</span><span class="nm">${esc(s.name)}</span>${counts[s.id] ? `<span class="cnt" title="${counts[s.id]} need you">${counts[s.id]}</span>` : ""}</button>`).join("");
   $("#steps").querySelectorAll("button").forEach(b => b.onclick = () => go(b.dataset.s));
 }
 
 function render(creating = false) {
-  $("#modelCtl").hidden = !E;
+  $("#hdrCtl").hidden = !E;
+  if (!E) { $("#modelCtl").hidden = true; setAsk(false); }
   if (E) { $("#mSel").value = E.model || CFG.default_model; $("#rSel").value = E.reviewer_model || CFG.default_reviewer;
     $("#aSel").value = E.arbiter_model || CFG.default_arbiter; }
   renderSteps();
   renderNow();
   const m = $("#main");
   if (!E || creating) { m.innerHTML = viewNew(); bindNew(); $("#now").hidden = true; return; }
-  const views = {files: viewFiles, reference: viewReference, roles: viewRoles, compare: viewCompare, map: viewMap, python: viewPython, summary: viewSummary};
+  const views = {overview: viewOverview, files: viewFiles, reference: viewReference, roles: viewRoles, compare: viewCompare, map: viewMap,
+    python: viewPython, summary: viewSummary, bridge: viewBridge};
   keepOpen(m, () => { m.innerHTML = (views[state.step] || viewFiles)(); bind[state.step]?.(); });
 }
 // A redraw (the page refreshes every couple of seconds while work runs) mustn't close a section you opened, or open
@@ -494,7 +543,7 @@ function pipeline() {
   else Object.assign(files, {state: "done", line: `${docs.length + wbs.length} files read`});
   st.push(files);
   // 2 report reference
-  const rep = {id: "reference", name: "Report reference"};
+  const rep = {id: "reference", name: "The report"};
   const tLoop = docs.find(d => busy(d.status) && /review loop/i.test(d.step || "")), fBusy = docs.find(d => busy(d.facts_status));
   const you = f.filter(needsYou).length, flagged = docs.filter(d => d.status === "done").reduce((a, d) => a + (d.n_flagged || 0), 0);
   if (tLoop) Object.assign(rep, {state: "running", line: "table review loop", live: `${tLoop.step}. luna corrects each flagged table, code checks it against the page, sol checks it against the image.`, flow: [TABLE_LOOP, 1], loop: true,
@@ -522,7 +571,7 @@ function pipeline() {
   st.push(roles);
   // 4-6 compare, map, python overlay
   const ready = nConf === 4;
-  for (const [id, key, label, verb] of [["compare", "compare", "Compare models", "Compare the client models"], ["map", "map", "Map", "Build the map"], ["python", "overlay", "Python overlay", "Build the Python overlay"], ["summary", "charts", "Summary", "Recreate the report's charts"]]) {
+  for (const [id, key, label, verb] of [["python", "overlay", "Rebuild in Python", "Build the Python overlay"], ["map", "map", "Map", "Build the map"], ["compare", "compare", "What changed", "Compare the client models"], ["summary", "charts", "Summary", "Recreate the report's charts"]]) {
     const s = E[`${key}_status`], x = {id, name: label};
     if (busy(s)) Object.assign(x, {state: "running", line: "building", live: `${label}: ${E[`${key}_step`] || "starting"}`,
       timer: s === "running" ? [E[`${key}_started_at`], key === "overlay" ? E.overlay_pct : null, E[`${key}_secs`]] : null});
@@ -624,7 +673,7 @@ const builtIn = (status, secs, prefix = "built in") => status === "done" && secs
 function viewFiles() {
   const docs = E.documents, wbs = E.workbooks;
   const up = uploads.filter(u => !u.done || u.error);
-  return `<div class="lede"><div><h1><b>${esc(E.name)}</b> · files</h1><p>Drop the engagement's files. Reports are converted to Markdown, with every table read from an image of it and checked; models go through the workbook pipeline (row map, dependencies, target and valuation date). You'll say which file is which in step 3.</p></div></div>
+  return `<div class="lede"><div><h1><b>Files</b></h1><p>Drop the engagement's files. Reports are converted to Markdown, with every table read from an image of it and checked; models go through the workbook pipeline (row map, dependencies, target and valuation date). You'll say which file is which in Roles.</p></div></div>
   <div class="card"><div class="drop" id="drop" tabindex="0" role="button" aria-label="Upload files"><b>Drop files here</b> or click to choose<div class="muted small">PDF or PPTX reports · XLSX or XLSM models</div>
     <div class="slots">${Object.entries(CFG.roles).map(([k, v]) => `<div class="slot"><b>${esc(v)}</b><span class="muted">${esc(ROLE_HELP[k])}</span></div>`).join("")}</div></div>
     ${up.length ? `<div style="margin-top:10px">${up.map(u => `<div class="small">${u.error ? `<span class="pill bad">Failed</span> ${esc(u.name)}: ${esc(u.error)}` : `<span class="pill info">Uploading</span> ${esc(u.name)}`}</div>`).join("")}</div>` : ""}
@@ -692,11 +741,11 @@ async function send(files) {
 let DOC = null;
 function viewReference() {
   const ready = E.documents.filter(d => d.status === "done" || (d.processed_at && busy(d.status)));  // still shown during its table loop
-  if (!ready.length) return `<div class="card empty">Upload last year's report (PDF or PPTX) in step 1 first.</div>`;
+  if (!ready.length) return `<div class="card empty">Upload last year's report (PDF or PPTX) in Files first.</div>`;
   if (!state.doc || !ready.some(d => d.id === state.doc)) state.doc = (ready.find(d => d.id === E.roles.prior_report?.id) || ready[0]).id;
   const d = ready.find(x => x.id === state.doc);
   if (!DOC || DOC.id !== d.id || DOC._stamp !== docStamp(d)) loadDoc(d);
-  return `<div class="lede"><div><h1><b>Report reference</b></h1><p>The report's conclusions and assumptions are the guide for finding the valuation in last year's overlay. This starts by itself once the report is read: the key facts are extracted and reviewed, and tables the checks flag and facts the reviewer disputes go through a review loop: the extractor fixes, code re-checks, the reviewer checks again, until they agree or hand it to you. Every fact shows its page, quote, checks and the loop's rounds; what the loop teaches is kept, anonymised, for next time.</p></div></div>
+  return `<div class="lede"><div><h1><b>The report</b></h1><p>The report's conclusions and assumptions are the guide for finding the valuation in last year's overlay. This starts by itself once the report is read: the key facts are extracted and reviewed, and tables the checks flag and facts the reviewer disputes go through a review loop: the extractor fixes, code re-checks, the reviewer checks again, until they agree or hand it to you. Every fact shows its page, quote, checks and the loop's rounds; what the loop teaches is kept, anonymised, for next time.</p></div></div>
   ${ready.length > 1 ? `<div class="row"><label class="small muted">Report</label><select class="in" id="docSel">${ready.map(x => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.filename)}</option>`).join("")}</select></div>` : ""}
   <div class="card" id="tablesCard"><h2>Tables in ${esc(d.filename)}</h2><p class="sub">Loading…</p></div>
   <div class="card" id="factsCard">${factsCard(d)}</div>
@@ -1101,8 +1150,8 @@ bind.roles = () => {
 function viewCompare() {
   const pm = E.roles.prior_model, cm = E.roles.current_model;
   const name = id => E.workbooks.find(w => w.id === id)?.filename || "?";
-  const head = `<div class="lede"><div><h1><b>Prior vs current client model</b></h1><p>${pm && cm ? `<b>${esc(name(pm.id))}</b> → <b>${esc(name(cm.id))}</b>. ` : ""}Line items are aligned by sheet and label, so inserted rows don't shift everything. Inputs changed, results that moved, formulas rewritten and rows added or removed are listed with their cells.</p></div></div>`;
-  if (!pm || !cm) return head + `<div class="card empty">Assign the prior and current client models in step 3 first.</div>`;
+  const head = `<div class="lede"><div><h1><b>What changed</b> in the client model</h1><p>${pm && cm ? `<b>${esc(name(pm.id))}</b> → <b>${esc(name(cm.id))}</b>. ` : ""}Line items are aligned by sheet and label, so inserted rows don't shift everything. Inputs changed, results that moved, formulas rewritten and rows added or removed are listed with their cells.</p></div></div>`;
+  if (!pm || !cm) return head + `<div class="card empty">Assign the prior and current client models in Roles first.</div>`;
   const run = `<div class="row"><button class="btn ${E.compare_status === "done" ? "" : "primary"}" id="runCompare" ${busy(E.compare_status) ? "disabled" : ""}>${E.compare_status === "done" ? "Compare again" : "Compare the models"}</button>
     ${busy(E.compare_status) ? `<span class="pill info">${esc(E.compare_step || "Working")}</span> ${runTimer(E.compare_started_at, null, E.compare_secs)}` : builtIn(E.compare_status, E.compare_secs, "compared in")}${E.compare_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.compare_error)}</span>` : ""}</div>`;
   const d = E.compare; if (!d) return head + run;
@@ -1127,7 +1176,7 @@ bind.compare = () => { $("#runCompare")?.addEventListener("click", () => act(() 
 // ---- step 5: map -------------------------------------------------------------------------------------------
 function viewMap() {
   const head = `<div class="lede"><div><h1><b>The map</b></h1><p>Report → overlay: where each approved figure sits in the overlay. Overlay → prior client model: which client rows the overlay reads, through external links or references inside the workbook. Prior → current client model: the same line items this year. The overlay's DCFs are recomputed in Python as the start of the live valuation module.</p></div></div>`;
-  if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in step 3 first.</div>`;
+  if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in Roles first.</div>`;
   return viewMapBody(head) + modelsCard();
 }
 function viewMapBody(head) {
@@ -1139,7 +1188,7 @@ function viewMapBody(head) {
   const found = m.report_overlay.filter(x => x.matches.length), missing = m.report_overlay.filter(x => !x.matches.length);
   const books = m.overlay_client.books || [];
   return head + run + `
-  ${!m.reference_approved ? `<div class="callout warn">The report facts aren't approved yet: this map uses the facts that pass the checks. Approve them in step 2 and rebuild.</div>` : ""}
+  ${!m.reference_approved ? `<div class="callout warn">The report facts aren't approved yet: this map uses the facts that pass the checks. Approve them in The report and rebuild.</div>` : ""}
   <div class="flow">${[["Prior report", E.documents.find(d => d.id === E.roles.prior_report?.id)?.filename, `${found.length} of ${m.report_overlay.length} figures found in the overlay`],
     ["Prior overlay", f.overlay, `${m.python.filter(p => p.reproduced).length} DCF(s) recomputed in Python`],
     ["Prior client model", f.prior_model, `${(m.chain || []).length} overlay row(s) read it (${esc(m.overlay_client.mode || "")})`],
@@ -1323,7 +1372,7 @@ async function bindModels() {
 
 // ---- step 6: python overlay ------------------------------------------------------------------------------
 const OV = {mode: "workbook", changes: {}, vd: null, months: null, result: null, running: false, trace: null, q: "", found: [], eid: null, tab: "live"};
-const OV_TABS = [["live", "Run it live"], ["valuation", "Valuation (DCF)"], ["ask", "Ask"]];
+const OV_TABS = [["live", "Run it live"], ["valuation", "Valuation (DCF)"]];
 const serialToISO = s => new Date(Date.UTC(1899, 11, 30) + Math.round(s) * 86400000).toISOString().slice(0, 10);
 function leverShown(l, v) {
   if (v == null || typeof v !== "number") return v ?? "";
@@ -1334,6 +1383,155 @@ function leverRaw(l, shown) {
   if (l.unit === "date" || l.key === "valuation_date") return shown;
   return +shown * (l.scale || 1);
 }
+// ---- what needs you: one list, from everything the engagement knows ---------------------------------------
+function needs() {
+  if (!E) return [];
+  const out = [], docs = E.documents, wbs = E.workbooks, r = E.roles, name = x => shortName(x.filename);
+  const add = (text, go, why) => out.push({text, go, why});
+  for (const x of [...docs, ...wbs]) if (x.status === "error") add(`Retry ${name(x)}: it couldn't be read`, "files");
+  for (const d of docs) if (d.facts_status === "error") add(`Extract the key facts again from ${name(d)}`, "reference");
+  if (!docs.length) add("Upload last year's report", "files");
+  if (wbs.length < 2) add("Upload last year's client model, the overlay and this year's client model", "files");
+  const reading = docs.some(d => busy(d.status) || busy(d.facts_status)) || wbs.some(w => busy(w.status));
+  const nConf = Object.values(r).filter(x => x.confirmed).length;
+  if (!reading && Object.keys(r).length && nConf < 4 && !E.roles_pending) add(`Confirm who's who: ${4 - nConf} file role(s) suggested, not confirmed`, "roles");
+  const facts = E.facts.filter(needsYou).length;
+  if (facts) add(`Decide ${facts} report fact(s) the agents couldn't settle`, "reference");
+  const tables = docs.filter(d => d.status === "done").reduce((a, d) => a + (d.n_flagged || 0), 0);
+  if (tables) add(`Check ${tables} table(s) the agents couldn't settle`, "reference");
+  if (nConf === 4) for (const [key, go, verb] of [["compare", "compare", "Compare the client models"], ["map", "map", "Build the map"], ["overlay", "python", "Build the Python overlay"]]) {
+    const st = E[`${key}_status`];
+    if (st === "error") add(`${verb} again: it failed`, go);
+    else if (!st) add(verb, go);
+  }
+  if (E.charts_status === "error") add("Recreate the report's charts again: it failed", "summary");
+  const sum = OVR.eid === E.id ? OVR.sum : null;
+  for (const row of sum?.table?.rows || []) if (row.kind === "conclusion" && row.tie && !row.tie.ok)
+    add(`${row.label} doesn't tie: rebuilt ${sumNum(row, row.values?.rebuilt)} vs the report's ${row.report}`, "summary");
+  for (const c of sum?.charts?.charts || []) if (c.picks && c.matches === false) add(`The report's chart “${c.caption || c.read?.title || c.id}” doesn't match its rebuild`, "summary");
+  for (const b of (OVR.eid === E.id ? OVR.br?.bridges : null) || []) if (b.note) add(`${b.label}: ${b.note}`, "bridge");
+  return out;
+}
+
+// ---- overview: last year's value, this year's, the bridge between them, how sure we are, what needs you ------
+const OVR = {eid: null, sum: null, br: null, loading: false, stamp: null};
+function mainRow(rows) {
+  const c = (rows || []).filter(r => r.kind === "conclusion" && r.values);
+  return c.find(r => /equity/i.test(r.key || r.label)) || c[0];
+}
+function viewOverview() {
+  if (OVR.eid !== E.id) Object.assign(OVR, {eid: E.id, sum: null, br: null, stamp: null});
+  const nm = E.name, t = OVR.sum?.table, r = mainRow(t?.rows), br = (OVR.br?.bridges || []).find(b => r && b.cell === r.cell);
+  const head = `<div class="lede"><div><h1><b>${esc(nm)}</b></h1><p>Last year's valuation, rebuilt from its own files and rolled forward onto this year's client model.</p></div></div>`;
+  let top = "";
+  if (!t) top = `<div class="card"><p class="muted" style="margin:0">${E.overlay_status === "done" ? "Recomputing the headline…" : "The headline value appears once the files are read, the roles confirmed and the Python overlay built. The list below says what's next."}</p></div>`;
+  else if (r) {
+    const v = r.values, ly = v.rebuilt, ty = v.this_year, ch = typeof ty === "number" && typeof ly === "number" ? ty - ly : null;
+    top = `<div class="heads">
+      <div class="head"><div class="k">${esc(r.label)} · last year (report)</div><div class="v">${esc(r.report || sumNum(r, ly))}</div><div class="s">${r.tie ? (r.tie.ok ? "✓ rebuilt exactly from last year's files" : `✗ rebuilt as ${sumNum(r, ly)}`) : ""}</div></div>
+      <div class="head"><div class="k">This year, rolled forward</div><div class="v">${typeof ty === "number" ? sumMoney(r, ty) : "–"}</div><div class="s">${t.roll?.valuation_date ? `valuation date ${esc(t.roll.valuation_date)}` : "assign this year's model to roll forward"}</div></div>
+      <div class="head"><div class="k">Change</div><div class="v">${ch == null ? "–" : (ch > 0 ? "+" : "") + sumMoney(r, ch)}</div><div class="s">${ch == null || !ly ? "" : `${(100 * ch / Math.abs(ly)).toFixed(1)}%`}${br ? ` · ${br.steps.filter(x => !x.total).length} steps in the bridge` : ""}</div></div></div>`;
+  }
+  const bridge = br ? `<div class="card"><div class="row" style="justify-content:space-between"><h2>How it moved</h2><button class="btn small" data-go="bridge">Value bridge</button></div><div id="ovrBridge"></div></div>` : "";
+  const n = needs(), conf = confidence();
+  return head + top + `<div class="grid2">${bridge || ""}<div class="stack">
+    <div class="card"><h2>Needs you${n.length ? ` (${n.length})` : ""}</h2>${n.length ? `<ul class="needs">${n.map(x => `<li><button data-go="${x.go}"><span>${esc(x.text)}</span><span class="where">${esc(NAV.find(s => s.id === x.go)?.name || "")} →</span></button></li>`).join("")}</ul>` : `<p class="muted" style="margin:0">Nothing. The agents have what they need.</p>`}</div>
+    <div class="card"><h2>How sure we are</h2><ul class="conf">${conf.map(([st, txt]) => `<li class="${st}">${esc(txt)}</li>`).join("")}</ul></div></div></div>`;
+}
+function confidence() {
+  const out = [], f = E.facts, appr = f.filter(x => x.status === "approved").length, O = E.overlay, t = OVR.sum?.table;
+  const docs = E.documents.filter(d => d.status === "done");
+  out.push(docs.length ? ["", `Report read: ${f.length} facts, ${appr} approved${docs.reduce((a, d) => a + (d.n_flagged || 0), 0) ? ", some tables still to check" : ", every table checked"}`] : ["wait", "Report not read yet"]);
+  const conc = (t?.rows || []).filter(r => r.kind === "conclusion" && r.tie);
+  out.push(conc.length ? [conc.every(r => r.tie.ok) ? "" : "no", `Last year rebuilt: ${conc.filter(r => r.tie.ok).length} of ${conc.length} conclusions tie to the report`] : ["wait", "Last year not rebuilt yet"]);
+  const v = O?.validation;
+  if (v) out.push([v.matched === v.cells ? "" : "no", `Python equals Excel in ${v.matched.toLocaleString()} of ${v.cells.toLocaleString()} formula cells`]);
+  const ch = (OVR.sum?.charts?.charts || []).filter(c => c.picks);
+  if (ch.length) out.push([ch.every(c => c.matches) ? "" : "no", `The report's charts: ${ch.filter(c => c.matches).length} of ${ch.length} rebuilt and matched by eye`]);
+  out.push(E.compare_status === "done" ? ["", "This year's client model compared with last year's"] : ["wait", "Client models not compared yet"]);
+  return out;
+}
+async function loadOverview() {
+  if (OVR.loading) return;
+  OVR.loading = true;
+  const eid = E.id;
+  try {
+    const [sum, br] = await Promise.all([api(`/api/engagements/${eid}/summary`, {method: "POST", body: {}}),
+      E.roles.current_model ? api(`/api/engagements/${eid}/bridge`, {method: "POST", body: {}}) : Promise.resolve(null)]);
+    if (OVR.eid === eid) Object.assign(OVR, {sum, br, stamp: overviewStamp()});
+  } catch (e) { if (OVR.eid === eid) OVR.sum = {table: null, why: e.message}; }
+  OVR.loading = false;
+  if (state.step === "overview" && E?.id === eid) { $("#main").innerHTML = viewOverview(); bindOverview(); renderSteps(); }
+}
+const overviewStamp = () => [E.overlay_status, E.charts_status, E.facts.length, Object.values(E.roles).filter(x => x.confirmed).length].join("|");
+function bindOverview() {
+  document.querySelectorAll("#main [data-go]").forEach(b => b.onclick = () => go(b.dataset.go));
+  if (E.overlay_status === "done" && (!OVR.sum || OVR.stamp !== overviewStamp()) && !OVR.loading) { loadOverview(); return; }
+  const t = OVR.sum?.table, r = mainRow(t?.rows), br = (OVR.br?.bridges || []).find(b => r && b.cell === r.cell);
+  if (br && $("#ovrBridge")) { $("#ovrBridge").append(chartCard(bridgeSpec(br, `${br.label}: last year to this year`))); mountCharts($("#ovrBridge")); }
+}
+bind.overview = bindOverview;
+
+// ---- the value bridge: last year's value to this year's, step by step --------------------------------------
+const STEP_SHORT = {last_year: "Last year", time: "Time value", cash: "Cash flows paid", forecast: "New forecast", roll: "Roll-forward",
+  this_year: "This year", changes: "Your changes", scenario: "Your scenario"};
+function bridgeSpec(b, title) {
+  const f = v => (b.sign || 1) * v / (b.scale || 1), labels = b.steps.map(x => STEP_SHORT[x.key] || x.label);
+  return {title, kind: "waterfall", units: b.unit || "", labels, period_labels: labels, frequency: "irregular", sign: 1,
+    series: [{name: title, range: b.cell, data: b.steps.map(x => f(x.value))}], totals: b.steps.map((x, i) => x.total ? i : -1).filter(i => i >= 0)};
+}
+const BR = {eid: null, data: null, loading: false, key: null};
+function viewBridge() {
+  if (BR.eid !== E.id) Object.assign(BR, {eid: E.id, data: null, key: null});
+  const head = `<div class="lede"><div><h1><b>Value bridge</b></h1><p>From last year's value to this year's, one change at a time: a year of time value, last year's forecast cash flows up to the new valuation date, this year's client model, and your changes from the Summary page. Each step is recomputed, so they add up exactly.</p></div></div>`;
+  const d = BR.data;
+  if (!d) return head + `<div class="card"><p class="muted" style="margin:0">${BR.loading ? "Recomputing the bridge…" : "Loading…"}</p></div>`;
+  if (!d.bridges?.length) return head + `<div class="card"><p style="margin:0">${esc(d.why || "No conclusion of the report is matched to the overlay, so there's nothing to bridge.")}</p></div>`;
+  const scen = Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length;
+  return head + (scen ? `<div class="callout info small">Includes your scenario from the Summary page. <a href="#" id="brToSum">Change it there</a>.</div>` : "") + d.bridges.map((b, i) => {
+    let run = 0;
+    const rows = b.steps.map(x => { run = x.total ? x.value : run + x.value; return `<tr class="${x.total ? "tot" : ""}"><td>${esc(x.label)}</td><td class="num">${x.total ? "" : (x.value > 0 ? "+" : "") + sumNum(b, x.value)}</td><td class="num"><b>${sumNum(b, run)}</b></td></tr>`; }).join("");
+    return `<div class="card"><h2>${esc(b.label)}</h2><p class="sub">${b.report ? `Last year's report: ${esc(b.report)}. ` : ""}${d.valuation_date ? `This year's valuation date: ${esc(d.valuation_date)}.` : ""}</p>
+      <div class="grid2"><div id="brChart${i}"></div><div class="scroll"><table><thead><tr><th>Step</th><th class="num">Change</th><th class="num">Value</th></tr></thead><tbody>${rows}</tbody></table>
+      ${b.note ? `<p class="small muted">${esc(b.note)}</p>` : ""}</div></div></div>`;
+  }).join("");
+}
+async function loadBridge() {
+  if (BR.loading) return;
+  BR.loading = true;
+  const eid = E.id;
+  try { BR.data = await api(`/api/engagements/${eid}/bridge`, {method: "POST", body: {changes: SUM.changes, valuation_date: SUM.vd || null, method: SUM.method}}); }
+  catch (e) { BR.data = {bridges: [], why: e.message}; }
+  BR.key = JSON.stringify([SUM.changes, SUM.vd, SUM.method, E.overlay_status]); BR.loading = false;
+  if (state.step === "bridge" && E?.id === eid) { $("#main").innerHTML = viewBridge(); bindBridge(); }
+}
+function bindBridge() {
+  if (!BR.data || BR.key !== JSON.stringify([SUM.changes, SUM.vd, SUM.method, E.overlay_status])) { if (!BR.loading) loadBridge(); if (!BR.data) return; }
+  $("#brToSum")?.addEventListener("click", e => { e.preventDefault(); go("summary"); });
+  (BR.data.bridges || []).forEach((b, i) => { const el = $(`#brChart${i}`); if (el) el.append(chartCard(bridgeSpec(b, `${b.label}: last year to this year`))); });
+  mountCharts($("#main"));
+}
+bind.bridge = bindBridge;
+
+// ---- Ask: the engagement's chat, beside every page ----------------------------------------------------------
+function setAsk(open) {
+  $("#askDrawer").hidden = !open;
+  $("#shell").classList.toggle("asking", open);
+  $("#askBtn").setAttribute("aria-expanded", String(open));
+  if (open && E) drawAsk();
+}
+function drawAsk() {
+  const body = $("#askBody");
+  if (E.overlay_status !== "done") { body.innerHTML = `<p class="muted small">Ask works on the Python overlay: build it first (Rebuild in Python).</p>`; return; }
+  body.innerHTML = `<div id="ovAsk">${ovAskPane()}</div>`;
+  bindOvAsk();
+}
+$("#askBtn").onclick = () => setAsk($("#askDrawer").hidden);
+$("#askClose").onclick = () => setAsk(false);
+$("#modelsBtn").onclick = e => { const pop = $("#modelCtl"); pop.hidden = !pop.hidden; e.currentTarget.setAttribute("aria-expanded", String(!pop.hidden)); };
+document.addEventListener("click", e => { const pop = $("#modelCtl"); if (!pop.hidden && !pop.contains(e.target) && e.target.id !== "modelsBtn") { pop.hidden = true; $("#modelsBtn").setAttribute("aria-expanded", "false"); } });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { $("#modelCtl").hidden = true; $("#modelsBtn").setAttribute("aria-expanded", "false"); } });
+
 // ---- step 7: the summary: the report's summary table and charts, rebuilt and rolled forward -----------------
 const SUM = {eid: null, data: null, loading: false, changes: {}, vd: null, method: {}, seq: 0, chartsSeen: null};
 function viewSummary() {
@@ -1343,6 +1541,10 @@ function viewSummary() {
   if (!d) return head + `<div class="card"><p class="muted" style="margin:0">${SUM.loading ? "Recomputing the summary…" : "Loading…"}</p></div>`;
   return head + summaryCard(d) + chartsCard(d);
 }
+const sumMoney = (row, v) => {  // with the report's own prefix and suffix ("A$" … "m")
+  const m = String(row.report || "").match(/^([^\d(-]*)[\d,.()-]+(.*)$/), n = sumNum(row, v);
+  return n === "–" || !m ? n : (n.startsWith("-") ? "-" + m[1] + n.slice(1) : m[1] + n) + m[2];
+};
 const sumNum = (row, v) => {  // a conclusion as the report prints it: its units and decimals
   if (v == null || typeof v !== "number") return v == null ? "–" : esc(v);
   const x = (row.sign || 1) * v / (row.scale || 1), m = String(row.report || "").match(/\d[\d,]*(?:\.(\d+))?/), dp = m && m[1] ? m[1].length : 0;
@@ -1387,7 +1589,7 @@ function summaryCard(d) {
     ${t.detected_method.length ? `<tr><td>Discounting found in the overlay</td><td colspan="${cols.length + 1}">${t.detected_method.map(esc).join("<br>")}${Object.keys(t.method || {}).length ? `<div class="small"><b>Your scenario:</b> ${esc([t.method.timing && (t.method.timing === "mid" ? "mid-period" : "end of period"), t.method.day_count].filter(Boolean).join(", "))}</div>` : ""}</td></tr>` : ""}
   </tbody></table></div>
   ${notes.length ? `<ul class="why small" style="margin-top:8px">${notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
-  <p class="small muted" style="margin:8px 0 0">Assumptions without an input in the overlay can't be changed here. The discounting method applies to each discounting under a figure and carries through the formulas above it (see how the figure is built in <b>Python overlay → Valuation (DCF)</b>).</p></div>`;
+  <p class="small muted" style="margin:8px 0 0">Assumptions without an input in the overlay can't be changed here. The discounting method applies to each discounting under a figure and carries through the formulas above it (see how the figure is built in <b>Rebuild in Python → Valuation (DCF)</b>).</p></div>`;
 }
 function chartsCard(d) {
   const st = d.charts_status || E.charts_status, running = busy(st), ch = d.charts?.charts || [];
@@ -1443,8 +1645,8 @@ function bindSummary() {
 }
 bind.summary = bindSummary;
 function viewPython() {
-  const head = `<div class="lede"><div><h1><b>Python overlay</b></h1><p>Last year's overlay rebuilt as a Python module from its own formulas: every formula cell becomes Python, checked against the value Excel saved, then against the report. Run it live: change the assumptions, or feed it from the prior or the current client model to roll the valuation forward.</p></div></div>`;
-  if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in step 3 first.</div>`;
+  const head = `<div class="lede"><div><h1><b>Rebuild in Python</b></h1><p>Last year's overlay rebuilt as a Python module from its own formulas: every formula cell becomes Python, checked against the value Excel saved, then against the report. Run it live: change the assumptions, or feed it from the prior or the current client model to roll the valuation forward.</p></div></div>`;
+  if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in Roles first.</div>`;
   if (OV.eid !== E.id) Object.assign(OV, {mode: "workbook", changes: {}, vd: null, months: null, result: null, trace: null, q: "", found: [], eid: E.id, tab: "live"});
   const O = E.overlay;
   const run = `<div class="row"><button class="btn ${E.overlay_status === "done" ? "" : "primary"}" id="buildOv" ${busy(E.overlay_status) ? "disabled" : ""}>${E.overlay_status === "done" ? "Rebuild the Python overlay" : "Build the Python overlay"}</button>
@@ -1466,7 +1668,7 @@ function viewPython() {
     [sens.length ? `${sensOk} / ${sens.length}` : "–", "report sensitivities reproduced"],
     [O.feeds.prior ? (O.feeds.prior.same ? "unchanged" : "moves") : (O.wiring?.same_file ? "same file" : "–"), "results fed from the prior client model"]];
   return head + run + `
-  ${!O.reference_approved ? `<div class="callout warn">Built with report facts that aren't all approved; levers and tie-out may be incomplete. Approve them in step 2 and rebuild.</div>` : ""}
+  ${!O.reference_approved ? `<div class="callout warn">Built with report facts that aren't all approved; levers and tie-out may be incomplete. Approve them in The report and rebuild.</div>` : ""}
   <div class="tiles">${tiles.map(([b, t]) => `<div class="tile"><b>${esc(b)}</b><span>${esc(t)}</span></div>`).join("")}</div>
   ${validationCard(O)}
   <div class="seg" role="tablist" aria-label="Python overlay" id="ovTabs" style="justify-self:start">${OV_TABS.map(([k, t]) => `<button role="tab" data-ovtab="${k}" class="${OV.tab === k ? "on" : ""}" aria-selected="${OV.tab === k}">${t}</button>`).join("")}</div>
@@ -1517,7 +1719,7 @@ function liveCard(O) {
     ${O.levers.map(l => { const cur = OV.changes[l.cell]; const isDate = l.unit === "date" || l.key === "valuation_date";
       const shown = cur !== undefined ? (isDate ? cur : leverShown(l, cur)) : leverShown(l, l.value);
       return `<tr><td>${esc(l.label)}<div class="small muted">${esc(l.row_label || "")}</div></td><td class="mono small">${esc(l.cell)}${l.formula ? ` <span class="pill">formula</span>` : ""}</td><td class="num small">${esc(l.report || "")}</td>
-      <td><input type="${isDate ? "date" : "text"}" data-lever="${esc(l.cell)}" value="${esc(shown)}" style="width:${isDate ? 150 : 110}px" aria-label="${esc(l.label)}">${!isDate && l.unit === "%" ? " %" : ""}${cur !== undefined ? ` <button class="btn small ghost" data-unset="${esc(l.cell)}">reset</button>` : ""}</td></tr>`; }).join("")}</tbody></table></div>` : `<p class="small muted">No levers: approve the report's assumptions in step 2 and rebuild, or change inputs directly.</p>`}
+      <td><input type="${isDate ? "date" : "text"}" data-lever="${esc(l.cell)}" value="${esc(shown)}" style="width:${isDate ? 150 : 110}px" aria-label="${esc(l.label)}">${!isDate && l.unit === "%" ? " %" : ""}${cur !== undefined ? ` <button class="btn small ghost" data-unset="${esc(l.cell)}">reset</button>` : ""}</td></tr>`; }).join("")}</tbody></table></div>` : `<p class="small muted">No levers: approve the report's assumptions in The report and rebuild, or change inputs directly.</p>`}
     <h3 style="font-size:14px;margin:14px 0 6px">Any other input</h3>
     <div class="row"><input type="text" id="ovQ" placeholder="Search the overlay's inputs by label or cell" value="${esc(OV.q)}" style="flex:1;min-width:200px"></div>
     <div id="ovFound">${foundList()}</div>
@@ -1745,7 +1947,7 @@ function traceCard() {
   const t = VAL.trace, head = `<h2>How the report's figure is built</h2>`;
   if (t === undefined) return `<div class="card" id="vtCard">${head}<p class="muted small" style="margin:0">Tracing the report's figure through the overlay…</p></div>`;
   if (!t || t.error) return `<div class="card" id="vtCard">${head}<div class="callout warn small">Couldn't trace it: ${esc(t?.error || "no answer")}</div></div>`;
-  if (!t.selected) return `<div class="card" id="vtCard">${head}<p class="small muted" style="margin:0">No report conclusion is matched to an overlay cell that ties to the report. Approve the conclusions in step 2, check the Map, and rebuild the Python overlay.</p></div>`;
+  if (!t.selected) return `<div class="card" id="vtCard">${head}<p class="small muted" style="margin:0">No report conclusion is matched to an overlay cell that ties to the report. Approve the conclusions in The report, check the Map, and rebuild the Python overlay.</p></div>`;
   const s = t.start, anchors = new Set((VAL.v?.anchors || []).filter(a => a.ok).map(a => a.cell));
   return `<div class="card" id="vtCard"><div class="row" style="justify-content:space-between;align-items:flex-end"><div style="flex:1 1 360px">${head}
     <p class="sub" style="margin:0">Traced from <span class="mono">${esc(t.selected)}</span>, the cell ${s.report ? `the report's <b>${esc(s.report)}</b>` : "this figure"} was matched to${s.ties ? " (it ties at the report's printed precision)" : ""}, down through every cell it reads to the discounting. Each cell shows Excel's value, checked against the Python overlay.</p></div>
@@ -1988,7 +2190,7 @@ async function ovAsk(text) {
     CHAT.html = copy.innerHTML;
   }
   const s = $("#send"); if (s) { s.disabled = false; $("#question")?.focus(); }
-  if (!$("#newChat") && CHAT.history.length && state.step === "python" && OV.tab === "ask") { $("#ovAsk").innerHTML = ovAskPane(); bindOvAsk(); }
+  if (!$("#newChat") && CHAT.history.length && $("#ovAsk")) { $("#ovAsk").innerHTML = ovAskPane(); bindOvAsk(); }
   spend();
 }
 

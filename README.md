@@ -125,8 +125,18 @@ uv run python tests/make_engagement_pack.py         # optional: a synthetic 4-fi
 uv run uvicorn engage.server:app --port 8002        # then open http://localhost:8002
 ```
 One engagement per asset and year, built from last year's final report, last year's client model, last year's
-overlay (the workings that take the client model to the report's conclusions) and this year's client model. The
-steps, each checked by a person before the next relies on it:
+overlay (the workings that take the client model to the report's conclusions) and this year's client model.
+
+The page is arranged by the valuer's questions rather than the pipeline. **Overview**: last year's value (from
+the report, marked when the rebuild ties to it), this year's rolled forward, the change and the bridge between
+them, how sure we are (report read and checked, conclusions tie, Python equals Excel, the report's charts
+match), and one **needs-you** list of everything waiting for a person: files to retry or upload, roles to
+confirm, report facts and tables the agents couldn't settle, builds to start, figures that don't tie, charts
+that don't match. The sidebar counts them by page. **Setup**: Files and Roles. **Last year**: The report (its
+tables and key facts), Rebuild in Python (step 6 below) and the Map. **This year**: Summary (step 7), the
+**Value bridge** and What changed (the client models compared). Ask is a panel beside every page, and the
+Azure models sit behind the Models button. The pipeline behind the pages is below; each step is checked by a
+person before the next relies on it:
 1. **Files.** Workbooks go through the Model Desk pipeline and library (`bench/library.py`), so a model uploaded in
    either app is built once. Reports (PDF, PPTX) are read by `bench/docingest.py` into Markdown with page markers.
    A PDF page is read in reading order, not line by line across the page. The page is cut into blocks (XY cut)
@@ -307,7 +317,15 @@ steps, each checked by a person before the next relies on it:
      first time the page opens after the overlay is built. `tests/make_engagement_pack.py` puts both kinds of
      chart in the synthetic report.
 
-A status panel at the top of every step shows where the engagement is. Each stage appears as done, running (with
+**The value bridge** (`overlay.value_bridge`) goes from last year's value to this year's for each of the report's
+conclusions in the overlay, one change at a time, so the steps add up exactly: last year's value (the rebuild);
+a year of time value (each discounting under the figure grows at its own rate from last year's valuation date
+to this year's, carried up the figure's formulas); last year's forecast cash flows up to the new valuation date
+(each discounting redone at the new date); this year's client model (the engine's roll-forward, less the step
+before); and your changes from the Summary page's scenario. Where the formulas above a figure's discountings
+can't be recomputed, the first three steps are shown as one roll-forward step, and the page says why.
+
+A status panel at the top of every page shows where the engagement is. Each stage appears as done, running (with
 what the agents are doing now, step by step, the review loop animated), needing you, or failed. It also shows the
 next thing for you to do, as a button that takes you there. Every running job shows how long it has been going
 and, where it reports progress, roughly how long is left. Other jobs estimate from how long the last run took,
