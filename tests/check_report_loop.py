@@ -134,6 +134,11 @@ def profile_check(eid: int) -> None:
             pass
     engagement.set_profile(eid, {"horizon": None})
     assert engagement._profile(eid) == {"fy_end_month": 6}
+    try:
+        engagement.set_schedule(eid, classes={"Val!r3": "headline"})
+        raise AssertionError("accepted a class that isn't one")
+    except ValueError:
+        pass
     view = engagement.profile_view(eid)["fields"]
     assert view["fy_end_month"]["set"] and view["fy_end_month"]["shown"] == "June" and not view["horizon"]["set"]
     print("profile: ok (a year end and a horizon set, checked and cleared; the charts take the year end as set)")

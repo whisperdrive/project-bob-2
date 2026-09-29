@@ -1453,6 +1453,28 @@ def set_profile(eid: int, fields: dict) -> dict:
     return profile_view(eid)
 
 
+class _Timelines:
+    """A model's period dates by sheet, read from each sheet's timeline row alone (overlay.Workbook reads whole
+    sheets: on a large model, the profile would read most of the workbook)."""
+
+    def __init__(self, path: str):
+        self.db = rodb.connect(path)
+
+    def timeline(self, s: str) -> dict[int, float]:
+        from xlruntime import from_db
+        lay = self.db.execute("SELECT layout FROM sheets WHERE sheet=?", (s,)).fetchone()
+        hr = json.loads((lay[0] if lay else None) or "{}").get("header_row")
+        out = {}
+        for c, v in self.db.execute("SELECT col, value FROM cells WHERE sheet=? AND row=?", (s, hr)) if hr else []:
+            x = from_db(v)
+            if isinstance(x, float) and 3000 < x < 120000:
+                out[c] = x
+        return out
+
+    def close(self):
+        self.db.close()
+
+
 def _frequency(wb) -> tuple[str | None, str]:
     """The periods' length most sheets with a timeline have: monthly, quarterly, half-yearly or annual."""
     kinds = Counter()
@@ -1501,7 +1523,7 @@ def profile_view(eid: int) -> dict:
                                 sess.rowmap.sheet_for)
     elif (prior or ovw) and cur:
         base = prior or ovw
-        a, b = ovmod.Workbook(base["db_path"]), ovmod.Workbook(cur["db_path"])
+        a, b = _Timelines(base["db_path"]), _Timelines(cur["db_path"])
         try:
             sheets = base["sheets"] or [s for (s,) in a.db.execute("SELECT sheet FROM sheets")]
             kind, n = ovmod.horizon(a, b, sheets)
@@ -1518,7 +1540,7 @@ def profile_view(eid: int) -> dict:
     # shown, not set: the period frequency, the units, the discounting convention
     freq, how = (None, "no client model assigned yet")
     if src:
-        w = ovmod.Workbook(src["db_path"])
+        w = _Timelines(src["db_path"])
         try:
             freq, how = _frequency(w)
         finally:

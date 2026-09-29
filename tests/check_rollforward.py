@@ -483,7 +483,8 @@ def schedule_check(summary: dict) -> None:
     assert by["Bridge!C7"]["class"] == "conclusion" and by["Val!C21"]["class"] == "conclusion"  # labelled like a value
     assert by["Bridge!C6"]["class"] == "working" and by["Val!C17"]["class"] == "working"
     assert not any(k.startswith("Inputs!") for k in by), "typed inputs aren't outputs"
-    assert not any(o["kind"] == "series" and o["read"] for o in got), "a row of periods another row reads isn't one"
+    assert "Val!r3" not in by and not any(o["kind"] == "series" for o in got), \
+        "rows of periods other rows read (the period dates, the cash flows, the factors) aren't outputs"
     assert outputs.outside(FACTS, got, summary["levers"]) == [], "the rate is an input (a lever), the value an output"
     assert [f["key"] for f in outputs.outside(FACTS, got)] == ["discount_rate"], "... without the levers, the rate isn't found"
     mine = outputs.apply(got, {"classes": {"Val!r17": "conclusion"}})
