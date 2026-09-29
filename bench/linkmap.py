@@ -121,7 +121,8 @@ def match_facts(db_path: str, facts: list[dict], sheets: set[str] | None = None)
             ms.sort(key=lambda m: -m["score"])
             out.append({"fact_id": f["id"], "key": f["key"], "label": f.get("label"), "value_text": f.get("value_text"),
                         "matches": ms[:5], "n": len(hits)})
-        elif f.get("value") is not None and f.get("category") in ("conclusion", "assumption", "sensitivity"):
+        elif f.get("category") in ("conclusion", "assumption", "sensitivity") and any(
+                re.search(r"\d", f.get(k) or "") for k in ("value_text", "low_text", "high_text")):  # a range too
             out.append({"fact_id": f["id"], "key": f["key"], "label": f.get("label"), "value_text": f.get("value_text"),
                         **match_fact(f, nums, labels, anchors)})
     return out

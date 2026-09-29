@@ -6,6 +6,9 @@
 - The loop takes just those facts; if a loop is already running, they get one of their own when it finishes.
 - Report jobs and model jobs run in separate lanes, so a review loop never holds up the map, and a queued job says
   what it's waiting behind.
+- A fact's number is worked out by code from its text: none for a name holding digits or a range without a
+  preferred point. Stored facts are brought up to date once, and one handed to a person whose number changed goes
+  back to the loop.
 
     uv run python tests/check_report_loop.py
 """
@@ -110,6 +113,37 @@ def main() -> None:
     engagement._next_loop(did)  # the running loop finished
     assert list(lanes["report"].queue) == [("resolve_facts", did)] and engagement._REOPEN[did] == {on_page, held_by_check}
     print("mid-loop: ok (facts a decision reopens while a loop runs get a loop of their own when it finishes)")
+    numbers_check(eid, tmp)
+
+
+def numbers_check(eid: int, tmp: Path) -> None:
+    sv = reportfacts.settle_value
+    assert sv({"category": "identity", "unit": "text", "value_text": "Project 30", "value": 30.0})["value"] is None
+    assert sv({"category": "assumption", "unit": "%", "value_text": "1.25%–1.75%", "low_text": "1.25%",
+               "high_text": "1.75%", "value": 1.5})["value"] is None, "a range with no preferred point has no number"
+    assert sv({"category": "conclusion", "unit": "A$m", "value_text": "A$2,296.7m", "low_text": "A$2,200.0m",
+               "high_text": "A$2,400.0m", "value": None})["value"] == 2296.7
+    assert sv({"category": "identity", "unit": "date", "value_text": "30 June 2025", "value": 20250630.0})["value"] == 20250630.0
+
+    # a fact handed to a person because the reviewer wanted no number on a name: once code clears it, back to the loop
+    for q in engagement._jobs.queues.values():
+        q.queue.clear()
+    doc = _doc()
+    out_dir = tmp / "docs" / "second"
+    out_dir.mkdir(parents=True)
+    did = engagement._exec("""INSERT INTO documents(engagement_id, sha256, filename, kind, status, step, out_dir,
+                              doc_json, facts_status, source_path, loop_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                           eid, "1" * 64, "second.pdf", "pdf", "done", "Done", str(out_dir), json.dumps(doc), "done", "",
+                           json.dumps({"check_version": reportfacts.CHECK_VERSION - 1, "facts": {"rounds": 3}}))
+    pg = reportfacts.pages(doc["markdown"])
+    name = _fact(eid, did, 1, "project_name", "30%", 1, "Summary of the valuation.", pg,
+                 {"verdict": "object", "reason": "a name takes no number", "correction": None})
+    engagement._set("facts", name, category="identity", unit="text", value_text="Summary 30", value=30.0)
+    engagement.get(eid)  # a poll: the stored facts are brought up to date once
+    f = next(x for x in engagement.facts(eid) if x["id"] == name)
+    assert f["value"] is None and engagement._REOPEN.get(did) == {name}, (f["value"], engagement._REOPEN.get(did))
+    assert ("resolve_facts", did) in list(engagement._jobs.queues["report"].queue)
+    print("numbers: ok (none for a name or an unpicked range, by code; a fact held on it goes back to the loop)")
 
 
 if __name__ == "__main__":

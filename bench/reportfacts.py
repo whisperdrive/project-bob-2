@@ -24,7 +24,8 @@ from docingest import numbers
 
 MAX_CHARS = 150_000  # longer reports: send the pages most likely to hold conclusions and assumptions
 MAX_ROUNDS = 3       # review and remediation rounds before a fact goes to a person
-CHECK_VERSION = 2    # bump when check() changes: existing facts are checked again once (2: spacing-tolerant, waivers)
+CHECK_VERSION = 3    # bump when check() changes: existing facts are checked again once (2: spacing-tolerant, waivers;
+                     # 3: numbers worked out by code, none for identity text or a range without a preferred point)
 LOOP_CHARS = 60_000  # the loop sends only the pages the open facts cite, and their neighbours
 KEYWORDS = re.compile(r"valuation|discount|wacc|terminal|growth|multiple|rab|conclu|range|preferred|assumption|"
                       r"enterprise value|equity value|methodolog|approach|summary|cost of capital|cpi|inflation", re.I)
@@ -220,6 +221,20 @@ def _in_squashed(num: str, text: str) -> bool:
             continue
         return True
     return False
+
+
+def settle_value(f: dict) -> dict:
+    """f with its number worked out from its text, in place: the first number in value_text. None for identity
+    text (a name holding digits is still a name), text, or a range the report gives without a preferred point
+    (value_text empty, or the range itself); a date keeps its YYYYMMDD. Code sets it, so a model's number can't
+    contradict the text, and a model's null isn't overwritten."""
+    if f.get("unit") == "date":
+        return f
+    nums, lo, hi = (numbers(f.get(k) or "") for k in ("value_text", "low_text", "high_text"))
+    bare = {x.lstrip("-") for x in nums}  # "1.25%–1.75%" reads as 1.25% and -1.75%: the dash isn't a sign
+    range_only = bool(lo and hi) and (not nums or (lo[0].lstrip("-") in bare and hi[0].lstrip("-") in bare))
+    f["value"] = None if f.get("category") == "identity" or not nums or range_only else float(nums[0].rstrip("%"))
+    return f
 
 
 def check(f: dict, pg: dict[int, str]) -> dict:
@@ -486,9 +501,7 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
                              and x in r})
                 cand["category"] = cand["category"] if cand.get("category") in CATEGORIES else f["category"]
                 cand["key"] = cand.get("key") or f["key"]
-                nums = numbers(cand.get("value_text") or "")
-                if nums and cand.get("unit") != "date":
-                    cand["value"] = float(nums[0].rstrip("%"))
+                settle_value(cand)
             cand["check"] = check(cand, pg) if r["action"] == "revise" else f["check"]
             pending[i] = (r, cand)
             items.append({"id": i, "you_said": issues[i], "extractor": {"action": r["action"], "reason": r["reason"]},
@@ -528,10 +541,7 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
         f = by_id[i]
         f["agent"].update(status="escalated", round=k, open=iss)
         if iss.get("correction"):
-            fix = {**_fields(f), **iss["correction"]}
-            nums = numbers(fix.get("value_text") or "")
-            if nums and fix.get("unit") != "date":
-                fix["value"] = float(nums[0].rstrip("%"))
+            fix = settle_value({**_fields(f), **iss["correction"]})
             fix["check"] = check(fix, pg)
             f["review"] = {**(f.get("review") or {}), "suggestion": fix}
     arbitrated = 0
@@ -557,7 +567,7 @@ def run(markdown: str, model: str = "gpt-6-luna", reviewer_model: str = "gpt-6-s
     pg = pages(markdown)
 
     def checked(f):
-        f["check"] = check(f, pg)
+        f["check"] = check(settle_value(f), pg)
         return f
 
     progress(0.1, f"Extracting key facts ({model})")
@@ -574,9 +584,6 @@ def run(markdown: str, model: str = "gpt-6-luna", reviewer_model: str = "gpt-6-s
         if r["verdict"] == "correct":
             fix = {**{k: f.get(k) for k in _FACT}, **{k: r[k] for k in ("value_text", "low_text", "high_text", "basis",
                                                                           "page", "quote") if r[k] not in (None, "")}}
-            nums = numbers(fix["value_text"])
-            if nums and fix.get("unit") != "date":
-                fix["value"] = float(nums[0].rstrip("%"))
             f["review"]["suggestion"] = checked(fix)
     next_id = len(facts) + 1
     for m in rev["missing"]:

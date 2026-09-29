@@ -427,17 +427,25 @@ def _settle_table(did: int, tid: str, action: str, markdown: str | None = None) 
     # go back to the loop with the page as it now reads; the others stay with you, since the same loop on the same
     # text would come out the same
     pg = reportfacts.pages(doc["markdown"])
+    n, after_loop = _reopen(did, lambda f: f["id"] in changed or t["page"] in reportfacts.fact_pages(f, pg))
+    return {**document(did), "reopened": n, "after_loop": after_loop}
+
+
+def _reopen(did: int, bears_on) -> tuple[int, bool]:
+    """Facts handed to a person that something they rest on changed for (bears_on(fact row)) go back to the loop:
+    now, with a loop already queued, or after the one running (it took the facts as they were). Returns how many,
+    and whether they wait for the running loop."""
     reopen = [f["id"] for f in _q("SELECT * FROM facts WHERE document_id=? AND status='pending'", did)
               if (a := json.loads(f["agent_json"] or "null") or {}).get("status") == "escalated" and not a.get("held")
-              and (f["id"] in changed or t["page"] in reportfacts.fact_pages(f, pg))]
+              and bears_on(f)]
     status = _doc(did)["facts_status"]
-    if reopen and status == "running":  # the loop running now took the facts as they were: the next one takes these
+    if reopen and status == "running":
         _AFTER.setdefault(did, set()).update(reopen)
     elif reopen and status != "queued":
         resolve_facts(did, reopen)
     elif reopen and _REOPEN.get(did) is not None:
         _REOPEN[did] |= set(reopen)  # a loop on other reopened facts hasn't started: it takes these too
-    return {**document(did), "reopened": len(reopen), "after_loop": bool(reopen) and status == "running"}
+    return len(reopen), bool(reopen) and status == "running"
 
 
 _DOC_LOCK = threading.RLock()  # the background reader and a person's table decisions save into the same document
@@ -526,19 +534,20 @@ def _save_doc(did: int, doc: dict) -> None:
 def _recheck_facts(did: int, doc: dict) -> set[int]:
     """Table decisions change the page text facts are checked against (no model calls). An approval the agents
     made rested on the checks passing, so if they now fail the fact goes back to a person. Returns the facts whose
-    checks came out differently."""
+    checks came out differently, or whose number did (worked out by code: reportfacts.settle_value)."""
     pg = reportfacts.pages(doc["markdown"])
     failing = lambda c: [i["text"] for i in (c or {}).get("items", []) if not i["ok"]]
     changed = set()
     for f in _q("SELECT * FROM facts WHERE document_id=?", did):
         agent = json.loads(f["agent_json"] or "null") or {}
-        chk = reportfacts.check({**f, "waivers": agent.get("waivers")}, pg)
-        if failing(chk) != failing(json.loads(f["check_json"] or "null")):
+        value = reportfacts.settle_value({k: f[k] for k in FACT_FIELDS})["value"]
+        chk = reportfacts.check({**f, "value": value, "waivers": agent.get("waivers")}, pg)
+        if failing(chk) != failing(json.loads(f["check_json"] or "null")) or value != f["value"]:
             changed.add(f["id"])
         rv = json.loads(f["review_json"] or "null")
         if rv and rv.get("suggestion"):
             rv["suggestion"]["check"] = reportfacts.check(rv["suggestion"], pg)
-        fields = {"check_json": json.dumps(chk), "review_json": json.dumps(rv)}
+        fields = {"check_json": json.dumps(chk), "review_json": json.dumps(rv), "value": value}
         o = agent.get("open") or {}
         if f["status"] == "pending" and agent.get("status") == "escalated" and chk["ok"] and \
                 (o.get("accepted") or (o.get("reason") or "").startswith("accepted by the reviewer")):
@@ -590,9 +599,8 @@ def set_fact(fact_id: int, action: str, fields: dict | None = None) -> dict:
     elif action == "edit":
         final = {k: f[k] for k in FACT_FIELDS}
         final.update({k: v for k, v in (fields or {}).items() if k in FACT_FIELDS})
-        nums = docingest.numbers(final.get("value_text") or "")
-        if "value" not in (fields or {}) and nums and final.get("unit") != "date":
-            final["value"] = float(nums[0].rstrip("%"))
+        if "value" not in (fields or {}):
+            reportfacts.settle_value(final)
         d = _doc(f["document_id"])
         pg = reportfacts.pages(json.loads(d["doc_json"])["markdown"])
         final["check"] = reportfacts.check(final, pg)
@@ -777,6 +785,7 @@ def _resolve_facts_job(did: int) -> None:
              "check": json.loads(r["check_json"] or "null"), "review": json.loads(r["review_json"] or "null") or {}}
         prev = json.loads(r["agent_json"] or "null")
         f["waivers"] = (prev or {}).get("waivers") or []
+        reportfacts.settle_value(f)  # the number from the text, by code (none for a name or an unpicked range)
         f["check"] = reportfacts.check(f, pg)  # today's checks (spacing-tolerant, waivers honoured)
         if prev and prev.get("status") in ("escalated", "open") and prev.get("open"):
             o = prev["open"]
@@ -862,10 +871,12 @@ def _auto_review(e: dict) -> None:
         loop = d.get("loop") or {}
         did = d["id"]
         if loop.get("check_version") != reportfacts.CHECK_VERSION and any(f["document_id"] == did for f in e["facts"]):
-            _recheck_facts(did, json.loads(_doc(did)["doc_json"]))  # checks improved: facts they held up can settle
+            changed = _recheck_facts(did, json.loads(_doc(did)["doc_json"]))  # checks improved: facts they held up can settle
             auto_decide(did)
             _note_loop(did, check_version=reportfacts.CHECK_VERSION)
             e["facts"] = facts(e["id"])
+            if _reopen(did, lambda f: f["id"] in changed)[0]:  # handed to you, now read differently: back to the loop
+                continue
         if d["n_flagged"] and (loop.get("tables") or {}).get("version") != docingest.LOOP_VERSION and not d["error"]:
             job = ("resolve_tables", did)
         elif not d["facts_status"] and not any(f["document_id"] == did for f in e["facts"]):

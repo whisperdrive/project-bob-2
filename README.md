@@ -181,7 +181,9 @@ person before the next relies on it:
 2. **Report reference.** `bench/reportfacts.py` extracts the target, valuation date, conclusions (preferred value and
    range), assumptions (discount rate and basis, terminal growth or exit / RAB multiple, ...), approach and the
    sensitivity grid, each with a page and a verbatim quote. Code checks each one: the quote is on that page, the
-   values are in the quote, and quotes from unsettled tables are marked. A reviewer model accepts, corrects or
+   values are in the quote, and quotes from unsettled tables are marked. Each fact's number is worked out by
+   code from its printed text, never taken from a model: none for identity text (a name holding digits is still a
+   name) or for a range the report gives without a preferred point. A reviewer model accepts, corrects or
    rejects each fact and lists what was missed. None of this needs a button: once a report is read, the table
    loop, the extraction, the review and the fact loop start by themselves (opening an engagement also picks up
    any report they haven't run on yet). Every fact still open then goes through the review loop. Facts the
