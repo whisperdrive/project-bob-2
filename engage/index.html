@@ -1627,7 +1627,7 @@ function needs() {
   if (so?.differs?.length && so.confidence === "high" && Object.values(E.roles).filter(x => x.confirmed).length < 4)
     add(`The reviewer model would assign the roles differently (high confidence): ${so.differs.map(k => k.replace("_", " ")).join(", ")}`, "roles");
   if (!pf) for (const row of sum?.table?.rows || []) if (row.kind === "conclusion" && row.tie && !row.tie.ok)  // pf explains them
-    add(`${row.label} doesn't tie: rebuilt ${sumNum(row, row.values?.rebuilt)} vs the report's ${row.report}`, "summary");
+    add(`${row.label}: the overlay as saved gives ${sumNum(row, row.values?.saved)}, not the report's ${row.report} (the cell found for it, or another version of the overlay)`, "summary");
   for (const c of sum?.charts?.charts || []) if (c.picks && c.matches === false) add(`The report's chart “${c.caption || c.read?.title || c.id}” doesn't match its rebuild`, "summary");
   return out;
 }
@@ -1663,7 +1663,7 @@ function viewOverview() {
   else if (r) {
     const v = r.values, ly = v.rebuilt, ty = v.this_year, ch = typeof ty === "number" && typeof ly === "number" && !unreliable(t, r) ? ty - ly : null;
     top = `<div class="heads">
-      <div class="head"><div class="k">${esc(r.label)} · last year (report)</div><div class="v">${esc(r.report || sumNum(r, ly))}</div><div class="s">${r.tie ? (r.tie.ok ? "✓ rebuilt exactly from last year's files" : `✗ rebuilt as ${sumNum(r, ly)}`) : ""}</div></div>
+      <div class="head"><div class="k">${esc(r.label)} · last year (report)</div><div class="v">${esc(r.report || sumNum(r, ly))}</div><div class="s">${r.tie ? (r.tie.ok ? `✓ the overlay as saved ties${r.feed_moves ? `; on last year's client model ${sumNum(r, ly)}` : ", and rebuilds exactly"}` : `✗ the overlay as saved gives ${sumNum(r, r.values?.saved)}`) : ""}</div></div>
       <div class="head"><div class="k">This year, rolled forward</div><div class="v">${typeof ty === "number" && !unreliable(t, r) ? sumMoney(r, ty) : "–"}</div><div class="s">${unreliable(t, r) ? `needs rows: ${gapReasons(t.this_year_gaps).map(r => r.short).join("; ")}` : t.roll?.valuation_date ? `valuation date ${esc(t.roll.valuation_date)}` : "assign this year's model to roll forward"}</div></div>
       <div class="head"><div class="k">Change</div><div class="v">${ch == null ? "–" : (ch > 0 ? "+" : "") + sumMoney(r, ch)}</div><div class="s">${ch == null || !ly ? "" : `${(100 * ch / Math.abs(ly)).toFixed(1)}%`}${br ? ` · ${br.steps.filter(x => !x.total).length} steps in the bridge` : ""}</div></div></div>`;
   }
@@ -1679,7 +1679,9 @@ function confidence() {
   const docs = E.documents.filter(d => d.status === "done");
   out.push(docs.length ? ["", `Report read: ${f.length} facts, ${appr} approved${docs.reduce((a, d) => a + (d.n_flagged || 0), 0) ? ", some tables still to check" : ", every table checked"}`] : ["wait", "Report not read yet"]);
   const conc = (t?.rows || []).filter(r => r.kind === "conclusion" && r.tie);
-  out.push(conc.length ? [conc.every(r => r.tie.ok) ? "" : "no", `Last year rebuilt: ${conc.filter(r => r.tie.ok).length} of ${conc.length} conclusions tie to the report`] : ["wait", "Last year not rebuilt yet"]);
+  out.push(conc.length ? [conc.every(r => r.tie.ok) ? "" : "no", `Last year's overlay, as saved: ${conc.filter(r => r.tie.ok).length} of ${conc.length} conclusions tie to the report`] : ["wait", "Last year not rebuilt yet"]);
+  const moved = conc.filter(r => r.feed_moves).length;
+  if (conc.length) out.push([moved ? "no" : "", moved ? `Rebuilt on last year's client model: ${moved} of ${conc.length} move from as saved (the file isn't the overlay's version)` : "Rebuilt on last year's client model: the same as saved"]);
   const v = O?.validation;
   if (v) out.push([v.matched === v.cells ? "" : "no", `Python equals Excel in ${v.matched.toLocaleString()} of ${v.cells.toLocaleString()} formula cells`]);
   const ch = (OVR.sum?.charts?.charts || []).filter(c => c.picks);
@@ -2017,10 +2019,10 @@ function rollDates() {
 function summaryCard(d) {
   const t = d.table;
   if (!t) return `<div class="card"><p style="margin:0">${esc(d.why || "The summary needs the Python overlay.")}</p></div>`;
-  const cols = t.columns, name = {rebuilt: t.feeds.rebuilt === "prior" ? "Rebuilt on last year's model" : "Rebuilt (as saved)", this_year: "This year, rolled forward", scenario: "Your scenario"};
+  const cols = t.columns, name = {saved: "As saved (Excel)", rebuilt: t.feeds.rebuilt === "prior" ? "Rebuilt on last year's client model" : "Rebuilt in Python", this_year: "This year, rolled forward", scenario: "Your scenario"};
   const base = cols.includes("this_year") ? "this_year" : "rebuilt";
   const conc = t.rows.filter(r => r.kind === "conclusion"), ass = t.rows.filter(r => r.kind === "assumption"), app = t.rows.filter(r => r.kind === "approach");
-  const tick = r => r.tie ? (r.tie.ok ? ` <span class="pill ok" title="Rounds to the report's figure">✓</span>` : ` <span class="pill bad" title="The report says ${esc(r.tie.report)}">✗</span>`) : "";
+  const tick = r => r.tie ? (r.tie.ok ? ` <span class="pill ok" title="The overlay as saved rounds to the report's figure">✓</span>` : ` <span class="pill bad" title="The overlay as saved doesn't round to the report's ${esc(r.tie.report)}">✗</span>`) : "";
   const cell = (r, col) => {
     const v = r.values?.[col], lo = r.low?.[col], hi = r.high?.[col];
     const delta = col === "scenario" && typeof v === "number" && typeof r.values?.[base] === "number" && Math.abs(v - r.values[base]) > 1e-9
@@ -2028,7 +2030,8 @@ function summaryCard(d) {
     const z = col === "this_year" && r.zero_roll;  // this year's model at last year's date, against last year's
     const zero = z && z.value != null ? `<div class="small ${z.ok ? "muted" : "bad-text"}" title="This year's model at last year's valuation date (${esc(z.valuation_date || "")}), rolled by nothing: about last year's figure if the rows found carry the same numbers">at last year's date ${sumNum(r, z.value)}${z.ratio != null ? ` (${z.ratio.toFixed(2)}×)` : ""}</div>` : "";
     if ((col === "this_year" || col === "scenario") && unreliable(t, r)) return `<td class="num"><span class="small muted" title="Too little of this year's model was found for these figures">needs rows</span>${zero}</td>`;
-    return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "rebuilt" ? tick(r) : ""}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}${zero}` : `<span class="muted small">${outside.has(r.key) ? "outside the model" : "not in the overlay"}</span>`}</td>`;
+    const moves = col === "rebuilt" && r.feed_moves ? ` <span class="small bad-text" title="Fed from the file assigned as last year's client model, the overlay doesn't give what Excel saved: that file isn't the version the overlay was built on">moves</span>` : "";
+    return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "saved" ? tick(r) : ""}${moves}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}${zero}` : `<span class="muted small">${outside.has(r.key) ? "outside the model" : "not in the overlay"}</span>`}</td>`;
   };
   const lev = (r, col) => {
     const l = r.lever; if (!l) return `<td class="num muted small">${col === "scenario" ? "" : "–"}</td>`;
@@ -2048,7 +2051,7 @@ function summaryCard(d) {
   const V = E.overlay?.validation, gap = V && V.matched < V.cells ? V.cells - V.matched : 0;
   const errNote = errs.length ? `<div class="callout bad small" style="margin-top:10px"><b>${errs.length} figure(s) come out as Excel errors</b> (${esc([...new Set(errs.flatMap(r => cols.map(c => r.values?.[c]).filter(isErr)))].join(", "))}) in the Python overlay${gap ? `, which differs from Excel in ${gap.toLocaleString()} formula cell(s)` : ""}. <a href="#" data-go="doctor">The doctor</a> follows them back to the cells where they start, says why, and checks the files and rows being read.</div>` : "";
   return `<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-end"><div><h2>Valuation summary</h2>
-    <p class="sub" style="margin:0">Rows from last year's report. ${t.feeds.rebuilt === "prior" ? "The rebuild feeds the overlay from last year's client model;" : "The rebuild uses the values saved in the overlay;"} this year feeds it from this year's client model, rolled forward${t.roll?.valuation_date ? ` to ${esc(t.roll.valuation_date)}` : ""}.${rollDates()}</p></div>
+    <p class="sub" style="margin:0">Rows from last year's report. <b>As saved</b> is the overlay's own Excel values: last year's tie to the report is checked there, once. <b>${esc(name.rebuilt)}</b> is the Python overlay ${t.feeds.rebuilt === "prior" ? "fed from last year's client model: it shouldn't move from as saved" : "on the values saved in the overlay"}; this year feeds it from this year's client model, rolled forward${t.roll?.valuation_date ? ` to ${esc(t.roll.valuation_date)}` : ""}.${rollDates()}</p></div>
     <div class="row small" style="gap:10px;align-items:flex-end">${t.feeds.scenario === "current" ? `<label class="muted">Valuation date<br><input type="date" id="sumVd" value="${esc(SUM.vd || vdDefault)}"></label>` : ""}
       <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
       <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>

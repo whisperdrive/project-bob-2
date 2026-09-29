@@ -298,6 +298,19 @@ def main() -> None:
         fnd.locate = real
     print(f"zero roll: ok (at last year's date this year's model gives {zr['ratio']:.3f}x last year's; a wrong row "
           f"gives {row['zero_roll']['ratio']:.3f}x and holds the figure)")
+    # ---- the columns: last year's tie is checked on the overlay as saved; fed from last year's client model the
+    # rebuild shouldn't move from it, and says so where it does (the file isn't the version the overlay was built on)
+    t = ov.deep(lambda: ov.summary_table(sess, summary, FACTS))
+    row = next(r for r in t["rows"] if r.get("cell") == "Report!C5")
+    assert t["columns"][:2] == ["saved", "rebuilt"] and row["tie"]["ok"] and row["feed_moves"] is False, (t["columns"], row)
+    real_value = sess.ov.value
+    sess.ov.value = lambda s_, r_, c_: real_value(s_, r_, c_) * 1.01 if (s_, r_, c_) == ("Report", 5, 3) else real_value(s_, r_, c_)
+    try:
+        row = next(r for r in ov.deep(lambda: ov.summary_table(sess, summary, FACTS))["rows"] if r.get("cell") == "Report!C5")
+        assert not row["tie"]["ok"] and row["feed_moves"], row  # another version saved: no tie, and the feed moves
+    finally:
+        sess.ov.value = real_value
+    print("columns: ok (the tie on the overlay as saved; the rebuild on last year's client model checked against it)")
     agents_check(sess, summary, fnd, sure)
     ov.deep(sess.configure, "workbook")
     roles_check(res, db)

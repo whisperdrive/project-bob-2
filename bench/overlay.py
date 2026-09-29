@@ -881,10 +881,11 @@ def dcf_origins(sess: Session, summary: dict, cells: list[str]) -> dict:
 def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
                   valuation_date: str | None = None, months: int | None = None, method: dict | None = None) -> dict:
     """The report's summary, rebuilt and rolled forward. Rows: the report's conclusions (with their ranges), its
-    assumptions and its approach. Columns: the report; rebuilt on last year's model (the prior feed, or the values
-    saved in the overlay without one); this year, rolled forward (the current feed); and a scenario: this year
-    (last year without a current model) with the person's assumption changes, valuation date and discounting
-    method. The method reaches a figure through its trace (dcftrace.recompute): each discounting under it is
+    assumptions and its approach. Columns: the report; as saved (the overlay's own Excel values: last year's tie to
+    the report is checked here, once); rebuilt (the Python overlay fed from last year's client model, or from the
+    values saved in the overlay without one: it shouldn't move from as saved, and feed_moves says where it does);
+    this year, rolled forward (the current feed); and a scenario: this year (last year without a current model) with
+    the person's assumption changes, valuation date and discounting method. The method reaches a figure through its trace (dcftrace.recompute): each discounting under it is
     redone with the new method and the formulas above carry the results up; that is checked first by
     reproducing the module's own value with the method unchanged."""
     import dcf
@@ -945,7 +946,7 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         got = dict(zip(keys, sess.values(keys)))
         return got, roll, defaults, mo
 
-    cols = {}
+    cols = {"saved": {k: sess.ov.value(*k) for k in keys}}  # Excel's own values: where last year's tie is checked
     cols["rebuilt"], _, _, _ = read(base_feed, False)
     roll = None
     gaps = None
@@ -1070,12 +1071,16 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
                     continue
                 typed = part != "values" and db.execute("SELECT formula FROM cells WHERE sheet=? AND row=? AND col=?",
                                                         parse_a1(cell)).fetchone()[0] is None
-                row[part] = {col: val(col, cell) for col in cols if not typed or col == "rebuilt"}
+                row[part] = {col: val(col, cell) for col in cols if not typed or col in ("saved", "rebuilt")}
                 if typed:
                     row["range_note"] = (f"the range ends ({row.get('low_cell')}, {row.get('high_cell')}) are typed into the "
                                          f"overlay, not calculated, so they don't move with this year's model")
             if row.get("values"):
-                row["tie"] = tie(cols["rebuilt"].get(parse_a1(row["cell"])), row["report"], row["scale"], row["sign"])
+                k = parse_a1(row["cell"])
+                row["tie"] = tie(cols["saved"].get(k), row["report"], row["scale"], row["sign"])  # the overlay as saved
+                a, b = cols["saved"].get(k), cols["rebuilt"].get(k)
+                # fed from last year's client model it moves: that file isn't the version the overlay was built on
+                row["feed_moves"] = base_feed == "prior" and isinstance(a, float) and isinstance(b, float) and not dcf._close(a, b)
         elif row["kind"] == "assumption" and row.get("lever"):
             row["values"] = {col: val(col, row["lever"]["cell"]) for col in cols}
 
@@ -1135,7 +1140,7 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             row.setdefault("values", {})["scenario"] = dcftrace.recompute(live_db, t, redone)
             row["method_applied"] = True
     sess.configure("workbook")
-    return {"rows": rows, "columns": [c for c in ("rebuilt", "this_year", "scenario") if c in cols],
+    return {"rows": rows, "columns": [c for c in ("saved", "rebuilt", "this_year", "scenario") if c in cols],
             "feeds": {"rebuilt": base_feed, "this_year": this_feed, "scenario": sc_feed},
             "roll": roll, "scenario_roll": sc_roll, "detected_method": detected, "method": method,
             "changes": changes or {}, "notes": notes, "this_year_gaps": gaps, "rate_check": rate_check}

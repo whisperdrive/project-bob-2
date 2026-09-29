@@ -462,9 +462,11 @@ person before the next relies on it:
      stops it and asks. The line under the box shows the minutes dictated from this desk this month.
 7. **Summary** (`overlay.summary_table`, `bench/reportcharts.py`). Last year's report, rebuilt and rolled forward.
    - **Valuation summary.** The rows are the report's conclusions (with their low and high ends), its key
-     assumptions and its approach. The columns are the report; the rebuild on last year's client model (it
-     should tie, and each figure says whether it does at the report's printed precision); this year, rolled
-     forward onto this year's client model; and your scenario. In the scenario you can change any assumption
+     assumptions and its approach. The columns are the report; the overlay as saved (its own Excel values:
+     last year's tie to the report is checked here, once, at the report's printed precision); the Python overlay
+     rebuilt on last year's client model (it shouldn't move from as saved: where it does, the file assigned as
+     last year's client model isn't the version the overlay was built on, and the cell says so); this year,
+     rolled forward onto this year's client model; and your scenario. In the scenario you can change any assumption
      that has an input in the overlay, the valuation date, and the discounting method (end or mid-period,
      actual/actual or actual/365). The method reaches a figure through its trace: each discounting under it is
      redone, and the formulas above carry the results up (e.g. the mid value as the average of the low- and
