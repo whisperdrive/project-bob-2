@@ -293,7 +293,7 @@ def _core(db, sheet: str, row: int, col: int, call: tuple, whole: bool) -> dict 
                 return None
             cf_row, flows, fac = best
             cols = list(range(pr[2], pr[3] + 1))
-            m = _method(db, {c: fac.get(c, 0.0) for c in cols}, pr[0], cols)
+            m = _method(db, fac, pr[0], cols)  # the factors seen: a period with no cash flow shows none
             core.update(kind="pv row", what="SUM of a present-value row (each column a cash flow times a factor)",
                         cashflow=_range(*cf_row), pv_row=_range(*pr), pv=sum(pvv.values()), factors=fac, method=m)
             if m:

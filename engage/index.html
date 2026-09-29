@@ -1907,8 +1907,8 @@ function rollDates() {
   if (!r?.dates) return "";
   const d = r.dates, chk = k => c[k] ? "" : ` <span class="pill warn" title="Read from the file, not checked: check it in Files">not checked</span>`;
   if (r.date_check) return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}); this year's isn't known: this year's model is dated ${esc(d.current_client || "?")}${chk("current_client")}, which isn't after last year's, so nothing is rolled.</span>`;
-  if (d.this_year) return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(d.this_year)} (this year's, set for the engagement: <a href="#" id="sumThisVdEdit">change</a>), ${r.months} month(s); annual periods move only when a year-end has passed.</span>`;
-  return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(r.current_valuation_date || "?")} (this year's model${chk("current_client")}), ${r.months} month(s); annual periods move only when a year-end has passed.</span>`;
+  if (d.this_year) return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(d.this_year)} (this year's, set for the engagement: <a href="#" id="sumThisVdEdit">change</a>), ${r.months} month(s); ${r.fixed_horizon ? "the periods stay where they are: this year's model ends where last year's did (a fixed horizon), so only the valuation date moves." : "annual periods move only when a year-end has passed."}</span>`;
+  return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(r.current_valuation_date || "?")} (this year's model${chk("current_client")}), ${r.months} month(s); ${r.fixed_horizon ? "the periods stay where they are: this year's model ends where last year's did (a fixed horizon), so only the valuation date moves." : "annual periods move only when a year-end has passed."}</span>`;
 }
 function summaryCard(d) {
   const t = d.table;

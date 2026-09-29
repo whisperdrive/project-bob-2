@@ -346,17 +346,42 @@ class Session:
             self.stood_in[(s, r, c)] = v
         return v
 
+    def _ends_as_before(self, s: str) -> bool | None:
+        """Whether this year's model ends client sheet s's periods on the same date as last year's (None: no
+        telling: no current model, no such sheet this year, or no timeline)."""
+        if not self.current or not self.rowmap:
+            return None
+        to = self.rowmap.sheet_for(s)
+        a, b = (self.prior or self.ov).timeline(s), self.current.timeline(to) if to else {}
+        if len(a) < 2 or len(b) < 2:
+            return None
+        return max(a.values()) == max(b.values())
+
+    def fixed_horizon(self) -> bool:
+        """This year's client model ends its periods where last year's did, on most client sheets with a timeline:
+        a concession or asset life with an end date. Its period dates are the same dates both years, so rolling
+        forward moves the valuation date, not the periods: moving them would read periods past the end, which
+        this year's model doesn't have, and stand last year's values in for them."""
+        if ("fixed",) not in self._pshift:
+            sheets = self.client_sheets or {k[1] for k in self.ext_cached}
+            votes = [v for v in (self._ends_as_before(x) for x in sorted(sheets)) if v is not None]
+            self._pshift[("fixed",)] = bool(votes) and sum(votes) * 2 > len(votes)
+        return self._pshift[("fixed",)]
+
     def period_shift(self, wb: Workbook, s: str) -> int:
         """How far a sheet's periods move when rolling forward, in months: the whole periods that ended between
         last year's valuation date and the new one. The valuation date can move three months while an annual
         sheet's periods stay put (FY2026 is still FY2026) and a quarterly sheet's move one quarter; moving an
-        annual sheet by three months would land on dates it doesn't have."""
+        annual sheet by three months would land on dates it doesn't have. Nothing on a fixed horizon (this year's
+        model ends where last year's did): the dates are the same dates, only the valuation date moves."""
         if not self.shift:
             return 0
         key = (wb.path, s, self.shift)
         if key not in self._pshift:
             tl = sorted(set(wb.timeline(s).values()))
-            if len(tl) < 2:
+            if self.fixed_horizon():
+                out = 0
+            elif len(tl) < 2:
                 out = 0
             else:
                 gaps = sorted(b - a for a, b in zip(tl, tl[1:]))
@@ -658,7 +683,7 @@ def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: boo
 
 
 ZERO_ROLL = (0.75, 1.33)  # this year's model at last year's date, against last year's figure: about the same
-ROLL_PLAN = 3  # the rules' version: a roll planned by older rules is planned again when a session loads
+ROLL_PLAN = 4  # the rules' version: a roll planned by older rules is planned again when a session loads
 ROLL_MAX = 24  # months: a move beyond it from the timelines isn't a roll-forward
 ROLL_SHEETS = 5  # sheets: fewer can't show how far the timelines moved
 
@@ -670,6 +695,7 @@ def plan_roll(sess: Session, prior: dict | None, overlay: dict, same_file: bool,
     sess.base_vd = serial(date.fromisoformat(ov_vd[:10])) if ov_vd else None
     sess._pshift.clear()
     return {"prior_valuation_date": ov_vd, "months": months, "months_basis": basis,
+            "fixed_horizon": bool(sess.current) and sess.fixed_horizon(),
             "months_assumed": "assumed:" in basis, "date_check": basis.startswith("check:"),
             "current_valuation_date": new_vd, "plan": ROLL_PLAN,
             "dates": {"overlay": ov_vd, "prior_client": prior_vd, "current_client": current_vd, "this_year": this_vd}}

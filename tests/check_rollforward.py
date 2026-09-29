@@ -17,6 +17,8 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
   snapshot      a pasted copy of last year's rows (typed values) doesn't win over this year's own formula row
   agents        the rows the gate waits on settled by their numbers without a person, as the agents' picks
   unlabelled    a row with no label found by its numbers
+  horizon       a model that ends where last year's did (a fixed horizon): the periods stay, only the valuation
+                date moves; one whose horizon rolled on moves its periods as before
   layout        a model of mostly unlabelled rows: found at their own row numbers where the layout is unchanged;
                 a spacer row with nothing in it settled by code; the agents' picks from an older finder set aside
 
@@ -302,6 +304,7 @@ def main() -> None:
     snapshot_check(out)
     unlabelled_check(out)
     layout_check(out)
+    horizon_check(out)
     print("rollforward: all checks passed")
 
 
@@ -465,6 +468,48 @@ def unlabelled_check(out: Path) -> None:
     print(f"unlabelled: ok (a row with no label found by its numbers: {got['check']['text']})")
 
 
+def horizon_check(out: Path) -> None:
+    """Quarterly client models. When this year's ends on the same date as last year's (a concession with an end
+    date), a 12-month roll moves no period: the dates are the same dates, and moving them would read four quarters
+    past the end. When this year's horizon rolled on a year, the periods move by the quarters that ended."""
+    import xlsxwriter
+    import rowfind
+    from datetime import timedelta
+
+    def quarter_ends(y0, y1):
+        out = []
+        for y in range(y0, y1 + 1):
+            for m in (3, 6, 9, 12):
+                nxt = date(y + (m == 12), m % 12 + 1, 1)
+                out.append(nxt - timedelta(days=1))
+        return out
+
+    def book(name, ends):
+        path = out / f"{name}.xlsx"
+        wb = xlsxwriter.Workbook(path)
+        dt = wb.add_format({"num_format": "dd-mmm-yy"})
+        ws = wb.add_worksheet("Ops")
+        ws.write(2, 1, "Period ending")
+        ws.write(4, 1, "Revenue")
+        for k, d in enumerate(ends):
+            ws.write_datetime(2, 3 + k, d, dt)
+            ws.write_number(4, 3 + k, 100.0 + k)
+        wb.close()
+        return ov.Workbook(build_map.main(str(path), str(out / f"{name}_db"))["db"])
+    prior = book("hz_prior", quarter_ends(2017, 2030))
+
+    def shift(current):
+        sess = object.__new__(ov.Session)  # the roll-forward's own state, without compiling an overlay
+        sess.__dict__.update(prior=prior, ov=prior, current=current, client_sheets={"Ops"}, ext_cached={}, _pshift={},
+                             shift=12, base_vd=float(rp.serial(date(2025, 6, 30))),
+                             rowmap=rowfind.RowFinder(ov.RowMap(prior, current), prior, current))
+        return sess.fixed_horizon(), sess.period_shift(prior, "Ops")
+    assert shift(book("hz_fixed", quarter_ends(2017, 2030))) == (True, 0)
+    assert shift(book("hz_rolled", quarter_ends(2018, 2031))) == (False, 12)
+    print("horizon: ok (a model ending where last year's did keeps its periods on a 12-month roll; one whose "
+          "horizon rolled on moves them four quarters)")
+
+
 def layout_check(out: Path) -> None:
     """A model of mostly unlabelled rows. On a sheet laid out as before, an unlabelled row is found at its own row
     number, in place, whatever its numbers now (no model asked). On a sheet whose layout changed, a spacer row with
@@ -558,8 +603,11 @@ def starts_check(out: Path) -> None:
     wb.close()
     wbk = ov.Workbook(build_map.main(str(path), str(out / "starts_db"))["db"])
 
-    class Roll:  # the parts of a session period_shift uses
+    class Roll:  # the parts of a session period_shift uses (no current model: no fixed horizon to tell)
         _pshift = {}
+
+        def fixed_horizon(self):
+            return False
 
     def shift(frm, to):
         r = Roll()

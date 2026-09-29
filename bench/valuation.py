@@ -206,18 +206,21 @@ def _cell_term(db, ref, pv_key, vd, sign, depth):
 def read_factors(db, df_ref, cols: list[int], theirs: dict | None = None, sheet: str | None = None,
                  dates: str | None = None) -> dict | None:
     """Rate, valuation date, convention and cut-off that reproduce the workbook's factor row exactly; or, with
-    theirs, factors given by column (e.g. computed inside a formula), timed by sheet's period dates."""
+    theirs, factors given by column (e.g. computed inside a formula), timed by sheet's period dates. Only the
+    factors there are count: a period with no cash flow shows no factor (pv / cash flow can't be taken), and isn't
+    a factor of 0."""
     sheet, row = (df_ref[0], df_ref[1]) if df_ref else (sheet, None)
     if theirs is None:
         theirs = {c: dcf._num(v) or 0.0 for c, v in db.execute(
             "SELECT col, value FROM cells WHERE sheet=? AND row=?", (sheet, row)) if c in cols}
+        theirs.update({c: 0.0 for c in cols if c not in theirs})  # a factor row's blank cell is a factor of 0
     ends, ends_src = dcf.period_ends(db, sheet, cols, dates)
     live = [c for c in sorted(ends) if 0 < theirs.get(c, 0.0) < 1]
     if not live:
         return None
     last = max(live, key=lambda c: ends[c])
     after = [c for c in ends if ends[c] > ends[last]]
-    td = ends[last] if after and all(not theirs.get(c) for c in after) else None
+    td = ends[last] if after and all(c in theirs and not theirs[c] for c in after) else None  # zeros seen, not unseen
     rates = dcf.candidate_cells(db, "rate", 40)
     for vd_c in dcf.candidate_cells(db, "date", 20):
         vd = dcf._as_date(vd_c["value"])
@@ -231,7 +234,7 @@ def read_factors(db, df_ref, cols: list[int], theirs: dict | None = None, sheet:
                 t = math.log(probe[first]) / math.log(1 / 1.1)
                 rate = theirs[first] ** (-1 / t) - 1
                 ours = dcf.factors(ends, vd, rate, timing, dc, td)
-                if all(abs(ours[c] - theirs.get(c, 0.0)) < 1e-9 for c in ends):
+                if all(abs(ours[c] - theirs[c]) < 1e-9 for c in ends if c in theirs):
                     rate_cell = next((r for r in rates if abs(dcf._num(r["value"]) - rate) < 1e-9), None)
                     return {"rate": rate_cell["ref"] if rate_cell else round(rate, 12),
                             "rate_note": None if rate_cell else f"back-solved from the factors"
