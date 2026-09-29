@@ -10,7 +10,7 @@ from pathlib import Path
 
 from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import AuthenticationRequiredError
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
@@ -62,7 +62,8 @@ def check(sha: str):
 
 
 @app.post("/api/files")
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile = File(...), model: str | None = Form(None)):
+    """A workbook, identified and summarised with the model the page has selected (the chat model)."""
     library.UPLOADS.mkdir(exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=library.UPLOADS, suffix=".part")
     os.close(fd)
@@ -73,7 +74,8 @@ async def upload(file: UploadFile = File(...)):
             h.update(chunk)
             out.write(chunk)
     try:
-        status, rec = await run_in_threadpool(library.add_upload, tmp, file.filename, h.hexdigest())
+        status, rec = await run_in_threadpool(library.add_upload, tmp, file.filename, h.hexdigest(),
+                                              model if model in MODELS else None)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"status": status, "file": rec}

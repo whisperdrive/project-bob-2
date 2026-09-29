@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "out"
 UPLOADS = ROOT / "uploads"
 REGISTRY = OUT / "registry.db"
-SUMMARY_MODEL = "gpt-4o"
+SUMMARY_MODEL = "gpt-4o"  # the model when the upload didn't say which (the page's model selector does)
 SUPPORTED = (".xlsx", ".xlsm")
 
 _lock = threading.Lock()
@@ -48,8 +48,11 @@ def _conn() -> sqlite3.Connection:
     db = sqlite3.connect(REGISTRY, check_same_thread=False, timeout=30)
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
-    if "started_at" not in {r[1] for r in db.execute("PRAGMA table_info(files)")}:  # registries from before timings
+    have = {r[1] for r in db.execute("PRAGMA table_info(files)")}
+    if "started_at" not in have:  # registries from before timings
         db.execute("ALTER TABLE files ADD COLUMN started_at REAL")
+    if "model" not in have:  # ... and before the model was chosen on the page
+        db.execute("ALTER TABLE files ADD COLUMN model TEXT")
     return db
 
 
@@ -89,8 +92,9 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def add_upload(tmp_path: Path, filename: str, sha: str) -> tuple[str, dict]:
-    """Register an uploaded file. Returns ("duplicate", existing) or ("queued", new record)."""
+def add_upload(tmp_path: Path, filename: str, sha: str, model: str | None = None) -> tuple[str, dict]:
+    """Register an uploaded file. Returns ("duplicate", existing) or ("queued", new record). model: the model the
+    page has selected, for identifying the file and summarising its changes (SUMMARY_MODEL if none)."""
     existing = by_sha(sha)
     if existing:
         tmp_path.unlink(missing_ok=True)
@@ -102,16 +106,16 @@ def add_upload(tmp_path: Path, filename: str, sha: str) -> tuple[str, dict]:
     dest = UPLOADS / sha[:12] / Path(filename).name
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp_path.replace(dest)
-    return "queued", _register(dest, filename, sha)
+    return "queued", _register(dest, filename, sha, model=model)
 
 
-def _register(path: Path, filename: str, sha: str, out_dir: Path | None = None) -> dict:
+def _register(path: Path, filename: str, sha: str, out_dir: Path | None = None, model: str | None = None) -> dict:
     out_dir = out_dir or OUT / f"{Path(filename).stem}__{sha[:8]}"
     with _lock, _conn() as db:
         cur = db.execute("""INSERT INTO files(sha256, filename, size, uploaded_at, source_path, status, step, pct,
-                            out_dir, db_path) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                            out_dir, db_path, model) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                          (sha, filename, path.stat().st_size, time.time(), str(path), "queued", "Waiting to start",
-                          0, str(out_dir), str(out_dir / "model.db")))
+                          0, str(out_dir), str(out_dir / "model.db"), model))
         fid = cur.lastrowid
     _jobs.put(fid)
     return get(fid)
@@ -189,7 +193,7 @@ def _stage(fid: int, lo: float, hi: float):
     return lambda frac, msg: _update(fid, pct=round(lo + (hi - lo) * frac, 3), step=msg)
 
 
-def compare(fid: int, prev_id: int | None) -> None:
+def compare(fid: int, prev_id: int | None, model: str | None = None) -> None:
     """(Re)compute changes of fid against prev_id and store them with a short written summary."""
     if prev_id is None:
         _update(fid, previous_id=None, diff_json=None, diff_summary=None)
@@ -201,7 +205,7 @@ def compare(fid: int, prev_id: int | None) -> None:
     d["previous"] = {"id": prev_id, "filename": prev["filename"]}
     d["warnings"] = _warnings(d, me)
     _update(fid, previous_id=prev_id, diff_json=json.dumps(d, default=str), diff_summary=None)
-    _update(fid, diff_summary=summarize(d, prev, me))
+    _update(fid, diff_summary=summarize(d, prev, me, model=model or SUMMARY_MODEL))
 
 
 def _warnings(d: dict, me: dict) -> list[str]:
@@ -271,8 +275,9 @@ def _process(fid: int) -> None:
         import extlinks  # now, while nothing else reads this model.db: later they'd be written under readers' feet
         extlinks.build(f["source_path"], f["db_path"])
 
-        _update(fid, step="Identifying target and valuation date", pct=0.82)
-        ident = identmod.identify(f["db_path"], f["filename"], file_id=fid)
+        model = f.get("model") or SUMMARY_MODEL  # the model selected on the page that uploaded it
+        _update(fid, step=f"Identifying target and valuation date ({model})", pct=0.82)
+        ident = identmod.identify(f["db_path"], f["filename"], model=model, file_id=fid)
         _update(fid, target_name=ident.get("target_name"), project_name=ident.get("project_name"),
                 valuation_date=ident.get("valuation_date"), identity_json=json.dumps(ident, default=str))
 
@@ -280,7 +285,7 @@ def _process(fid: int) -> None:
         prev = find_previous(fid)
         if prev:
             _update(fid, step=f"Comparing with {prev['filename']}", pct=0.92)
-        compare(fid, prev["id"] if prev else None)
+        compare(fid, prev["id"] if prev else None, model)
         _update(fid, status="done", step="Done", pct=1.0, processed_at=time.time())
         _relink_later(fid)
     except Exception as e:
@@ -288,14 +293,15 @@ def _process(fid: int) -> None:
         _update(fid, status="error", step="Failed", error=f"{type(e).__name__}: {e}")
 
 
-def rebuild(fid: int) -> dict:
-    """Process a file again from scratch, done or failed (its model.db is rebuilt for everyone using it)."""
+def rebuild(fid: int, model: str | None = None) -> dict:
+    """Process a file again from scratch, done or failed (its model.db is rebuilt for everyone using it); model:
+    the model now selected on the page, else the one it was processed with."""
     f = get(fid)
     if not f:
         raise ValueError("no such file")
     if f["status"] in ("queued", "processing"):
         raise ValueError(f"{f['filename']} is already being processed")
-    _update(fid, status="queued", step="Waiting to start", pct=0, error=None)
+    _update(fid, status="queued", step="Waiting to start", pct=0, error=None, **({"model": model} if model else {}))
     _jobs.put(fid)
     return get(fid)
 

@@ -276,11 +276,17 @@ def delete(eid: int) -> None:
 
 # ---- uploads ------------------------------------------------------------------------------------------------
 
+def _model(eid: int) -> str:
+    """The engagement's model, as the header's Models selector has it."""
+    rows = _q("SELECT model FROM engagements WHERE id=?", eid)
+    return (rows[0]["model"] if rows else None) or DEFAULT_MODEL
+
+
 def add_upload(eid: int, tmp: Path, filename: str, sha: str) -> dict:
     """Workbooks -> the shared library (deduplicated across the app); reports -> this engagement's documents."""
     ext = Path(filename).suffix.lower()
-    if ext in library.SUPPORTED:
-        status, rec = library.add_upload(tmp, filename, sha)
+    if ext in library.SUPPORTED:  # identified and summarised with the engagement's model (the Models selector)
+        status, rec = library.add_upload(tmp, filename, sha, _model(eid))
         with _lock, _conn() as db:
             db.execute("INSERT OR IGNORE INTO eng_files VALUES (?,?,?)", (eid, rec["id"], time.time()))
         _touch(eid)
@@ -1945,7 +1951,7 @@ def rebuild_workbook(eid: int, fid: int) -> dict:
                 _SESSIONS.pop(other, None)
     for key in [k for k in _SHEET_NAMES if k[0] == w["db_path"]]:
         _SHEET_NAMES.pop(key, None)
-    return library.rebuild(fid)
+    return library.rebuild(fid, _model(eid))
 
 
 def retry_document(did: int) -> None:

@@ -405,7 +405,7 @@ async function uploadFile(file) {
       openFile(known.id); loadFiles(); return;
     }
     const res = await new Promise((resolve, reject) => {
-      const x = new XMLHttpRequest(); const fd = new FormData(); fd.append("file", file);
+      const x = new XMLHttpRequest(); const fd = new FormData(); fd.append("file", file); fd.append("model", $("#model").value);
       x.upload.onprogress = e => e.lengthComputable && setU(e.loaded / e.total, `Uploading ${Math.round(100 * e.loaded / e.total)}%`);
       x.onload = () => x.status < 300 ? resolve(JSON.parse(x.responseText)) : reject(new Error(JSON.parse(x.responseText).detail || x.statusText));
       x.onerror = () => reject(new Error("upload failed; is the server running?"));

@@ -44,7 +44,8 @@ Drop .xlsx/.xlsm files on the page. Each file is:
 2. **Built** into `out/<stem>__<sha8>/model.db` by build_map.py, with per-sheet progress in the UI. Each
    version keeps its own folder, so older versions stay available.
 3. **Identified** (`bench/identify.py`): SQL collects candidate cells (named ranges like `Val_date`, rows
-   labelled "Valuation date", sheet-header text), then one gpt-4o call picks the target, code name and
+   labelled "Valuation date", sheet-header text), then one call to the selected model (the Valuation
+   Desk's engagement model, or the Model Desk's chat model, when the file was uploaded) picks the target, code name and
    valuation date and cites the cell. Rows labelled exactly "Valuation date" come first, before rows that only
    mention one (a model that rolls back to last year's date has many, such as "Roll forward valuation date (to
    …)"), and a date is never read from a label's text. Shown as "Check" until the user confirms or corrects it.
@@ -55,7 +56,7 @@ Drop .xlsx/.xlsm files on the page. Each file is:
    Reports inputs changed (with timeline period), key outputs that moved, formula changes, hard-code/formula
    swaps, sheets and named ranges, plus
    warnings when a file looks un-recalculated (inputs changed but no results moved, the valuation-date input
-   disagrees with the calculated date, or formula results are blank). gpt-4o writes a short summary.
+   disagrees with the calculated date, or formula results are blank). The same model writes a short summary.
 
 The chat (Ask tab) gets the confirmed target, valuation date and change summary as context. Tool calls are
 chosen by the model on Azure but run locally (`agent._run_tool` against model.db); only their text results
