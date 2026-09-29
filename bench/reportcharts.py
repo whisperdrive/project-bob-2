@@ -271,7 +271,7 @@ def find(doc: dict, pdf_path: str | None, out_dir: str | Path) -> list[dict]:
                     for ch in [c for c in found if c["page"] == pno and c["source"] == "picture"]:
                         t = next((t for t in doc.get("tables") or [] if t["id"] == ch["id"]), {})
                         fb = t.get("bbox")
-                        if fb and _overlaps(fb, plot) and _share(fb, plot) >= 0.5:
+                        if fb and _overlaps(fb, plot) and max(_share(fb, plot), _share(plot, fb)) >= 0.5:
                             found.remove(ch)
                 for k, (bb, plot) in enumerate(drawn, 1):
                     cid = f"p{pno:03d}-c{k}"

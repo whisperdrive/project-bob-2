@@ -1239,7 +1239,8 @@ def summary_view(eid: int, changes: dict | None = None, valuation_date: str | No
         import reportcharts
         for ch in out["charts"].get("charts") or []:  # files saved before the compare view: work it out now
             if "compare" not in ch and ch.get("read", {}).get("series") and reportcharts.time_axis(ch["read"].get("x_labels")):
-                ch["compare"] = reportcharts.comparison(ch["read"], ch.get("spec") if ch.get("spec", {}).get("labels") else None)
+                spec = ch.get("spec") or {}
+                ch["compare"] = reportcharts.comparison(ch["read"], spec if spec.get("frequency") == "annual" else None)
     elif f and e.get("overlay_status") == "done" and not e.get("charts_status"):
         recreate_charts(eid)
         out.update(charts_status="queued", charts_step="Waiting to start")
@@ -1285,7 +1286,8 @@ def chart_pick(eid: int, cid: str, series: int, rows: list[dict] | None) -> dict
     years = reportcharts.time_axis(read.get("x_labels"))
     if not years or not 0 <= series < len(read["series"]):
         raise ValueError("that chart isn't one over years, or has no such series")
-    picks = list(ch.get("picks") or [None] * len(read["series"]))
+    # picks saved before the recreation was drawn from year totals have none: they are picked again
+    picks = [p if p and "years" in p else None for p in (ch.get("picks") or [None] * len(read["series"]))]
     if rows:
         if len({(r["book"], r["sheet"]) for r in rows}) > 1:
             raise ValueError("pick rows from one sheet of one workbook")

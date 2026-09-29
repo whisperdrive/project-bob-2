@@ -188,6 +188,9 @@ def main() -> None:
                        "bbox": [65.5, 101.2, 408.3, 363.3], "png": "tables/p001-t1.png"}]}
     again = [c for c in rc.find(doc, str(out / "report.pdf"), out) if c["page"] == 1]
     assert [(c["source"], c["caption"]) for c in again] == [("drawn in the PDF", "Revenue")], again
+    doc["tables"][0]["bbox"] = [36.0, 60.0, 412.0, 420.0]  # ... or the whole panel, title and legend too
+    again = [c for c in rc.find(doc, str(out / "report.pdf"), out) if c["page"] == 1]
+    assert [(c["source"], c["caption"]) for c in again] == [("drawn in the PDF", "Revenue")], again
     print("finding: ok")
 
     # ---- time axis
