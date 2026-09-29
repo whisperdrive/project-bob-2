@@ -19,6 +19,8 @@ A candidate of another shape counts for less: last year's row calculated (formul
 or the other way round. A reconciliation sheet of pasted values ("LINKED EBITDA") has last year's history exactly
 and a full series, and would otherwise win every row it copies.
 A person's pick for a row always wins: a row, or last year's values kept on purpose (STAND_IN). explain() gives what was found for a row and why, with the alternatives.
+A row with nothing to find (no label, no numbers, no formulas last year: a spacer inside a range a formula reads) is
+settled by code: its blanks stand in, and no model is asked about it.
 """
 import bisect
 import re
@@ -33,6 +35,9 @@ CHECK_GAP = 0.15     # a row carries last year's numbers when its median differe
 CHECK_PERIODS = 3    # ... over at least this many periods side by side
 SHAPE = 0.6           # a candidate whose share of formulas differs from last year's row's by this much is another shape
 STAND_IN = "stand-in"  # a person's pick: keep last year's values for the row
+LAYOUT = 0.9         # an unlabelled row found at its own row number, on a sheet laid out as before
+VERSION = 2          # bump when finding changes: the agents' picks made under another version are dropped and redone
+                     # (2: unlabelled rows followed by the layout, blank rows settled by code)
 
 
 def _norm(label: str) -> str:
@@ -56,6 +61,7 @@ class RowFinder:
         self._cache: dict = {}
         self._idx = None
         self._shapes: dict = {}
+        self._numeric: dict = {}         # {sheet: {rows with a number other than 0}} in last year's model
 
     # ---- what each model has ---------------------------------------------------------------------------------
     def _index(self):
@@ -166,7 +172,9 @@ class RowFinder:
         if to == s:
             r2, how = self.rowmap.match(s, r)
             if r2:
-                return [((s, r2), 1.0 if how.startswith("same label") else 0.4, how)]
+                unlabelled = not self.prior.labels().get((s, r)) and not self.current.labels().get((s, r2))
+                return [((s, r2), 1.0 if how.startswith("same label") else
+                         LAYOUT if how.startswith("same row") and unlabelled else 0.4, how)]
         lab = _norm(self.prior.labels().get((s, r), ""))
         if to and to != s and lab:  # the sheet was renamed: the label on the sheet it became, occurrence as before
             n = sum(1 for (sh, rr), l in self.prior.labels().items() if sh == s and rr <= r and _norm(l) == lab)
@@ -369,13 +377,26 @@ class RowFinder:
             if strong or total >= 0.3:
                 # the same label in the same place, of the same kind: confident even where there's no history to
                 # add (a single value, no timeline)
-                res["in_place"] = k[0] == s and "label" in ev and ev["label"][0] >= 1.0 and k not in odd
+                res["in_place"] = k[0] == s and "label" in ev and k not in odd and (
+                    ev["label"][0] >= 1.0 or (ev["label"][0] >= LAYOUT and k[1] == r))
                 res.update(found=k, confidence=round(max(0.0, min(1.0, total)), 2),
                            how=max(ev.items(), key=lambda kv: self.WEIGHTS[kv[0]] * kv[1][0])[0],
                            evidence=[(n, tx) for n, (_, tx) in sorted(ev.items(), key=lambda kv: -self.WEIGHTS[kv[0]] * kv[1][0])])
                 res["alternatives"] = [a for a in res["alternatives"] if a["row"] != f"{k[0]}!r{k[1]}"]
+        if not (res["found"] and (res["confidence"] >= CONFIDENT or res["in_place"])) and self.blank(s, r):
+            res.update(found=None, how="nothing to find", confidence=1.0, in_place=False, stand_in=True, blank=True,
+                       by="code", evidence=[("code", "last year's row has no label, no numbers and no formulas: nothing "
+                                                     "to find, so its blanks stand in")])
         self._cache[key] = res
         return res
+
+    def blank(self, s: str, r: int) -> bool:
+        """Last year's row has nothing to find: no label, no number other than 0, no formulas."""
+        if self.prior.labels().get((s, r)) or (self._shape(self.prior, (s, r)) or (0, 0))[0]:
+            return False
+        if s not in self._numeric:
+            self._numeric[s] = {rr for (rr, _c), v in self.prior.sheet(s).items() if isinstance(v, float) and v}
+        return r not in self._numeric[s]
 
     def family(self) -> float:
         """How alike the two models are: the share of line-item labels they have in common (a new version of a
@@ -396,10 +417,13 @@ class RowFinder:
         return self.rowmap.why(s, r, labels) + " (and no other way found it: not by its history, words, neighbours or banner)"
 
     def confident(self, s: str, r: int) -> bool:
-        """Found well enough to roll on without a person looking: picked (a row, or last year's values kept), a
-        confidence of CONFIDENT or more, or the same label in the same place."""
+        """Settled well enough to roll on without a person looking: picked (a row, or last year's values kept; a
+        person's pick or the agents'), nothing to find, a confidence of CONFIDENT or more, or found in place (the
+        same label, or an unlabelled row at its own row number on a sheet laid out as before)."""
+        if (s, r) in self.picks:
+            return True
         ex = self.explain(s, r)
-        return ex["how"] == "your pick" or (ex["found"] is not None and (ex["confidence"] >= CONFIDENT or ex["in_place"]))
+        return bool(ex.get("blank")) or (ex["found"] is not None and (ex["confidence"] >= CONFIDENT or ex["in_place"]))
 
     def pick(self, s: str, r: int, to, by: str = "you") -> None:
         """A choice for a row: (sheet, row), STAND_IN (keep last year's values), or None (back to what's found);

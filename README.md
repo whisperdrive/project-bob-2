@@ -333,7 +333,10 @@ person before the next relies on it:
    found or mostly stands in, or, with no discounting recognised under it, while under half of the client
    values the figures read are found; all are while a row the figures read is found but blank this year in more
    than a fifth of its periods, or found with a confidence under 0.5 (or not at all) and not yet checked by a
-   person (the same label in the same place counts as found well). Rows of period flags and dates found no
+   person (the same label in the same place counts as found well, and so does a row with no label at its own row
+   number on a sheet laid out as before, where most labelled rows are where they were). A row with nothing to
+   find (no label, no numbers and no formulas last year: a spacer inside a range a formula reads) is settled by
+   code, its blanks standing in, and no model is asked about it. Rows of period flags and dates found no
    better are worked out from the rolled period dates where one relation held for every period last year
    (the period's date, end or start, its year, 1 after the valuation date or up to it, a constant), and
    count like any other row where none did. Last, the **zero-roll check**: this year's model at last year's
@@ -347,8 +350,11 @@ person before the next relies on it:
    `rowfind` has for it and rows whose values are close to last year's in several periods (which finds a row
    with no label at all). A candidate that carries last year's numbers (over the periods both have, a median
    difference within 15%, the same kind of row, not blank where last year's has values) is taken as the
-   agents' pick, with the numbers as the reason. The agents' picks count as settled and show as theirs; a
-   person's pick always wins over them. The agents never keep last year's values for a row the DCF's cash
+   agents' pick, with the numbers as the reason. The agents' picks count as settled and show as theirs,
+   including last year's values kept for a row that isn't a DCF cash-flow or timing row (last year's timing flags
+   would discount at last year's dates); a person's pick always wins over them. Their picks carry the row
+   finder's version: when finding changes, the agents' older picks are set aside and they look at those rows
+   again, a person's picks kept. Their model calls are tagged with the engagement and the step, like every job's. The agents never keep last year's values for a row the DCF's cash
    flows come from: that figure stays held, saying they couldn't find it.
    Then, for the rows the numbers didn't settle, the models: the engagement's model (luna) gets a dossier on
    last year's row that doesn't lean on its label (sheet, section, the labelled rows around it, a formula, the

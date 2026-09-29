@@ -17,6 +17,8 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
   snapshot      a pasted copy of last year's rows (typed values) doesn't win over this year's own formula row
   agents        the rows the gate waits on settled by their numbers without a person, as the agents' picks
   unlabelled    a row with no label found by its numbers
+  layout        a model of mostly unlabelled rows: found at their own row numbers where the layout is unchanged;
+                a spacer row with nothing in it settled by code; the agents' picks from an older finder set aside
 
     uv run python tests/check_rollforward.py
 """
@@ -299,6 +301,7 @@ def main() -> None:
     catalogue_check(out)
     snapshot_check(out)
     unlabelled_check(out)
+    layout_check(out)
     print("rollforward: all checks passed")
 
 
@@ -342,9 +345,12 @@ class Scripted:
     def __init__(self, luna: dict, sol: dict, advice: list | None = None):
         self.luna, self.sol, self.prompts = {k: list(v) for k, v in luna.items()}, {k: list(v) for k, v in sol.items()}, []
         self.advice = list(advice or [{"rows": [], "done": True}])
+        self.tags = []  # the call log's tags each call was made under (the job's, on the agents' threads too)
 
     def _call(self, model, prompt, png, schema, purpose):
+        import calllog
         self.prompts.append((model, prompt))
+        self.tags.append(calllog._CTX.get().get("engagement"))
         if purpose == "row-advice":
             return self.advice.pop(0) if len(self.advice) > 1 else self.advice[0]
         row = prompt.split("Last year's row:", 1)[1]
@@ -371,7 +377,10 @@ def models_check(sess, summary, fnd, sure) -> None:
                          "CF!r3": [act("inspect", r="CF!r3"), act("propose", r="CF!r3", why="the period dates")]},
                         {"CF!r11": [ok("reject", "a reserve top-up isn't the distributions"), ok("accept", "same line item")],
                          "CF!r3": [ok("accept", "the same period dates")]})
-        res = rowagent.run(sess, summary, FACTS, reader=luna)
+        import calllog
+        with calllog.tag(engagement=7, step="row agents"):  # as the job runs it: every call, on every thread, tagged
+            res = rowagent.run(sess, summary, FACTS, reader=luna)
+        assert luna.tags and set(luna.tags) == {7}, luna.tags
         got = {d["row"]: (d["decision"], d["how"], d.get("calls")) for d in res["decisions"]}
         assert got["CF!r11"] == ("CF!r15", "agents", {"luna": 3, "sol": 2}), got
         assert got["CF!r3"][:2] == ("CF!r3", "agents") and res["reliable_after"], (got, res)
@@ -399,7 +408,7 @@ def models_check(sess, summary, fnd, sure) -> None:
         for k in doubt:
             ov.deep(fnd.pick, *k, None)
     print("models: ok (luna searches and proposes, sol rejects a wrong row and accepts the right one with the numbers; "
-          "limits hold; no last year's values for a cash-flow row)")
+          "limits hold; no last year's values for a cash-flow row; every call tagged with the engagement)")
     # ---- rounds against the zero-roll check: an earlier pick of the agents (the reserve top-up for the
     # distributions) passes as settled, but the figure at last year's date is far off; sol, advising, sends the
     # row back with what to look for, and luna finds the right one
@@ -454,6 +463,63 @@ def unlabelled_check(out: Path) -> None:
     got = rowagent.by_numbers(f, "Output", 5)
     assert got and got["to"] == ("Valuation", 7) and got["check"]["ok"], got
     print(f"unlabelled: ok (a row with no label found by its numbers: {got['check']['text']})")
+
+
+def layout_check(out: Path) -> None:
+    """A model of mostly unlabelled rows. On a sheet laid out as before, an unlabelled row is found at its own row
+    number, in place, whatever its numbers now (no model asked). On a sheet whose layout changed, a spacer row with
+    no label, no numbers and no formulas is settled by code: nothing to find. An agents' stand-in settles a row. The
+    agents' picks made by an older row finder are set aside when picks are loaded, a person's kept."""
+    import xlsxwriter
+    import engagement
+    import rowfind
+    years = [date(2024 + k, 6, 30) for k in range(6)]
+
+    def book(path, sheets):  # rows: (label, values or None); None leaves the row empty
+        wb = xlsxwriter.Workbook(path)
+        dt = wb.add_format({"num_format": "dd-mmm-yy"})
+        for name, rows in sheets.items():
+            ws = wb.add_worksheet(name)
+            ws.write(2, 1, "Period ending")
+            for k, d in enumerate(years):
+                ws.write_datetime(2, 3 + k, d, dt)
+            for i, (label, vals) in enumerate(rows):
+                if label:
+                    ws.write(4 + i, 1, label)
+                for k, v in enumerate(vals or []):
+                    ws.write_number(4 + i, 3 + k, v)
+        wb.close()
+        return build_map.main(str(path), str(out / (path.stem + "_db")))["db"]
+    series = lambda a, step: [a + step * k for k in range(6)]
+    prior = book(out / "lay_prior.xlsx", {
+        "Same": [("Revenue", series(100, 5)), ("", series(40, 2)), ("", None), ("Costs", series(60, 3))],
+        "Moved": [("Opex", series(30, 1)), ("", None), ("", series(11, 1)), ("Capex", series(8, 1))]})
+    current = book(out / "lay_current.xlsx", {
+        "Same": [("Revenue", series(104, 5)), ("", series(90, 7)), ("", None), ("Costs", series(61, 3))],
+        "Moved": [("New item", series(1, 1)), ("Another", series(2, 1)), ("Opex", series(30, 1)), ("", None),
+                  ("", series(500, 9)), ("Capex", series(8, 1))]})
+    a, b = ov.Workbook(prior), ov.Workbook(current)
+    f = rowfind.RowFinder(ov.RowMap(a, b), a, b)
+    ex = f.explain("Same", 6)
+    assert ex["found"] == ("Same", 6) and ex["in_place"] and f.confident("Same", 6), ex
+    ex = f.explain("Moved", 6)
+    assert ex["found"] is None and ex.get("blank") and ex["by"] == "code" and f.confident("Moved", 6), ex
+    assert not f.blank("Moved", 7) and not f.confident("Moved", 7), f.explain("Moved", 7)
+    f.pick("Moved", 7, rowfind.STAND_IN, "agent")
+    assert f.confident("Moved", 7), "the agents' stand-in settles a row"
+
+    was = engagement.OUT
+    engagement.OUT = out
+    try:
+        f2 = rowfind.RowFinder(ov.RowMap(a, b), a, b)
+        engagement._write_rowpicks(99, {"Moved!r7": {"to": "-", "by": "agent"}, "Same!r8": "Same!r8",
+                                        "Moved!r5": {"to": "Moved!r7", "by": "agent", "v": rowfind.VERSION}})
+        sess = type("S", (), {"rowmap": f2})
+        assert engagement._load_rowpicks(99, sess) == 1 and set(f2.picks) == {("Same", 8), ("Moved", 5)}, f2.picks
+    finally:
+        engagement.OUT = was
+    print("layout: ok (unlabelled rows found at their own row numbers on an unchanged layout; a spacer settled by "
+          "code; the agents' stand-in settles; their picks from an older finder set aside, a person's kept)")
 
 
 def timelines_check() -> None:

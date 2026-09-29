@@ -1300,9 +1300,14 @@ def overlay_session(eid: int):
                          None if w["same_file"] else (w["prior"] or {}).get("db_path"), (w["current"] or {}).get("db_path"),
                          w["client_link"], w.get("client_sheets") or ((w["prior"] or {}).get("sheets") if w["same_file"] else None))
     ovmod.deep(_load_holds, eid, sess)
-    _load_rowpicks(eid, sess)
+    stale = _load_rowpicks(eid, sess)
     _sync_roll(eid, sess, summary)
     _SESSIONS[eid] = (sess, summary)
+    if stale:  # the agents' picks from an older row finder were set aside: they look at those rows again
+        try:
+            start_rows(eid)
+        except ValueError:
+            pass
     return _SESSIONS[eid]
 
 
@@ -1604,18 +1609,25 @@ def _rowpicks_file(eid: int) -> Path:
     return OUT / "overlays" / f"e{eid}" / "rowpicks.json"
 
 
-def _load_rowpicks(eid: int, sess) -> None:
-    """A person's choices of this year's row for last year's rows ({"CF!r11": "CF!r15"}), for the roll-forward."""
+def _load_rowpicks(eid: int, sess) -> int:
+    """A person's choices of this year's row for last year's rows ({"CF!r11": "CF!r15"}), and the agents', for the
+    roll-forward. The agents' picks made by another version of the row finder are left out (it may now find those
+    rows itself, and better): returns how many, so the agents can look again."""
     if not sess.rowmap:
-        return
+        return 0
     import rowfind
+    stale = 0
     for a, b in _read_rowpicks(eid).items():
         try:  # "[1]Sheet!r9" (a row of the linked client model) is Sheet row 9, as when it was picked
             s, r = _row_ref(a)
             to, by = (b.get("to"), b.get("by", "you")) if isinstance(b, dict) else (b, "you")
+            if by == "agent" and b.get("v") != rowfind.VERSION:
+                stale += 1
+                continue
             sess.rowmap.pick(s, r, rowfind.STAND_IN if to == "-" else _row_ref(to) if to else None, by)
         except ValueError:
             continue
+    return stale
 
 
 def _read_rowpicks(eid: int) -> dict:
@@ -1740,6 +1752,7 @@ def start_rows(eid: int) -> dict:
 
 def _rows_job(eid: int) -> None:
     import rowagent
+    import rowfind
     step = lambda msg: _set("engagements", eid, rows_status="running", rows_step=msg)
     step("Loading the Python overlay")
     sess, summary = overlay_session(eid)
@@ -1759,7 +1772,7 @@ def _rows_job(eid: int) -> None:
     picks = {k: v for k, v in _read_rowpicks(eid).items() if not (isinstance(v, dict) and v.get("by") == "agent")}
     for d in res["decisions"]:
         if d.get("decision") and d["row"] not in picks:
-            picks[d["row"]] = {"to": d["decision"], "by": "agent", "why": d.get("why"),
+            picks[d["row"]] = {"to": d["decision"], "by": "agent", "v": rowfind.VERSION, "why": d.get("why"),
                                "checked_by": "the numbers" if d.get("how") == "numbers" else d.get("review") or d.get("how")}
     _write_rowpicks(eid, picks)
     res["at"] = time.time()

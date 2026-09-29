@@ -923,9 +923,10 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         # the rows the discountings' cash flows come from decide: each found this year (or picked), with its
         # periods; without discountings found, at least half of all the client values the figures read
         read_by_row = Counter((s_, r_) for (s_, r_, _c) in sess.client_reads)
-        # last year's values kept on purpose, by a person: the agents may keep them for other rows, not for the
-        # rows the DCF's cash flows come from (keeping every hard row would pass every check with last year's numbers)
-        kept = lambda k: sess.rowmap.explain(*k).get("stand_in") and sess.rowmap.explain(*k).get("by", "you") == "you"
+        # last year's values kept on purpose, by a person, or a row with nothing to find (code): the agents may keep
+        # them for other rows, not for the rows the DCF's cash flows come from (keeping every hard row would pass
+        # every check with last year's numbers)
+        kept = lambda k: sess.rowmap.explain(*k).get("stand_in") and sess.rowmap.explain(*k).get("by", "you") in ("you", "code")
         missing = [k for k in origins if not kept(k) and (sess.rowmap.locate(*k) is None
                    or by_row.get(k, 0) > 0.5 * max(1, read_by_row.get(k, 0)))]
         # rows found this year but blank in more than a fifth of the periods read, where last year's had values:
@@ -941,9 +942,11 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         timing_rows = {(s_, r_) for s_, r_, _w in timing}
         weak_rows = [k for k in sorted(read_by_row) if k not in missing and k not in blank_rows
                      and k not in timing_rows and not sess.rowmap.confident(*k)]
-        # the timing the discounting depends on counts too: found well, or worked out from the period dates
+        # the timing the discounting depends on counts too: found well, or worked out from the period dates. The
+        # agents keeping last year's timing doesn't settle it: last year's flags would discount at last year's dates
+        agents_kept = lambda k: sess.rowmap.explain(*k).get("stand_in") and sess.rowmap.explain(*k).get("by") == "agent"
         timing_open = [k for k in sorted(timing_rows) if k in read_by_row and k not in sess.derived
-                       and not sess.rowmap.confident(*k)]
+                       and (not sess.rowmap.confident(*k) or agents_kept(k))]
 
         def why_missing(k):
             if sess.rowmap.explain(*k).get("stand_in"):

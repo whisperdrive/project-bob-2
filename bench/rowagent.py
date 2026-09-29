@@ -25,6 +25,7 @@ from: that figure stays held, saying the agents couldn't find the row.
 import re
 from concurrent.futures import ThreadPoolExecutor
 
+import calllog
 import overlay as ovmod
 import rowfind
 
@@ -127,7 +128,7 @@ def run(sess, summary: dict, facts: list[dict], step=None, reader=None) -> dict:
             step(f"The models checked {done[0]} of {len(todo)} row(s) the numbers didn't settle")
             return d, got
         with ThreadPoolExecutor(WORKERS) as pool:
-            for d, got in pool.map(work, todo):
+            for d, got in pool.map(calllog.carry(work), todo):  # the job's tags (engagement, step) go with each call
                 d.update({k: v for k, v in got.items() if k != "decision"})
                 if got.get("decision") == rowfind.STAND_IN:
                     if d["origin"]:  # never for the DCF's cash flows: the figure stays held
@@ -166,6 +167,8 @@ def suspects(finder, gaps: dict, limit: int = 12) -> list[dict]:
         if finder.pick_by.get(k) == "you":
             continue
         ex = finder.explain(*k)
+        if ex.get("blank"):  # nothing to find
+            continue
         if ex.get("stand_in") or ex.get("found") is None:
             out.append({"row": text, "label": finder.prior.labels().get(k, ""), "now": "not found: last year's values stand in",
                         "gap": 9.9, "origin": k in origins})
