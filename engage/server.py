@@ -352,6 +352,12 @@ async def row_pick(eid: int, body: RowPick):
     return await _run(engagement.row_pick, eid, body.prior, body.current)
 
 
+@app.get("/api/engagements/{eid}/overlay/row")
+async def overlay_row(eid: int, row: str):
+    """What this year's model has for one of last year's rows (Sheet!rN), with the alternatives."""
+    return await _run(engagement.row_info, eid, row)
+
+
 @app.get("/api/engagements/{eid}/doctor")
 async def doctor_view(eid: int):
     """The overlay doctor's last diagnosis, its progress, and the cells held at Excel's values."""

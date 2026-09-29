@@ -153,7 +153,9 @@ class RowFinder:
 
     def _history(self, mine: dict, k: tuple) -> tuple | None:
         """One candidate's history against last year's row: (score, text, equal periods, differing history), or
-        None when they share no period."""
+        None when they share no period. A candidate blank in periods its sheet has dates for, where last year's
+        row has values, scores less: an actuals sheet has the history exactly and no forecast, and would
+        otherwise beat the row that carries both (a row with 9 of 51 periods can't outrank one with 51)."""
         theirs = self._series(self.current, *k)
         both = [w for w in mine if w in theirs and mine[w]]
         if not both:
@@ -164,9 +166,14 @@ class RowFinder:
         close = not gaps or gaps[len(gaps) // 2] < 0.25
         if not equal:
             return (0.0, "", 0, len(later))
-        score = min(1.0, 0.5 * len(equal)) * (1.0 if close else 0.6)
+        dates = self._index()["dates"].get(k[0], {})
+        could = [w for w in mine if mine[w] and w in dates]
+        cover = len(both) / len(could) if could else 1.0
+        score = min(1.0, 0.5 * len(equal)) * (1.0 if close else 0.6) * min(1.0, cover / 0.8)
         return (score, f"{len(equal)} period(s) of history equal last year's"
-                       + (f"; later years within {gaps[len(gaps) // 2]:.0%} (median)" if gaps else ""), len(equal), len(later))
+                       + (f"; later years within {gaps[len(gaps) // 2]:.0%} (median)" if gaps else "")
+                       + (f"; blank in {len(could) - len(both)} of the {len(could)} periods it has dates for"
+                          if cover < 1 else ""), len(equal), len(later))
 
     def _by_history(self, s, r) -> list[tuple]:
         """Rows whose values equal last year's in the periods both models have (history), on any sheet."""

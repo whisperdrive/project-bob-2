@@ -281,18 +281,22 @@ person before the next relies on it:
      that name shares at least 35% of its labels (a rebuilt model can reuse a name for something else); on the
      sheet a renamed sheet became (one sharing half its labels); else a label found once anywhere in the model;
    - **history**: the same values in the periods both models have as history, on any sheet (actual years don't
-     change between versions), with later years close;
+     change between versions), with later years close. A row blank in periods its sheet has dates for, where
+     last year's has values, counts for less: an actuals sheet has the history exactly and nothing after it, and
+     would otherwise win the row;
    - **words**: a label sharing most of its words, the values close, on the corresponding sheet or anywhere;
    - **neighbours**: the same rows around it in the dependency graph (it reads rows labelled as its inputs were,
      and is read by rows labelled as its users were);
    - **banner**: a summary cell in a sheet's first ten rows that read the row last year, found again by its label.
    The same label in place with last year's history comes first; a label whose history contradicts it gives way
-   to the row that has last year's numbers. A person's pick wins over all of them. Where nothing is found, last
-   year's value stands in (its forecast for the same period, else the cell it read), never a blank (which would
-   read as zero), and the Summary says how many values stood in, on which line items. When under half of the
-   client values the figures read are found, the Summary doesn't show this year's figures (they'd be last
-   year's numbers under this year's name): it says so, how alike the two models are, and points to the rows to
-   pick; the bridge waits too. The Map uses the same finding. Each output shows its Python function and the client values it
+   to the row that has last year's numbers. A person's pick wins over all of them. Where nothing is found, or the row
+   found is blank in a period where last year's had a value, last year's value stands in (its forecast for the
+   same period, else the cell it read), never a blank (which would read as zero), and the Summary says how many
+   values stood in, on which line items. The Summary doesn't show this year's figures (they'd be last year's
+   numbers under this year's name) while a row the DCF's cash flows come from isn't found or mostly stands in,
+   while a row the figures read is found but blank this year in more than a fifth of its periods, or, with no
+   discounting to go by, while under half of the client values they read are found. It says why, how alike the
+   two models are, and lists each row it needs with a button to pick this year's row; the bridge waits too. The Map uses the same finding. Each output shows its Python function and the client values it
    reads. The module is saved as `out/overlays/e<id>/overlay.py`; open it from the page, or run it from a terminal:
    `uv run python bench/overlay.py <id> --mode current --set Val_Inputs!C5=0.075`.
 

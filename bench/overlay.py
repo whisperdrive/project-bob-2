@@ -255,6 +255,7 @@ class Session:
             base = self.prior or self.ov
             self.rowmap = rowfind.RowFinder(RowMap(base, self.current), base, self.current)
         self.stood_in = {}  # (sheet, row, col) -> last year's value, used where this year's model has no match
+        self.blank = {}  # (sheet, row, col) -> this year's cell found for it, blank where last year's had a value
         self.client_reads = set()  # (sheet, row, col) of last year's model read on the current feed
         self.base_vd = None  # last year's valuation date (serial): the roll's start
         self._pshift = {}
@@ -269,6 +270,7 @@ class Session:
         self.mode, self.shift = mode, shift_months
         self.unmatched = {}
         self.stood_in = {}
+        self.blank = {}
         self.client_reads = set()
         B.overrides.clear()
         B.overrides.update(self.holds)
@@ -301,7 +303,8 @@ class Session:
         """Prior client cell -> the current model's value: the same line item (found by rowfind, wherever it is
         now), the period rolled on by the shift. Where this year's model has no match, last year's value stands
         in (its forecast for the same period), recorded in unmatched and stood_in: never a blank, which would
-        read as zero."""
+        read as zero. That includes a row and period that are found but blank this year where last year's cell
+        had a value (a row matched on its history that stops where the history does): recorded in blank too."""
         cur = self.current
         self.client_reads.add((s, r, c))
         tl_p = prior.timeline(s)
@@ -317,7 +320,13 @@ class Session:
             if c2 is None:
                 self.unmatched[(s, r, c)] = f"period {to_date(want).isoformat()} not in the current model"
                 return self._stand_in(prior, s, r, c, want)
-        return cur.value(s2, r2, c2)
+        v = cur.value(s2, r2, c2)
+        if v is None and prior.value(s, r, c) is not None:
+            self.blank[(s, r, c)] = (s2, r2, c2)
+            self.unmatched[(s, r, c)] = (f"found at {s2}!r{r2}, but blank there"
+                                         + (f" for {to_date(want).isoformat()}" if want is not None else ""))
+            return self._stand_in(prior, s, r, c, want)
+        return v
 
     def _stand_in(self, prior: Workbook, s, r, c, want):
         """Last year's value for a client cell this year's model doesn't have: last year's forecast for the same
@@ -802,13 +811,31 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         read_by_row = Counter((s_, r_) for (s_, r_, _c) in sess.client_reads)
         missing = [k for k in origins if sess.rowmap.locate(*k) is None
                    or by_row.get(k, 0) > 0.5 * max(1, read_by_row.get(k, 0))]
+        # rows found this year but blank in more than a fifth of the periods read, where last year's had values:
+        # the wrong row (an actuals sheet matched on its history), or the line item moved. They stand in and block
+        blank_by_row, blank_at = Counter(), {}
+        for (s_, r_, _c), at in sess.blank.items():
+            blank_by_row[(s_, r_)] += 1
+            blank_at.setdefault((s_, r_), at)
+        blank_rows = [k for k, n in blank_by_row.most_common() if n > 0.2 * max(1, read_by_row.get(k, 0)) and k not in missing]
+
+        def why_missing(k):
+            if sess.rowmap.locate(*k) is None:
+                return "not found this year"
+            if blank_by_row.get(k, 0) > 0.5 * by_row.get(k, 0):
+                return f"found at {blank_at[k][0]}!r{blank_at[k][1]}, but blank there in most of its periods"
+            return "found, but most of its periods aren't in this year's model"
+
         gaps = {"values": len(sess.unmatched), "stood_in": len(sess.stood_in), "reads": reads,
                 "found_share": round(share, 3), "family": family, "basis": "dcf" if origins else "share",
                 "dcf_rows": len(origins),
-                "dcf_missing": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""),
-                                 "why": "not found this year" if sess.rowmap.locate(s_, r_) is None
-                                 else "found, but most of its periods aren't in this year's model"} for s_, r_ in missing],
-                "reliable": not missing if origins else share >= 0.5, "rebuilt": family is not None and family < 0.5,
+                "dcf_missing": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "why": why_missing((s_, r_))}
+                                for s_, r_ in missing],
+                "blank_rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""),
+                                "found": f"{blank_at[(s_, r_)][0]}!r{blank_at[(s_, r_)][1]}",
+                                "blank": blank_by_row[(s_, r_)], "of": read_by_row.get((s_, r_), 0)} for s_, r_ in blank_rows],
+                "reliable": (not missing if origins else share >= 0.5) and not blank_rows,
+                "rebuilt": family is not None and family < 0.5,
                 "rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "values": n,
                           "why": sess.unmatched[next(k for k in sess.unmatched if k[:2] == (s_, r_))]}
                          for (s_, r_), n in by_row.most_common(30)]}

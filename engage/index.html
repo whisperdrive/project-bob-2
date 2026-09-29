@@ -1445,7 +1445,7 @@ function needs() {
   if (E.doctor_status === "error") add("Run the doctor again: it failed", "doctor");
   const sum = OVR.eid === E.id ? OVR.sum : null;
   const g = sum?.table?.this_year_gaps;
-  if (g && g.reliable === false) out.push({text: g.basis === "dcf" ? `Pick this year's rows for ${g.dcf_missing.length} of the rows the DCF's cash flows come from${g.rebuilt ? " (this year's model looks rebuilt)" : ""}` : `Only ${Math.round(g.found_share * 100)}% of this year's client values were found${g.rebuilt ? " (this year's model looks rebuilt)" : ""}: pick the rows the DCF's cash flows come from`, go: "python", tab: "valuation"});
+  if (g && g.reliable === false) out.push({text: `This year's figures need rows: ${gapReasons(g).map(r => r.short).join("; ")}${g.rebuilt ? " (this year's model looks rebuilt)" : ""}`, go: "summary"});
   for (const w of E.workbooks) if (w.status === "done" && !w.identity_confirmed && w.id === E.roles.current_model?.id && E.overlay_status === "done")
     add(`Check the valuation date of ${shortName(w.filename)} (${w.valuation_date || "none found"}): the roll-forward runs from it`, "files");
   const so = E.roles_suggested?.second_opinion;
@@ -1474,7 +1474,7 @@ function viewOverview() {
     const v = r.values, ly = v.rebuilt, ty = v.this_year, ch = typeof ty === "number" && typeof ly === "number" ? ty - ly : null;
     top = `<div class="heads">
       <div class="head"><div class="k">${esc(r.label)} · last year (report)</div><div class="v">${esc(r.report || sumNum(r, ly))}</div><div class="s">${r.tie ? (r.tie.ok ? "✓ rebuilt exactly from last year's files" : `✗ rebuilt as ${sumNum(r, ly)}`) : ""}</div></div>
-      <div class="head"><div class="k">This year, rolled forward</div><div class="v">${typeof ty === "number" && !unreliable(t) ? sumMoney(r, ty) : "–"}</div><div class="s">${unreliable(t) ? (t.this_year_gaps.basis === "dcf" ? `needs rows: ${t.this_year_gaps.dcf_missing.length} of the DCF's cash-flow rows not found` : `needs rows: ${Math.round(t.this_year_gaps.found_share * 100)}% of its client values found`) : t.roll?.valuation_date ? `valuation date ${esc(t.roll.valuation_date)}` : "assign this year's model to roll forward"}</div></div>
+      <div class="head"><div class="k">This year, rolled forward</div><div class="v">${typeof ty === "number" && !unreliable(t) ? sumMoney(r, ty) : "–"}</div><div class="s">${unreliable(t) ? `needs rows: ${gapReasons(t.this_year_gaps).map(r => r.short).join("; ")}` : t.roll?.valuation_date ? `valuation date ${esc(t.roll.valuation_date)}` : "assign this year's model to roll forward"}</div></div>
       <div class="head"><div class="k">Change</div><div class="v">${ch == null ? "–" : (ch > 0 ? "+" : "") + sumMoney(r, ch)}</div><div class="s">${ch == null || !ly ? "" : `${(100 * ch / Math.abs(ly)).toFixed(1)}%`}${br ? ` · ${br.steps.filter(x => !x.total).length} steps in the bridge` : ""}</div></div></div>`;
   }
   const bridge = br ? `<div class="card"><div class="row" style="justify-content:space-between"><h2>How it moved</h2><button class="btn small" data-go="bridge">Value bridge</button></div><div id="ovrBridge"></div></div>` : "";
@@ -1693,11 +1693,23 @@ const sumNum = (row, v) => {  // a conclusion as the report prints it: its units
   return x.toLocaleString(undefined, {minimumFractionDigits: dp, maximumFractionDigits: dp});
 };
 const unreliable = t => { const g = t?.this_year_gaps; return !!g && g.reliable === false && !SUM.showAnyway; };
+function gapReasons(g) {  // why this year's figures aren't shown: [{short, long}]
+  const out = [];
+  if (g.basis === "dcf" && g.dcf_missing?.length) out.push({short: `${g.dcf_missing.length} of the DCF's cash-flow rows not found`,
+    long: `${g.dcf_missing.length} of the ${g.dcf_rows} rows the DCF's cash flows come from weren't found in this year's model`});
+  if (g.blank_rows?.length) out.push({short: `${g.blank_rows.length} row(s) found but blank this year`,
+    long: `${g.blank_rows.length} row(s) the figures read were found in this year's model but are blank there in most periods (usually the wrong row: an actuals sheet has last year's history and nothing after it)`});
+  if (g.basis !== "dcf" && g.found_share < 0.5) out.push({short: `${Math.round(g.found_share * 100)}% of its client values found`,
+    long: `only ${Math.round(g.found_share * 100)}% of the ${g.reads.toLocaleString()} client values they read were found in this year's model`});
+  return out;
+}
 function gapNote(t) {
   const g = t.this_year_gaps;
-  if (g && g.reliable === false) return `<div class="callout bad small" style="margin-top:10px"><b>This year's figures aren't shown: ${g.basis === "dcf"
-      ? `${g.dcf_missing.length} of the ${g.dcf_rows} rows the DCF's cash flows come from weren't found in this year's model (${esc(g.dcf_missing.map(x => `${x.label || x.row}: ${x.why}`).join("; "))})`
-      : `only ${Math.round(g.found_share * 100)}% of the ${g.reads.toLocaleString()} client values they read were found in this year's model`}.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. Pick ${g.basis === "dcf" ? "those rows" : "the rows the figures' cash flows come from"} in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; the figures show here once ${g.basis === "dcf" ? "they're all found" : "enough is found"}.${g.stood_in ? ` Elsewhere, last year's values stand in for ${g.stood_in.toLocaleString()} client value(s) not found.` : ""} <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>
+  const need = g ? [...(g.dcf_missing || []), ...(g.blank_rows || []).map(x => ({...x, why: `found at ${x.found}, but blank there in ${x.blank} of the ${x.of} periods read`}))] : [];
+  const P = SUM.rowPick;
+  const list = need.length ? `<ul class="why small" style="margin-top:6px">${need.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label)}: ${esc(x.why)}
+      ${P?.row === x.row ? rowPicker(P, "sum") : `<button class="btn small ghost" data-sumpick="${esc(x.row)}">Pick this year's row</button>`}</li>`).join("")}</ul>` : "";
+  if (g && g.reliable === false) return `<div class="callout bad small" style="margin-top:10px"><b>This year's figures aren't shown: ${esc(gapReasons(g).map(r => r.long).join("; and "))}.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. ${need.length ? `Pick this year's row for each below (<a href="#" data-go="python" data-tab="valuation">The facts</a> shows where the DCF's cash flows come from); the figures show here once they're found.` : `Pick the rows the figures' cash flows come from in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; the figures show here once enough is found.`}${g.stood_in ? ` Meanwhile last year's values stand in for ${g.stood_in.toLocaleString()} client value(s).` : ""} <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>${list}
     <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
   if (!g || !g.values) return g?.rebuilt ? `<div class="callout warn small" style="margin-top:10px">The two client models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised. Every value the figures read was found, but check the rows in The facts.</div>` : "";
   return `<div class="callout warn small" style="margin-top:10px"><b>${g.values.toLocaleString()} client value(s) on ${g.rows.length}${g.rows.length >= 30 ? "+" : ""} line item(s) weren't found in this year's model</b>${g.stood_in ? `; last year's values stand in for ${g.stood_in.toLocaleString()} of them` : ""}, so "This year" is last year's model with this year's numbers where they were found. The rows the report's figures' cash flows come from, what was found for each and how, are in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>, with a picker for the right row; the rest are listed here. <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
@@ -1858,6 +1870,20 @@ function bindSummary() {
   $("#sumDc")?.addEventListener("change", e => { if (e.target.value) SUM.method.day_count = e.target.value; else delete SUM.method.day_count; loadSummary(); });
   $("#sumReset")?.addEventListener("click", () => { SUM.changes = {}; SUM.vd = null; SUM.method = {}; loadSummary(); });
   $("#sumShowAnyway")?.addEventListener("click", e => { e.preventDefault(); SUM.showAnyway = !SUM.showAnyway; redrawSummary(); });
+  document.querySelectorAll("[data-sumpick]").forEach(b => b.onclick = async () => {
+    const row = b.dataset.sumpick, g = SUM.data?.table?.this_year_gaps;
+    const x = [...(g?.dcf_missing || []), ...(g?.blank_rows || [])].find(y => y.row === row);
+    SUM.rowPick = {row, label: x?.label, t: null, q: (x?.label || "").split(/\s+/).slice(0, 3).join(" "), results: null, loading: true, auto: true};
+    redrawSummary();
+    try { if (SUM.rowPick?.row === row) SUM.rowPick.t = await api(`/api/engagements/${E.id}/overlay/row?row=${encodeURIComponent(row)}`); }
+    catch (err) { toast(err.message, 6000); }
+    if (SUM.rowPick?.row === row) redrawSummary();
+  });
+  if (SUM.rowPick && $("#sumpQ")) {
+    const search = bindRowPicker(SUM.rowPick, "sum", redrawSummary, () => { SUM.rowPick = null; FX.data = undefined; redrawSummary(); loadSummary(); },
+      () => { SUM.rowPick = null; redrawSummary(); });
+    if (SUM.rowPick.auto) { SUM.rowPick.auto = false; search(); }
+  }
   document.querySelectorAll("#main a[data-go]").forEach(a => a.onclick = e => { e.preventDefault(); if (a.dataset.tab) OV.tab = a.dataset.tab; go(a.dataset.go); });
   $("#sumCharts")?.addEventListener("click", () => act(async () => { await api(`/api/engagements/${E.id}/charts`, {method: "POST"}); SUM.chartsSeen = "queued"; }));
   (d.charts?.charts || []).forEach((c, i) => {
@@ -2238,7 +2264,7 @@ function factsCard() {
         : `<span class="pill bad">not found</span> <span class="small muted">last year's values stand in</span>`;
       const vals = t?.side_by_side?.length ? `<div class="small muted">${t.side_by_side.map(x => `${esc(x.period)}: ${num(x.last_year)} → ${num(x.this_year)}`).join(" · ")}</div>` : "";
       return `<tr><td><span class="mono">${esc(o.row)}</span> ${esc(o.label)}<div class="small muted">${o.cells} cell(s), ${esc(o.how)}</div></td><td>${now}${vals}</td>
-        <td>${d.current ? `<button class="btn small ghost" data-fxpick="${esc(o.row)}">${t?.found ? "Change" : "Pick"}</button>` : ""}</td></tr>${open ? `<tr><td colspan="3">${fxPicker(o, t)}</td></tr>` : ""}`;
+        <td>${d.current ? `<button class="btn small ghost" data-fxpick="${esc(o.row)}">${t?.found ? "Change" : "Pick"}</button>` : ""}</td></tr>${open ? `<tr><td colspan="3">${rowPicker({...FX.picker, t}, "fx")}</td></tr>` : ""}`;
     }).join("");
     return `<div class="vt-core" style="margin-top:12px"><div><b>${i + 1}. ${esc(c.what)}</b> <span class="mono small muted">${esc(c.cell)}</span> <span class="vt-val">${num(c.pv)}</span>
         ${c.ties ? `<span class="pill ok" title="Cash flows times factors, added up here, give the cell's value">✓ recomputed exactly</span>` : c.ties === false ? `<span class="pill bad">recomputed ${num(c.pv_recomputed)}</span>` : ""}</div>
@@ -2263,13 +2289,39 @@ function fxFrontier(fr) {
     <div class="small" style="margin-top:6px"><b>The first formulas it went through</b></div>
     <ul class="why small">${fr.formulas.map(x => `<li><span class="mono">${esc(x.cell)}</span> ${esc(x.label)} = ${typeof x.value === "number" ? vN(x.value) : esc(x.value ?? "")}${x.words ? ` <span class="muted">${esc(x.words)}</span>` : ""}</li>`).join("")}</ul>`;
 }
-function fxPicker(o, t) {
-  const P = FX.picker;
-  return `<div class="card" style="margin:6px 0;background:var(--raised)"><div class="row" style="justify-content:space-between"><b>This year's row for ${esc(o.label || o.row)}</b><button class="btn small ghost" id="fxpClose">Close</button></div>
-    ${t?.alternatives?.length ? `<p class="small" style="margin:6px 0 4px">Other candidates:</p><ul class="why small">${t.alternatives.map(a => `<li><a href="#" data-fxuse="${esc(a.row)}"><span class="mono">${esc(a.row)}</span> ${esc(a.label || "")}</a> <span class="muted">${esc(a.evidence.join(" · "))}</span></li>`).join("")}</ul>` : ""}
-    <div class="row"><input class="in" id="fxpQ" placeholder="Search this year's model by label or section" value="${esc(P.q || "")}" style="flex:1;min-width:200px"><button class="btn small" id="fxpGo">Search</button>${t?.picked ? `<button class="btn small ghost" id="fxpClear">Use what was found</button>` : ""}</div>
-    <div class="scroll" style="max-height:240px;overflow:auto;margin-top:6px">${P.loading ? `<p class="small muted">Searching…</p>` : (P.results || []).length ? `<table><tbody>${P.results.map(r => `<tr class="click" data-fxuse="${esc(r.sheet)}!r${r.row}"><td class="mono small">${esc(r.sheet)}!r${r.row}</td><td>${esc(r.label || "")}${r.section ? ` <span class="muted small">${esc(r.section)}</span>` : ""}</td><td class="small muted">${esc(r.samples || "")}</td></tr>`).join("")}</tbody></table>` : P.results ? `<p class="small muted">No rows found.</p>` : ""}</div>
-    <span class="small muted" id="fxpMsg"></span></div>`;
+// ---- picking this year's row for one of last year's: in The facts and in the Summary's note --------------------
+// P: {row, label, t (what was found, with the alternatives), q, results, loading}; key prefixes its ids.
+function rowPicker(P, key) {
+  const t = P.t;
+  return `<div class="card" style="margin:6px 0;background:var(--raised)"><div class="row" style="justify-content:space-between"><b>This year's row for ${esc(P.label || P.row)}</b><button class="btn small ghost" id="${key}pClose">Close</button></div>
+    ${t?.found ? `<p class="small" style="margin:6px 0 4px">Found now: <span class="mono">${esc(t.found)}</span> ${esc(t.found_label || "")}${t.picked ? ` <span class="pill info">your pick</span>` : ""}</p>` : ""}
+    ${t?.alternatives?.length ? `<p class="small" style="margin:6px 0 4px">Other candidates:</p><ul class="why small">${t.alternatives.map(a => `<li><a href="#" data-${key}use="${esc(a.row)}"><span class="mono">${esc(a.row)}</span> ${esc(a.label || "")}</a> <span class="muted">${esc(a.evidence.join(" · "))}</span></li>`).join("")}</ul>` : ""}
+    <div class="row"><input class="in" id="${key}pQ" placeholder="Search this year's model by label or section" value="${esc(P.q || "")}" style="flex:1;min-width:200px"><button class="btn small" id="${key}pGo">Search</button>${t?.picked ? `<button class="btn small ghost" id="${key}pClear">Use what was found</button>` : ""}</div>
+    <div class="scroll" style="max-height:240px;overflow:auto;margin-top:6px">${P.loading ? `<p class="small muted">Searching…</p>` : (P.results || []).length ? `<table><tbody>${P.results.map(r => `<tr class="click" data-${key}use="${esc(r.sheet)}!r${r.row}"><td class="mono small">${esc(r.sheet)}!r${r.row}</td><td>${esc(r.label || "")}${r.section ? ` <span class="muted small">${esc(r.section)}</span>` : ""}</td><td class="small muted">${esc(r.samples || "")}</td></tr>`).join("")}</tbody></table>` : P.results ? `<p class="small muted">No rows found.</p>` : ""}</div>
+    <span class="small muted" id="${key}pMsg"></span></div>`;
+}
+function bindRowPicker(P, key, redraw, saved, close) {  // -> search(), to run when the picker opens
+  const search = async () => {
+    const fid = E.roles.current_model?.id; if (!fid) return;
+    P.q = $(`#${key}pQ`)?.value ?? P.q ?? ""; P.loading = true; redraw();
+    try { P.results = await api(`/api/engagements/${E.id}/models/${fid}/rows?q=${encodeURIComponent(P.q)}&limit=60`); }
+    catch (err) { P.results = []; toast(err.message, 6000); }
+    P.loading = false; redraw(); $(`#${key}pQ`)?.focus();
+  };
+  const send = async current => {
+    $(`#${key}pMsg`).textContent = "Saving…";
+    try {
+      const t = await api(`/api/engagements/${E.id}/overlay/rowpick`, {method: "POST", body: {prior: P.row, current}});
+      SUM.data = null; OVR.sum = null; BR.data = null; saved(t);
+      toast(current ? "This year's row set: the Summary and the bridge use it now" : "Back to the row that was found");
+    } catch (err) { $(`#${key}pMsg`).textContent = err.message; }
+  };
+  $(`#${key}pClose`)?.addEventListener("click", close);
+  $(`#${key}pGo`)?.addEventListener("click", search);
+  $(`#${key}pQ`)?.addEventListener("keydown", e => { if (e.key === "Enter") search(); });
+  $(`#${key}pClear`)?.addEventListener("click", () => send(null));
+  document.querySelectorAll(`[data-${key}use]`).forEach(el => el.onclick = e => { e.preventDefault(); send(el.getAttribute(`data-${key}use`)); });
+  return search;
 }
 async function loadFacts() {
   FX.eid = E.id; FX.loading = true;
@@ -2282,32 +2334,17 @@ function redrawFacts() { const c = $("#fxCard"); if (c && state.step === "python
 function bindFacts() {
   $("#fxStart")?.addEventListener("change", e => { FX.start = e.target.value; FX.data = undefined; FX.picker = null; redrawFacts(); loadFacts(); });
   $("#fxCopy")?.addEventListener("click", () => drCopy(FX.data?.text || ""));
-  const search = async () => {
-    const P = FX.picker, fid = E.roles.current_model?.id; if (!fid) return;
-    P.q = $("#fxpQ")?.value || ""; P.loading = true; redrawFacts();
-    try { P.results = await api(`/api/engagements/${E.id}/models/${fid}/rows?q=${encodeURIComponent(P.q)}&limit=60`); }
-    catch (err) { P.results = []; toast(err.message, 6000); }
-    P.loading = false; redrawFacts(); $("#fxpQ")?.focus();
-  };
   document.querySelectorAll("[data-fxpick]").forEach(b => b.onclick = () => {
     const row = b.dataset.fxpick, o = FX.data.facts.discountings.flatMap(c => c.origins).find(x => x.row === row);
-    FX.picker = {row, q: (o?.label || "").split(/\s+/).slice(0, 3).join(" "), results: null, loading: false}; search();
+    FX.picker = {row, label: o?.label, q: (o?.label || "").split(/\s+/).slice(0, 3).join(" "), results: null, loading: false, auto: true};
+    redrawFacts();
   });
   if (!FX.picker) return;
-  const send = async current => {
-    $("#fxpMsg").textContent = "Saving…";
-    try {
-      const t = await api(`/api/engagements/${E.id}/overlay/rowpick`, {method: "POST", body: {prior: FX.picker.row, current}});
-      for (const c of FX.data.facts.discountings) for (const o of c.origins) if (o.row === FX.picker.row) o.this_year = t;
-      FX.picker = null; SUM.data = null; OVR.sum = null; BR.data = null; redrawFacts();
-      toast(current ? "This year's row set: the Summary and the bridge use it now" : "Back to the row that was found");
-    } catch (err) { $("#fxpMsg").textContent = err.message; }
-  };
-  $("#fxpClose")?.addEventListener("click", () => { FX.picker = null; redrawFacts(); });
-  $("#fxpGo")?.addEventListener("click", search);
-  $("#fxpQ")?.addEventListener("keydown", e => { if (e.key === "Enter") search(); });
-  $("#fxpClear")?.addEventListener("click", () => send(null));
-  document.querySelectorAll("[data-fxuse]").forEach(el => el.onclick = e => { e.preventDefault(); send(el.dataset.fxuse); });
+  const search = bindRowPicker(FX.picker, "fx", redrawFacts, t => {
+    for (const c of FX.data.facts.discountings) for (const o of c.origins) if (o.row === FX.picker.row) o.this_year = t;
+    FX.picker = null; redrawFacts();
+  }, () => { FX.picker = null; redrawFacts(); });
+  if (FX.picker.auto) { FX.picker.auto = false; search(); }
 }
 function traceCard() {
   const t = VAL.trace, head = `<h2>How the report's figure is built</h2>`;

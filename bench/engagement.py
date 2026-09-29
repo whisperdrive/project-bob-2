@@ -1576,6 +1576,15 @@ def row_pick(eid: int, prior_row: str, current_row: str | None) -> dict:
     return ovmod.deep(row_found, sess, s, r)
 
 
+def row_info(eid: int, prior_row: str) -> dict:
+    """What this year's model has for one of last year's rows (Sheet!rN), with the alternatives: for picking it."""
+    import overlay as ovmod
+    sess, _ = overlay_session(eid)
+    if not sess.rowmap:
+        raise ValueError("assign this year's client model (Roles) and rebuild in Python first")
+    return ovmod.deep(row_found, sess, *_row_ref(prior_row))
+
+
 def start_doctor(eid: int) -> dict:
     """Queue the doctor: where each figure breaks, why, and whether the files and rows are the right ones."""
     rows = _q("SELECT overlay_status, doctor_status FROM engagements WHERE id=?", eid)

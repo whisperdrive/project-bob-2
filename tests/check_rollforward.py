@@ -9,6 +9,8 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
   finding       every row the label alone finds or misses, found by its history, words, neighbours or banner
   rolling       the figure on this year's model equals a calculation made here from the numbers
   standing in   a row this year's model doesn't have: last year's value stands in and is counted, not zero
+  blank         a row found this year but blank there: the same, and the gate stays shut
+  actuals       an actuals sheet with last year's history and no forecast doesn't win the row
 
     uv run python tests/check_rollforward.py
 """
@@ -147,9 +149,30 @@ def main() -> None:
     assert ov.deep(gate)["reliable"]
     ov.deep(fnd.pick, "CF", 11, None)
     print("gate: ok (shut while the DCF's cash-flow row is missing, open once it's found or picked)")
+    # ---- a row found this year but blank there (as an actuals sheet matched on its history is): last year's
+    # values stand in, counted, never zero; the gate stays shut and says where the row was found
+    fnd.locate = lambda s_, r_: None if (s_, r_) == ("CF", 11) else real(s_, r_)
+    try:
+        missing_row, _ = ov.deep(this_year)  # on the roll as it is now: the value with the row not found at all
+        fnd.locate = lambda s_, r_: ("CF", 14) if (s_, r_) == ("CF", 11) else real(s_, r_)  # an empty row
+        got3, stood3 = ov.deep(this_year)
+        assert len(stood3) == 18 and abs(got3 - missing_row) < 1e-9, (len(stood3), got3, missing_row)
+        assert len(sess.blank) == 18 and all(v[:2] == ("CF", 14) for v in sess.blank.values())
+        g = ov.deep(gate)
+        assert not g["reliable"] and g["dcf_missing"][0]["why"].startswith("found at CF!r14, but blank"), g["dcf_missing"]
+        # a row the figures read that isn't the DCF's cash flows (the period dates): found blank, it shuts the gate too
+        fnd.locate = lambda s_, r_: ("CF", 14) if (s_, r_) == ("CF", 3) else real(s_, r_)
+        g = ov.deep(gate)
+        assert not g["reliable"] and not g["dcf_missing"] and [x["row"] for x in g["blank_rows"]] == ["CF!r3"], g
+        assert g["blank_rows"][0]["found"] == "CF!r14" and g["blank_rows"][0]["blank"] == g["blank_rows"][0]["of"]
+    finally:
+        fnd.locate = real
+    assert ov.deep(gate)["reliable"]
+    print(f"blank: ok (a row found but blank this year stands in with last year's values ({got3:.3f}, not 0) and shuts the gate)")
     ov.deep(sess.configure, "workbook")
     roles_check(res, db)
     rebuilt_check(out)
+    actuals_check(out)
     print("rollforward: all checks passed")
 
 
@@ -220,6 +243,44 @@ def rebuilt_check(out: Path) -> None:
     assert ex["found"] == ("Model", 7), ex  # renamed as well as moved: its history finds it
     assert f.explain("Hub", 7)["found"] is None, "no row taken by its place on an unrelated sheet"
     print("rebuilt: ok (a same-named sheet with other contents isn't the same sheet; moved rows found by label and history)")
+
+
+def actuals_check(out: Path) -> None:
+    """An actuals input sheet this year carries last year's history exactly and nothing after it; the row that
+    carries the history and the forecast is found, not the actuals row (which would read blank for every forecast
+    year)."""
+    import xlsxwriter
+    import rowfind
+    years = [date(2024 + k, 6, 30) for k in range(8)]
+
+    def book(path, sheets):
+        wb = xlsxwriter.Workbook(path)
+        dt = wb.add_format({"num_format": "dd-mmm-yy"})
+        for name, rows in sheets.items():
+            ws = wb.add_worksheet(name)
+            ws.write(2, 1, "Period ending")
+            for k, d in enumerate(years):
+                ws.write_datetime(2, 3 + k, d, dt)
+            for i, (label, vals) in enumerate(rows):
+                ws.write(4 + i, 1, label)
+                for k, v in enumerate(vals):
+                    if v is not None:
+                        ws.write_number(4 + i, 3 + k, v)
+        wb.close()
+        return build_map.main(str(path), str(out / (path.stem + "_db")))["db"]
+    dist = [40.0 + 3 * k for k in range(8)]
+    prior = book(out / "actuals_prior.xlsx", {"Hub": [("Distributions", dist), ("Opex", [30.0] * 8)]})
+    revised = [v * (1.04 if k >= 2 else 1.0) for k, v in enumerate(dist)]
+    current = book(out / "actuals_current.xlsx", {
+        "Inputs actual": [("Distributions - actual", dist[:2] + [None] * 6), ("Opex - actual", [30.0] * 2 + [None] * 6)],
+        "Model": [("Equity distributions", revised), ("Operating costs", [30.0] * 8)]})
+    a, b = ov.Workbook(prior), ov.Workbook(current)
+    f = rowfind.RowFinder(ov.RowMap(a, b), a, b)
+    ex = f.explain("Hub", 5)
+    assert ex["found"] == ("Model", 5), ex
+    blank = next(x for x in ex["alternatives"] if x["row"] == "Inputs actual!r5")
+    assert any("blank in 6 of the 8 periods" in e for e in blank["evidence"]), blank
+    print("actuals: ok (the row with the forecast wins over an actuals sheet that has the history and blanks after it)")
 
 
 def roles_check(res: dict, db: dict) -> None:
