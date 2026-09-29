@@ -843,8 +843,9 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         # the rows the discountings' cash flows come from decide: each found this year (or picked), with its
         # periods; without discountings found, at least half of all the client values the figures read
         read_by_row = Counter((s_, r_) for (s_, r_, _c) in sess.client_reads)
-        missing = [k for k in origins if sess.rowmap.locate(*k) is None
-                   or by_row.get(k, 0) > 0.5 * max(1, read_by_row.get(k, 0))]
+        kept = lambda k: sess.rowmap.explain(*k).get("stand_in")  # last year's values kept on purpose
+        missing = [k for k in origins if not kept(k) and (sess.rowmap.locate(*k) is None
+                   or by_row.get(k, 0) > 0.5 * max(1, read_by_row.get(k, 0)))]
         # rows found this year but blank in more than a fifth of the periods read, where last year's had values:
         # the wrong row (an actuals sheet matched on its history), or the line item moved. They stand in and block
         blank_by_row, blank_at = Counter(), {}
@@ -852,6 +853,12 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             blank_by_row[(s_, r_)] += 1
             blank_at.setdefault((s_, r_), at)
         blank_rows = [k for k, n in blank_by_row.most_common() if n > 0.2 * max(1, read_by_row.get(k, 0)) and k not in missing]
+        # rows the figures read that nobody has checked and that weren't found well: not found, or matched with
+        # little confidence (79% of them on a rebuilt model, some to pasted copies). A person looks at each: picks
+        # the row, keeps the one found, or keeps last year's values
+        timing_rows = {(s_, r_) for s_, r_, _w in timing}
+        weak_rows = [k for k in sorted(read_by_row) if k not in missing and k not in blank_rows
+                     and k not in timing_rows and not sess.rowmap.confident(*k)]
 
         def why_missing(k):
             if sess.rowmap.locate(*k) is None:
@@ -873,7 +880,8 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             gone = [k for k in mine if k in missing]
             by_cell[row["cell"]] = {"basis": "dcf" if mine else "share", "dcf_rows": len(mine),
                                     "missing": [f"{s_}!r{r_}" for s_, r_ in gone],
-                                    "reliable": (not gone if mine else share >= 0.5) and not blank_rows and not date_hold}
+                                    "reliable": (not gone if mine else share >= 0.5) and not blank_rows and not weak_rows
+                                    and not date_hold}
             for part in ("low_cell", "high_cell"):
                 if row.get(part):
                     by_cell[row[part]] = by_cell[row["cell"]]
@@ -885,12 +893,16 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
                 "blank_rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""),
                                 "found": f"{blank_at[(s_, r_)][0]}!r{blank_at[(s_, r_)][1]}",
                                 "blank": blank_by_row[(s_, r_)], "of": read_by_row.get((s_, r_), 0)} for s_, r_ in blank_rows],
+                "weak_rows": [dict(zip(("row", "label", "found", "confidence", "how"), (
+                    f"{s_}!r{r_}", labels.get((s_, r_), ""),
+                    (lambda ex: f"{ex['found'][0]}!r{ex['found'][1]}" if ex["found"] else None)(sess.rowmap.explain(s_, r_)),
+                    sess.rowmap.explain(s_, r_)["confidence"], sess.rowmap.explain(s_, r_)["how"]))) for s_, r_ in weak_rows],
                 "timing": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "why": why,
                             "found": (lambda h: f"{h[0]}!r{h[1]}" if h else None)(sess.rowmap.locate(s_, r_))}
                            for s_, r_, why in timing],
                 "by_cell": by_cell, "date_check": date_hold,
                 "reliable": all(x["reliable"] for x in by_cell.values()) if by_cell
-                else (not missing if origins else share >= 0.5) and not blank_rows and not date_hold,
+                else (not missing if origins else share >= 0.5) and not blank_rows and not weak_rows and not date_hold,
                 "rebuilt": family is not None and family < 0.5,
                 "rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "values": n,
                           "why": sess.unmatched[next(k for k in sess.unmatched if k[:2] == (s_, r_))]}

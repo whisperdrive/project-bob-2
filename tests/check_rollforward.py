@@ -12,6 +12,9 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
   blank         a row found this year but blank there: the same, and the gate stays shut
   actuals       an actuals sheet with last year's history and no forecast doesn't win the row
   per figure    each figure is held back on its own discounting's rows; flags and dates are timing, not asked for
+  weak          a row found only weakly holds the figures until a person keeps it, picks another, or keeps last
+                year's values on purpose
+  snapshot      a pasted copy of last year's rows (typed values) doesn't win over this year's own formula row
 
     uv run python tests/check_rollforward.py
 """
@@ -220,11 +223,34 @@ def main() -> None:
         fnd.locate = real
         summary["outputs"].pop()
     print("per figure: ok (the figure whose DCF row is missing is held back; one with no discounting under it isn't)")
+    # ---- a row the figures read that was found only weakly holds them back until a person looks: keeping the
+    # row found (a pick of it) or keeping last year's values on purpose both count
+    import rowfind
+    sure = fnd.confident
+    fnd.confident = lambda s_, r_: sure(s_, r_) and ((s_, r_) != ("CF", 3) or (s_, r_) in fnd.picks)
+    try:
+        g = ov.deep(gate)
+        assert not g["reliable"] and [x["row"] for x in g["weak_rows"]] == ["CF!r3"] and g["weak_rows"][0]["found"] == "CF!r3", g
+        ov.deep(fnd.pick, "CF", 3, ("CF", 3))  # "keep this row"
+        assert ov.deep(gate)["reliable"]
+    finally:
+        fnd.confident = sure
+        ov.deep(fnd.pick, "CF", 3, None)
+    ov.deep(fnd.pick, "CF", 11, rowfind.STAND_IN)  # last year's values for the distributions, on purpose
+    try:
+        kept, stood = ov.deep(this_year)
+        g = ov.deep(gate)
+        assert len(stood) == 18 and g["reliable"] and not g["dcf_missing"], g
+        assert all(w == "last year's values kept on purpose (your pick)" for k, w in sess.unmatched.items() if k[:2] == ("CF", 11))
+    finally:
+        ov.deep(fnd.pick, "CF", 11, None)
+    print("weak: ok (a row found weakly holds the figures until it's kept, picked, or its last year's values kept on purpose)")
     ov.deep(sess.configure, "workbook")
     roles_check(res, db)
     rebuilt_check(out)
     actuals_check(out)
     catalogue_check(out)
+    snapshot_check(out)
     print("rollforward: all checks passed")
 
 
@@ -314,6 +340,51 @@ def rebuilt_check(out: Path) -> None:
     assert ex["found"] == ("Model", 7), ex  # renamed as well as moved: its history finds it
     assert f.explain("Hub", 7)["found"] is None, "no row taken by its place on an unrelated sheet"
     print("rebuilt: ok (a same-named sheet with other contents isn't the same sheet; moved rows found by label and history)")
+
+
+def snapshot_check(out: Path) -> None:
+    """A reconciliation sheet of pasted values in this year's model ("LINKED EBITDA": typed copies of last year's
+    rows) has last year's history exactly and a full series; this year's own EBITDA, a formula, has restated
+    history. The copy mustn't win: last year's row is a formula, the copy typed values."""
+    import xlsxwriter
+    import rowfind
+    years = [date(2024 + k, 6, 30) for k in range(8)]
+
+    def book(path, sheets):
+        wb = xlsxwriter.Workbook(path)
+        dt = wb.add_format({"num_format": "dd-mmm-yy"})
+        for name, rows in sheets.items():
+            ws = wb.add_worksheet(name)
+            ws.write(2, 1, "Period ending")
+            for k, d in enumerate(years):
+                ws.write_datetime(2, 3 + k, d, dt)
+            for i, (label, vals, formula) in enumerate(rows):
+                ws.write(4 + i, 1, label)
+                for k, v in enumerate(vals):
+                    c = rp.COL(3 + k)
+                    if formula:
+                        ws.write_formula(4 + i, 3 + k, formula.format(c=c), None, v)
+                    else:
+                        ws.write_number(4 + i, 3 + k, v)
+        wb.close()
+        return build_map.main(str(path), str(out / (path.stem + "_db")))["db"]
+    rev = [100.0 * 1.03 ** k for k in range(8)]
+    cost = [0.4 * v for v in rev]
+    ebitda = [a - b for a, b in zip(rev, cost)]
+    prior = book(out / "snap_prior.xlsx", {"Hub": [("Revenue", rev, None), ("Costs", cost, None),
+                                                   ("EBITDA", ebitda, "={c}5-{c}6")]})
+    rev2 = [v * 1.01 for v in rev]  # restated, history included
+    cost2 = [0.4 * v for v in rev2]
+    current = book(out / "snap_current.xlsx", {
+        "Model": [("Revenue", rev2, None), ("Costs", cost2, None), ("EBITDA", [a - b for a, b in zip(rev2, cost2)], "={c}5-{c}6")],
+        "Rec": [("LINKED EBITDA", ebitda, None)]})
+    a, b = ov.Workbook(prior), ov.Workbook(current)
+    f = rowfind.RowFinder(ov.RowMap(a, b), a, b)
+    ex = f.explain("Hub", 7)
+    assert ex["found"] == ("Model", 7), ex
+    copy = next(x for x in ex["alternatives"] if x["row"] == "Rec!r5")
+    assert any(e.startswith("shape: last year's row is formulas") for e in copy["evidence"]), copy
+    print("snapshot: ok (a pasted copy with last year's history doesn't win over this year's own formula row)")
 
 
 def catalogue_check(out: Path) -> None:

@@ -303,14 +303,18 @@ person before the next relies on it:
      and is read by rows labelled as its users were);
    - **banner**: a summary cell in a sheet's first ten rows that read the row last year, found again by its label.
    The same label in place with last year's history comes first; a label whose history contradicts it gives way
-   to the row that has last year's numbers. A person's pick wins over all of them. Where nothing is found, or the row
+   to the row that has last year's numbers. A candidate of another kind counts for less: last year's row
+   calculated and this one typed values (from the rows table's formula and value counts), as a reconciliation
+   sheet of pasted copies ("LINKED EBITDA") is, with last year's history exactly and a full series. A
+   person's pick wins over all of them: a row, the row found (kept), or last year's values kept on purpose. Where nothing is found, or the row
    found is blank in a period where last year's had a value, last year's value stands in (its forecast for the
    same period, else the cell it read), never a blank (which would read as zero), and the Summary says how many
    values stood in, on which line items. Each of this year's figures on the Summary is held back (it would be
    last year's numbers under this year's name) while a row its own discountings' cash flows come from isn't
    found or mostly stands in, or, with no discounting recognised under it, while under half of the client
    values the figures read are found; all are while a row the figures read is found but blank this year in more
-   than a fifth of its periods. Rows of period flags and dates (by their labels, 0/1 values or rising dates)
+   than a fifth of its periods, or found with a confidence under 0.5 (or not at all) and not yet checked by a
+   person (the same label in the same place counts as found well). Rows of period flags and dates (by their labels, 0/1 values or rising dates)
    are the timing the discounting depends on: listed apart, not asked for. The page says why, how alike the two
    models are, and lists each row it needs with a button to pick this year's row; the bridge leaves out the
    figures held back. The Map uses the same finding. Each output shows its Python function and the client values it

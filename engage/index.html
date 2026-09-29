@@ -1706,6 +1706,8 @@ function gapReasons(g) {  // why this year's figures aren't shown: [{short, long
     long: "this year's valuation date isn't known (this year's model is dated on or before last year's valuation date), so nothing is rolled forward"});
   if (g.basis === "dcf" && g.dcf_missing?.length) out.push({short: `${g.dcf_missing.length} of the DCF's cash-flow rows not found`,
     long: `${g.dcf_missing.length} of the ${g.dcf_rows} rows the DCF's cash flows come from weren't found in this year's model`});
+  if (g.weak_rows?.length) out.push({short: `${g.weak_rows.length} row(s) matched weakly or not found`,
+    long: `${g.weak_rows.length} row(s) the figures read were matched only weakly this year (confidence under 0.5: often a pasted copy or a lookalike) or not found, and nobody has checked them`});
   if (g.blank_rows?.length) out.push({short: `${g.blank_rows.length} row(s) found but blank this year`,
     long: `${g.blank_rows.length} row(s) the figures read were found in this year's model but are blank there in most periods (usually the wrong row: an actuals sheet has last year's history and nothing after it)`});
   if (g.basis !== "dcf" && g.found_share < 0.5) out.push({short: `${Math.round(g.found_share * 100)}% of its client values found`,
@@ -1714,7 +1716,8 @@ function gapReasons(g) {  // why this year's figures aren't shown: [{short, long
 }
 function gapNote(t) {
   const g = t.this_year_gaps;
-  const need = g ? [...(g.dcf_missing || []), ...(g.blank_rows || []).map(x => ({...x, why: `found at ${x.found}, but blank there in ${x.blank} of the ${x.of} periods read`}))] : [];
+  const need = g ? [...(g.dcf_missing || []), ...(g.blank_rows || []).map(x => ({...x, why: `found at ${x.found}, but blank there in ${x.blank} of the ${x.of} periods read`})),
+    ...(g.weak_rows || []).map(x => ({...x, why: x.found ? `matched to ${x.found}, confidence ${x.confidence.toFixed(2)} (${x.how}): keep it if it's right` : "not found this year"}))] : [];
   const P = SUM.rowPick;
   const list = need.length ? `<ul class="why small" style="margin-top:6px">${need.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label)}: ${esc(x.why)}
       ${P?.row === x.row ? rowPicker(P, "sum") : `<button class="btn small ghost" data-sumpick="${esc(x.row)}">Pick this year's row</button>`}</li>`).join("")}</ul>` : "";
@@ -1722,7 +1725,7 @@ function gapNote(t) {
   const shown = g?.by_cell ? t.rows.filter(r => r.kind === "conclusion" && g.by_cell[r.cell]?.reliable === true) : [];
   const what = held.length && shown.length ? `This year's ${held.map(r => r.label).join(", ")} ${held.length === 1 ? "isn't" : "aren't"} shown` : "This year's figures aren't shown";
   const timing = g?.timing?.length ? `<details class="work" data-k="gap-timing" style="margin-top:6px"><summary>Timing the discounting depends on (${g.timing.length} row(s), not asked for)</summary><div class="in"><ul class="why small">${g.timing.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label)} (${esc(x.why)}): ${x.found ? `this year <span class="mono">${esc(x.found)}</span>` : "not found; last year's stands in"}</li>`).join("")}</ul></div></details>` : "";
-  if (g && g.reliable === false) return `<div class="callout bad small" style="margin-top:10px"><b>${esc(what)}: ${esc(gapReasons(g).map(r => r.long).join("; and "))}.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. ${need.length ? `Pick this year's row for each below (<a href="#" data-go="python" data-tab="valuation">The facts</a> shows where the DCF's cash flows come from); the figures show here once they're found.` : `Pick the rows the figures' cash flows come from in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; the figures show here once enough is found.`}${g.stood_in ? ` Meanwhile last year's values stand in for ${g.stood_in.toLocaleString()} client value(s).` : ""} <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>${list}${timing}
+  if (g && g.reliable === false) return `<div class="callout bad small" style="margin-top:10px"><b>${esc(what)}: ${esc(gapReasons(g).map(r => r.long).join("; and "))}.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. ${need.length ? `Check each row below: pick this year's row, keep the one found, or keep last year's values on purpose (<a href="#" data-go="python" data-tab="valuation">The facts</a> shows where the DCF's cash flows come from); the figures show here once they're all settled.` : `Pick the rows the figures' cash flows come from in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; the figures show here once enough is found.`}${g.stood_in ? ` Meanwhile last year's values stand in for ${g.stood_in.toLocaleString()} client value(s).` : ""} <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>${list}${timing}
     <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
   if (!g || !g.values) return g?.rebuilt ? `<div class="callout warn small" style="margin-top:10px">The two client models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised. Every value the figures read was found, but check the rows in The facts.</div>` : "";
   return `<div class="callout warn small" style="margin-top:10px"><b>${g.values.toLocaleString()} client value(s) on ${g.rows.length}${g.rows.length >= 30 ? "+" : ""} line item(s) weren't found in this year's model</b>${g.stood_in ? `; last year's values stand in for ${g.stood_in.toLocaleString()} of them` : ""}, so "This year" is last year's model with this year's numbers where they were found. The rows the report's figures' cash flows come from, what was found for each and how, are in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>, with a picker for the right row; the rest are listed here. <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
@@ -1896,7 +1899,7 @@ function bindSummary() {
   $("#sumThisVdClear")?.addEventListener("click", () => setThisVd(null));
   document.querySelectorAll("[data-sumpick]").forEach(b => b.onclick = async () => {
     const row = b.dataset.sumpick, g = SUM.data?.table?.this_year_gaps;
-    const x = [...(g?.dcf_missing || []), ...(g?.blank_rows || [])].find(y => y.row === row);
+    const x = [...(g?.dcf_missing || []), ...(g?.blank_rows || []), ...(g?.weak_rows || [])].find(y => y.row === row);
     SUM.rowPick = {row, label: x?.label, t: null, q: (x?.label || "").split(/\s+/).slice(0, 3).join(" "), results: null, loading: true, auto: true};
     redrawSummary();
     try { if (SUM.rowPick?.row === row) SUM.rowPick.t = await api(`/api/engagements/${E.id}/overlay/row?row=${encodeURIComponent(row)}`); }
@@ -2283,7 +2286,8 @@ function factsCard() {
     const ins = (fa.inputs || []).map(x => `<li><b>${esc(x.label || x.cell)}</b> <span class="mono small muted">${esc(x.cell)}</span>: ${esc(x.what)}${x.date ? ` <b>${esc(x.date)}</b>` : x.value != null && x.what === "a rate" ? ` <b>${vPct(x.value)}</b>` : x.value != null ? ` <b>${num(x.value)}</b>` : ""} <span class="small muted">(${esc(x.source)})</span></li>`).join("");
     const originRow = o => {
       const t = o.this_year, open = FX.picker?.row === o.row;
-      const now = !d.current ? `<span class="muted small">no current model assigned</span>` : !t ? "–" : t.found
+      const now = !d.current ? `<span class="muted small">no current model assigned</span>` : !t ? "–" : t.stand_in
+        ? `last year's values, kept on purpose <span class="pill info">your pick</span>` : t.found
         ? `<span class="mono">${esc(t.found)}</span> ${esc(t.found_label || "")} ${t.picked ? `<span class="pill info">your pick</span>` : ""}<div class="small muted">${esc((t.evidence || []).slice(0, 3).join(" · "))}</div>`
         : `<span class="pill bad">not found</span> <span class="small muted">last year's values stand in</span>`;
       const vals = t?.side_by_side?.length ? `<div class="small muted">${t.side_by_side.map(x => `${esc(x.period)}: ${num(x.last_year)} → ${num(x.this_year)}`).join(" · ")}</div>` : "";
@@ -2322,7 +2326,11 @@ function fxFrontier(fr) {
 function rowPicker(P, key) {
   const t = P.t;
   return `<div class="card" style="margin:6px 0;background:var(--raised)"><div class="row" style="justify-content:space-between"><b>This year's row for ${esc(P.label || P.row)}</b><button class="btn small ghost" id="${key}pClose">Close</button></div>
-    ${t?.found ? `<p class="small" style="margin:6px 0 4px">Found now: <span class="mono">${esc(t.found)}</span> ${esc(t.found_label || "")}${t.picked ? ` <span class="pill info">your pick</span>` : ""}</p>` : ""}
+    <p class="small" style="margin:6px 0 4px">${t?.stand_in ? `Now: last year's values, kept on purpose <span class="pill info">your pick</span>`
+      : t?.found ? `Found now: <span class="mono">${esc(t.found)}</span> ${esc(t.found_label || "")}${t.picked ? ` <span class="pill info">your pick</span>` : ` <span class="small muted">confidence ${(t.confidence ?? 0).toFixed(2)}</span> <button class="btn small" data-${key}use="${esc(t.found)}">Keep this row</button>`}`
+      : t ? "Not found this year: last year's values stand in." : ""}
+      ${t && !t.stand_in ? ` <button class="btn small ghost" data-${key}use="-" title="The figures use last year's values for this row, and say so">Keep last year's values</button>` : ""}</p>
+    ${t?.found && t.side_by_side?.length ? `<div class="small muted" style="margin-bottom:4px">${t.side_by_side.map(x => `${esc(x.period)}: ${typeof x.last_year === "number" ? vN(x.last_year) : "–"} → ${typeof x.this_year === "number" ? vN(x.this_year) : "–"}`).join(" · ")}</div>` : ""}
     ${t?.alternatives?.length ? `<p class="small" style="margin:6px 0 4px">Other candidates:</p><ul class="why small">${t.alternatives.map(a => `<li><a href="#" data-${key}use="${esc(a.row)}"><span class="mono">${esc(a.row)}</span> ${esc(a.label || "")}</a> <span class="muted">${esc(a.evidence.join(" · "))}</span></li>`).join("")}</ul>` : ""}
     <div class="row"><input class="in" id="${key}pQ" placeholder="Search this year's model by label or section" value="${esc(P.q || "")}" style="flex:1;min-width:200px"><button class="btn small" id="${key}pGo">Search</button>${t?.picked ? `<button class="btn small ghost" id="${key}pClear">Use what was found</button>` : ""}</div>
     <div class="scroll" style="max-height:240px;overflow:auto;margin-top:6px">${P.loading ? `<p class="small muted">Searching…</p>` : (P.results || []).length ? `<table><tbody>${P.results.map(r => `<tr class="click" data-${key}use="${esc(r.sheet)}!r${r.row}"><td class="mono small">${esc(r.sheet)}!r${r.row}</td><td>${esc(r.label || "")}${r.section ? ` <span class="muted small">${esc(r.section)}</span>` : ""}</td><td class="small muted">${esc(r.samples || "")}</td></tr>`).join("")}</tbody></table>` : P.results ? `<p class="small muted">No rows found.</p>` : ""}</div>
@@ -2341,7 +2349,7 @@ function bindRowPicker(P, key, redraw, saved, close) {  // -> search(), to run w
     try {
       const t = await api(`/api/engagements/${E.id}/overlay/rowpick`, {method: "POST", body: {prior: P.row, current}});
       SUM.data = null; OVR.sum = null; BR.data = null; saved(t);
-      toast(current ? "This year's row set: the Summary and the bridge use it now" : "Back to the row that was found");
+      toast(current === "-" ? "Last year's values kept for this row" : current ? "This year's row set: the Summary and the bridge use it now" : "Back to the row that was found");
     } catch (err) { $(`#${key}pMsg`).textContent = err.message; }
   };
   $(`#${key}pClose`)?.addEventListener("click", close);

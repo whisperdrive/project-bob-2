@@ -15,7 +15,10 @@ is looked for in several independent ways, and the one the evidence supports bes
   banner       a model's summary cells in the first rows of its sheets (a total, a value at the valuation date,
                often repeated on several sheets) that read the row last year: the same banner this year reads
                the row to use
-A person's pick for a row always wins. explain() gives what was found for a row and why, with the alternatives.
+A candidate of another shape counts for less: last year's row calculated (formulas) and this one typed values,
+or the other way round. A reconciliation sheet of pasted values ("LINKED EBITDA") has last year's history exactly
+and a full series, and would otherwise win every row it copies.
+A person's pick for a row always wins: a row, or last year's values kept on purpose (STAND_IN). explain() gives what was found for a row and why, with the alternatives.
 """
 import re
 from collections import defaultdict
@@ -24,6 +27,9 @@ BANNER_ROWS = 10
 EXACT = 1e-9
 SAME_SHEET = 0.35     # a sheet of the same name is the same sheet only if it shares this much of its labels
 RENAMED_SHEET = 0.5   # a sheet of another name is a renamed one if it shares this much
+CONFIDENT = 0.5      # a row found with less than this needs a person's look before its figures are this year's
+SHAPE = 0.6           # a candidate whose share of formulas differs from last year's row's by this much is another shape
+STAND_IN = "stand-in"  # a person's pick: keep last year's values for the row
 
 
 def _norm(label: str) -> str:
@@ -45,6 +51,7 @@ class RowFinder:
         self.picks = dict(picks or {})   # {(sheet, row): (sheet, row)}: a person's choice
         self._cache: dict = {}
         self._idx = None
+        self._shapes: dict = {}
 
     # ---- what each model has ---------------------------------------------------------------------------------
     def _index(self):
@@ -126,6 +133,27 @@ class RowFinder:
         tl = wb.timeline(sheet)
         vals = wb.sheet(sheet)
         return {when: vals.get((row, c)) for c, when in tl.items() if isinstance(vals.get((row, c)), float)}
+
+    def _shape(self, wb, k) -> tuple | None:
+        """(formulas, typed values) in a row, from the rows table (each workbook read once)."""
+        if id(wb) not in self._shapes:
+            try:
+                self._shapes[id(wb)] = {(s, r): (nf or 0, nc or 0) for s, r, nf, nc in
+                                        wb.db.execute("SELECT sheet, row, n_formula, n_const FROM rows")}
+            except Exception:
+                self._shapes[id(wb)] = {}
+        return self._shapes[id(wb)].get(k)
+
+    def other_shape(self, s, r, k) -> str | None:
+        """Why candidate k is another shape than last year's row (formulas against typed values), or None."""
+        a, b = self._shape(self.prior, (s, r)), self._shape(self.current, k)
+        if not a or not b or not sum(a) or not sum(b):
+            return None
+        fa, fb = a[0] / sum(a), b[0] / sum(b)
+        if abs(fa - fb) < SHAPE:
+            return None
+        what = lambda x, f: f"formulas ({x[0]} of {sum(x)})" if f >= 0.5 else f"typed values ({x[1]} of {sum(x)})"
+        return f"last year's row is {what(a, fa)}, this one {what(b, fb)}: another kind of row (a pasted copy?)"
 
     # ---- the strategies ----------------------------------------------------------------------------------------
     def _by_label(self, s, r) -> list[tuple]:
@@ -270,7 +298,7 @@ class RowFinder:
         return sorted(out.values(), key=lambda x: (-x[1], x[0]))
 
     # ---- deciding ----------------------------------------------------------------------------------------------
-    WEIGHTS = {"label": 0.3, "history": 0.35, "words": 0.2, "neighbours": 0.15, "banner": 0.25}
+    WEIGHTS = {"label": 0.3, "history": 0.35, "words": 0.2, "neighbours": 0.15, "banner": 0.25, "shape": 0.0}
 
     def explain(self, s: str, r: int) -> dict:
         """{found: (sheet, row) or None, how, evidence: [(strategy, text)], confidence, alternatives}."""
@@ -279,8 +307,9 @@ class RowFinder:
             return self._cache[key]
         if key in self.picks:
             k = self.picks[key]
-            res = {"found": k, "how": "your pick", "evidence": [("you", "picked by you")], "confidence": 1.0,
-                   "alternatives": []}
+            res = {"found": None if k == STAND_IN else k, "how": "your pick", "confidence": 1.0, "alternatives": [],
+                   "in_place": False, "stand_in": k == STAND_IN,
+                   "evidence": [("you", "last year's values kept on purpose" if k == STAND_IN else "picked by you")]}
             self._cache[key] = res
             return res
         found = defaultdict(dict)
@@ -300,6 +329,7 @@ class RowFinder:
                     ev["history"] = (h[0], h[1])
         ranked = []
         home = self.sheet_for(s)
+        odd = set()
         for k, ev in found.items():
             total = sum(self.WEIGHTS[n] * sc for n, (sc, _) in ev.items())
             if home:  # on the sheet last year's sheet became, or not
@@ -308,10 +338,16 @@ class RowFinder:
                          or (n == "neighbours" and sc >= 0.6) or (n == "label" and sc >= 0.8) for n, (sc, _) in ev.items())
             # the same label where it was, and last year's numbers in the periods both have: nothing beats that
             sure = "label" in ev and ev["label"][0] >= 1.0 and "history" in ev
+            why = self.other_shape(s, r, k)
+            if why:  # another kind of row: its evidence counts for less, and alone it isn't enough
+                ev["shape"] = (0.0, why)
+                total -= 0.2
+                strong = sure = False
+                odd.add(k)
             ranked.append((strong, total, k, ev, sure))
         ranked.sort(key=lambda x: (-x[4], -x[0], -x[1], x[2]))
         ranked = [x[:4] for x in ranked]
-        res = {"found": None, "how": None, "evidence": [], "confidence": 0.0,
+        res = {"found": None, "how": None, "evidence": [], "confidence": 0.0, "in_place": False,
                "alternatives": [{"row": f"{k[0]}!r{k[1]}", "label": self.current.labels().get(k, ""),
                                  "score": round(t, 2), "evidence": [f"{n}: {tx}" for n, (_, tx) in ev.items()]}
                                 for _, t, k, ev in ranked[:4]]}
@@ -319,13 +355,16 @@ class RowFinder:
             strong, total, k, ev = ranked[0]
             # the history outranks a label that contradicts it: the same label, but other numbers in periods
             # both models have, where another row has last year's numbers
-            hist = next((x for x in ranked if "history" in x[3] and x[3]["history"][0] >= 0.5), None)
+            hist = next((x for x in ranked if "history" in x[3] and x[3]["history"][0] >= 0.5 and x[2] not in odd), None)
             if hist and hist[2] != k and "history" not in ev and mine:
                 h = self._history(mine, k)
                 if h and h[3] and not h[2]:
                     strong, total, k, ev = hist
             if strong or total >= 0.3:
-                res.update(found=k, confidence=round(min(1.0, total), 2),
+                # the same label in the same place, of the same kind: confident even where there's no history to
+                # add (a single value, no timeline)
+                res["in_place"] = k[0] == s and "label" in ev and ev["label"][0] >= 1.0 and k not in odd
+                res.update(found=k, confidence=round(max(0.0, min(1.0, total)), 2),
                            how=max(ev.items(), key=lambda kv: self.WEIGHTS[kv[0]] * kv[1][0])[0],
                            evidence=[(n, tx) for n, (_, tx) in sorted(ev.items(), key=lambda kv: -self.WEIGHTS[kv[0]] * kv[1][0])])
                 res["alternatives"] = [a for a in res["alternatives"] if a["row"] != f"{k[0]}!r{k[1]}"]
@@ -346,9 +385,19 @@ class RowFinder:
         return self.explain(s, r)["found"]
 
     def why(self, s: str, r: int, labels: dict) -> str:
+        if self.picks.get((s, r)) == STAND_IN:
+            return "last year's values kept on purpose (your pick)"
         return self.rowmap.why(s, r, labels) + " (and no other way found it: not by its history, words, neighbours or banner)"
 
-    def pick(self, s: str, r: int, to: tuple | None) -> None:
+    def confident(self, s: str, r: int) -> bool:
+        """Found well enough to roll on without a person looking: picked (a row, or last year's values kept), a
+        confidence of CONFIDENT or more, or the same label in the same place."""
+        ex = self.explain(s, r)
+        return ex["how"] == "your pick" or (ex["found"] is not None and (ex["confidence"] >= CONFIDENT or ex["in_place"]))
+
+    def pick(self, s: str, r: int, to) -> None:
+        """A person's choice for a row: (sheet, row), STAND_IN (keep last year's values), or None (back to what's
+        found)."""
         if to:
             self.picks[(s, r)] = to
         else:

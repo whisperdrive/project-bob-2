@@ -1528,12 +1528,15 @@ def _load_rowpicks(eid: int, sess) -> None:
     """A person's choices of this year's row for last year's rows ({"CF!r11": "CF!r15"}), for the roll-forward."""
     if not sess.rowmap:
         return
+    import rowfind
     f = _rowpicks_file(eid)
     picks = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
     for a, b in picks.items():
-        s, r = a.rsplit("!r", 1)
-        to = b.rsplit("!r", 1) if b else None
-        sess.rowmap.pick(s, int(r), (to[0], int(to[1])) if to else None)
+        try:  # "[1]Sheet!r9" (a row of the linked client model) is Sheet row 9, as when it was picked
+            s, r = _row_ref(a)
+            sess.rowmap.pick(s, r, rowfind.STAND_IN if b == "-" else _row_ref(b) if b else None)
+        except ValueError:
+            continue
 
 
 def _row_ref(text: str) -> tuple[str, int]:
@@ -1550,7 +1553,8 @@ def row_found(sess, s: str, r: int) -> dict:
     prior = sess.prior or sess.ov
     out = {"row": f"{s}!r{r}", "label": prior.labels().get((s, r), ""), "found": None, "how": ex["how"],
            "evidence": [f"{n}: {t}" for n, t in ex["evidence"]], "confidence": ex["confidence"],
-           "alternatives": ex["alternatives"], "picked": (s, r) in sess.rowmap.picks}
+           "alternatives": ex["alternatives"], "picked": (s, r) in sess.rowmap.picks,
+           "stand_in": bool(ex.get("stand_in")), "confident": sess.rowmap.confident(s, r)}
     if ex["found"]:
         s2, r2 = ex["found"]
         out.update(found=f"{s2}!r{r2}", found_label=sess.current.labels().get((s2, r2), ""))
@@ -1595,9 +1599,11 @@ def row_pick(eid: int, prior_row: str, current_row: str | None) -> dict:
     sess, summary = overlay_session(eid)
     if not sess.rowmap:
         raise ValueError("assign this year's client model (Roles) and rebuild in Python first")
+    import rowfind
     s, r = _row_ref(prior_row)
-    to = _row_ref(current_row) if current_row else None
-    if to and not sess.current.db.execute("SELECT 1 FROM rows WHERE sheet=? AND row=?", to).fetchone():
+    keep = current_row == "-"  # keep last year's values for the row, on purpose
+    to = rowfind.STAND_IN if keep else _row_ref(current_row) if current_row else None
+    if to and not keep and not sess.current.db.execute("SELECT 1 FROM rows WHERE sheet=? AND row=?", to).fetchone():
         raise ValueError(f"{current_row} isn't a line item in this year's model")
     f = _rowpicks_file(eid)
     picks = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
