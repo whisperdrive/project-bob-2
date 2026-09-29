@@ -17,6 +17,8 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
   snapshot      a pasted copy of last year's rows (typed values) doesn't win over this year's own formula row
   agents        the rows the gate waits on settled by their numbers without a person, as the agents' picks
   unlabelled    a row with no label found by its numbers
+  schedule      the overlay's own outputs, whether or not the report quotes them: its figures and the rows of
+                periods nothing reads, classified (the report's figure where it sits, values, rates), not its inputs
   horizon       a model that ends where last year's did (a fixed horizon): the periods stay, only the valuation
                 date moves; one whose horizon rolled on moves its periods as before
   layout        a model of mostly unlabelled rows: found at their own row numbers where the layout is unchanged;
@@ -62,6 +64,7 @@ def main() -> None:
     summary["wiring"] = w
     v = summary["validation"]
     assert v["matched"] == v["cells"], v["mismatches"][:3]
+    schedule_check(summary)
 
     # ---- facts
     fx = ov.deep(dcffacts.facts, sess, summary, "Report!C5")
@@ -466,6 +469,29 @@ def unlabelled_check(out: Path) -> None:
     got = rowagent.by_numbers(f, "Output", 5)
     assert got and got["to"] == ("Valuation", 7) and got["check"]["ok"], got
     print(f"unlabelled: ok (a row with no label found by its numbers: {got['check']['text']})")
+
+
+def schedule_check(summary: dict) -> None:
+    import sqlite3
+    import outputs
+    import valuation
+    path = summary["wiring"]["overlay"]["db_path"]
+    anchors = {a["cell"] for a in valuation.catalogue(path) if a.get("ok")}
+    got = outputs.detect(sqlite3.connect(path), summary["sheets"], summary["levers"], summary["outputs"], anchors)
+    by = {o["cell"] or o["row"]: o for o in got}
+    assert by["Report!C5"]["class"] == "conclusion" and by["Report!C5"]["fact"]["key"] == "equity_value", by["Report!C5"]
+    assert by["Bridge!C7"]["class"] == "conclusion" and by["Val!C21"]["class"] == "conclusion"  # labelled like a value
+    assert by["Bridge!C6"]["class"] == "working" and by["Val!C17"]["class"] == "working"
+    assert not any(k.startswith("Inputs!") for k in by), "typed inputs aren't outputs"
+    assert not any(o["kind"] == "series" and o["read"] for o in got), "a row of periods another row reads isn't one"
+    assert outputs.outside(FACTS, got, summary["levers"]) == [], "the rate is an input (a lever), the value an output"
+    assert [f["key"] for f in outputs.outside(FACTS, got)] == ["discount_rate"], "... without the levers, the rate isn't found"
+    mine = outputs.apply(got, {"classes": {"Val!r17": "conclusion"}})
+    low = next(o for o in mine if o["row"] == "Val!r17")
+    assert low["class"] == "conclusion" and low["detected"] == "working" and low["set"]
+    n = {c: sum(o["class"] == c for o in got) for c in outputs.CLASSES}
+    print(f"schedule: ok ({len(got)} outputs of the overlay: {n['conclusion']} conclusion(s), {n['assumption']} "
+          f"assumption(s), {n['working']} working(s); the report's figure where it sits; inputs left out)")
 
 
 def horizon_check(out: Path) -> None:

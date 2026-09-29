@@ -310,6 +310,16 @@ person before the next relies on it:
    - the results must tie to the report's conclusions at the printed precision, and each sensitivity in the report
      (for example "WACC 7.50%, TGR 2.25%") is rerun through the discount-rate and growth levers.
 
+   **Outputs** lists everything the overlay computes that's a result, not only what the report quotes
+   (`bench/outputs.py`): its single figures (formulas in one or two cells: an equity value, a rate, a bridge's
+   line) and the rows of periods nothing else on its sheets reads; not its inputs (those are the levers), not
+   check rows. Each is classed once as a conclusion, an assumption or a working, by rules a person confirms:
+   where a report figure sits (with whether Excel's saved value ties to it), a DCF, a label like a value or like
+   an input to the value. The report's conclusions and assumptions that sit on no output and no input are listed
+   apart, to be marked as produced outside the model; the Summary then counts them as that, not as missing. The
+   confirmed schedule is the engagement's; putting this year's value beside last year's for each output is the
+   next step.
+
    The page runs the module live. Levers are the report's assumptions located in the overlay, and any other input
    can be found by search and changed. Results update as you type. There are three feeds: the workbook as saved, the
    prior client model, or the current client model **rolled forward**. Rolling forward moves the overlay's period

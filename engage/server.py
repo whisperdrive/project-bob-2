@@ -347,6 +347,23 @@ async def put_profile(eid: int, body: Profile):
     return await _run(engagement.set_profile, eid, body.fields)
 
 
+class Schedule(BaseModel):
+    classes: dict | None = None   # {"Sheet!r12": "conclusion" | "assumption" | "working" | None}
+    outside: dict | None = None   # {fact key: True | False}: produced outside the model
+    confirm: bool = False
+
+
+@app.get("/api/engagements/{eid}/schedule")
+async def get_schedule(eid: int):
+    """The overlay's own outputs (outputs.py), classified, with the report's figures that sit on none."""
+    return await _run(engagement.schedule_view, eid)
+
+
+@app.put("/api/engagements/{eid}/schedule")
+async def put_schedule(eid: int, body: Schedule):
+    return await _run(engagement.set_schedule, eid, body.classes, body.outside, body.confirm)
+
+
 @app.get("/api/engagements/{eid}/models/{fid}")
 async def model_dashboard(eid: int, fid: int):
     """The Map step's dashboard for one of the engagement's workbooks."""

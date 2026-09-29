@@ -274,7 +274,7 @@ def get(eid: int) -> dict | None:
     if not rows:
         return None
     e = rows[0]
-    for k in ("roles_suggested", "compare_json", "map_json", "overlay_json"):
+    for k in ("roles_suggested", "compare_json", "map_json", "overlay_json", "profile_json", "schedule_json"):
         e[k.removesuffix("_json")] = json.loads(e.pop(k) or "null")
     wbs = workbooks(eid)
     for w in wbs:
@@ -1535,6 +1535,69 @@ def profile_view(eid: int) -> dict:
                           "drives": "shown: read back from each DCF's factors; the Summary's method selector changes "
                                     "it for a scenario"}
     return {"fields": out, "settable": ["fy_end_month", "horizon"]}
+
+
+# ---- the output schedule: the overlay's own outputs, whether or not the report quotes them (outputs.py) ----------
+
+_SCHEDULES: dict[int, tuple] = {}  # engagement -> (what it was worked out from, the detected schedule)
+
+
+def _schedule(eid: int) -> dict:
+    """A person's part: {"classes": {"Sheet!r12": "working"}, "outside": [fact key], "confirmed_at", "changed_at"}."""
+    rows = _q("SELECT schedule_json FROM engagements WHERE id=?", eid)
+    return json.loads((rows[0]["schedule_json"] if rows else None) or "null") or {}
+
+
+def schedule_view(eid: int) -> dict:
+    """The overlay's outputs with a person's classes over the detected ones, the report's figures that sit on none
+    of them (each marked, or not, as produced outside the model), and when the schedule was confirmed."""
+    import outputs as outmod
+    import valuation
+    rows = _q("SELECT overlay_json FROM engagements WHERE id=?", eid)
+    summary = json.loads((rows[0]["overlay_json"] if rows else None) or "null")
+    if not summary:
+        raise ValueError("build the Python overlay first: the schedule is read from the overlay it compiles")
+    path = summary["wiring"]["overlay"]["db_path"]
+    key = (path, Path(path).stat().st_mtime if Path(path).exists() else None, json.dumps(
+        [summary.get("levers"), [(o["cell"], o.get("key")) for o in summary.get("outputs") or []]], default=str))
+    if _SCHEDULES.get(eid, (None,))[0] != key:
+        anchors = {a["cell"] for a in valuation.catalogue(path) if a.get("ok")}
+        with closing(rodb.connect(path)) as db:
+            _SCHEDULES[eid] = (key, outmod.detect(db, summary.get("sheets") or [], summary.get("levers"),
+                                                  summary.get("outputs"), anchors))
+    mine = _schedule(eid)
+    sched = outmod.apply(_SCHEDULES[eid][1], mine)
+    marked = set(mine.get("outside") or [])
+    out = outmod.outside(reference(eid), sched, summary.get("levers"))
+    return {"outputs": sched, "outside": [{**f, "marked": f["key"] in marked} for f in out],
+            "counts": dict(Counter(o["class"] for o in sched)), "confirmed_at": mine.get("confirmed_at"),
+            "changed_at": mine.get("changed_at")}
+
+
+def set_schedule(eid: int, classes: dict | None = None, outside: dict | None = None, confirm: bool = False) -> dict:
+    """A person's classes ({"Sheet!r12": "working" | None to go back to the detected one}), report figures marked
+    as produced outside the model ({fact key: True | False}), and confirming the schedule as it stands."""
+    import outputs as outmod
+    mine = _schedule(eid)
+    cl = dict(mine.get("classes") or {})
+    for row, c in (classes or {}).items():
+        if c in (None, ""):
+            cl.pop(row, None)
+        elif c not in outmod.CLASSES:
+            raise ValueError(f"a class is one of {', '.join(outmod.CLASSES)}")
+        else:
+            cl[row] = c
+    out = set(mine.get("outside") or [])
+    for k, v in (outside or {}).items():
+        (out.add if v else out.discard)(k)
+    now = time.time()
+    mine.update(classes=cl, outside=sorted(out))
+    if classes or outside:
+        mine["changed_at"] = now
+    if confirm:
+        mine["confirmed_at"] = now
+    _set("engagements", eid, schedule_json=json.dumps(mine), updated_at=now)
+    return schedule_view(eid)
 
 
 def _conventions(eid: int) -> tuple[str | None, str]:

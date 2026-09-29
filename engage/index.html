@@ -1166,6 +1166,49 @@ function viewRoles() {
   <div class="card" id="engProfile">${engProfileCard()}</div>
   ${likenessCard(sug, wbs)}${profilesCard(sug, wbs)}`;
 }
+// ---- the output schedule: the overlay's own outputs, whether or not the report quotes them (engagement.schedule_view)
+const SCH = {stamp: null, data: null, loading: false};
+function outputsPane() {
+  const D = SCH.data;
+  const head = `<div class="card"><h2>The overlay's outputs</h2><p class="sub">Everything the overlay computes that's a result, not only what the report quotes: its single figures, and the rows of periods nothing else on its sheets reads. Each is classed once (conclusion, assumption, working) by rules you confirm: where a report figure sits, a DCF, a label like a value or a rate. Its inputs (the levers) aren't outputs. No model calls.</p>`;
+  if (!D) return head + `<p class="muted small" style="margin:0">${SCH.loading ? "Reading the overlay…" : ""}</p></div>`;
+  const c = D.counts || {}, when = t => new Date(t * 1000).toLocaleString(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"});
+  const status = D.confirmed_at ? `<span class="pill ok">Confirmed ${esc(when(D.confirmed_at))}</span>${D.changed_at > D.confirmed_at ? ` <span class="pill warn">changed since</span>` : ""}` : `<span class="pill warn">Not confirmed</span>`;
+  const num = o => o.kind === "series" ? `<span class="muted small">${o.periods} periods</span>` : typeof o.value === "number" ? fmt(o.value, Math.abs(o.value) < 10 ? 4 : 1) : esc(o.value ?? "");
+  const report = o => !o.fact ? "" : `${esc(o.fact.report || "")}${o.fact.tie === true ? ` <span class="pill ok" title="Excel's saved value rounds to the report's figure">ties as saved</span>` : o.fact.tie === false ? ` <span class="pill bad" title="Excel's saved value doesn't round to the report's figure">doesn't tie</span>` : ""}`;
+  const pick = o => `<select class="in" data-sch="${esc(o.row)}">${["conclusion", "assumption", "working"].map(k => `<option value="${k}" ${o.class === k ? "selected" : ""}>${k[0].toUpperCase() + k.slice(1)}${o.detected === k ? " (detected)" : ""}</option>`).join("")}</select>`;
+  const table = rows => `<div class="scroll"><table><thead><tr><th>Line item</th><th class="num">As saved</th><th>In the report</th><th>Class</th><th>Why</th></tr></thead><tbody>${rows.map(o => `<tr><td><b>${esc(o.label)}</b> <span class="mono small muted">${esc(o.cell || o.row)}</span></td><td class="num">${num(o)}</td><td class="small">${report(o)}</td><td>${pick(o)}${o.set ? ` <span class="small">set by you</span>` : ""}</td><td class="small muted">${esc(o.why)}</td></tr>`).join("")}</tbody></table></div>`;
+  const by = k => D.outputs.filter(o => o.class === k);
+  const out = D.outside || [];
+  return head + `<div class="row" style="justify-content:space-between;margin:6px 0 10px"><span class="small">${D.outputs.length} output(s): <b>${c.conclusion || 0}</b> conclusion(s), <b>${c.assumption || 0}</b> assumption(s), ${c.working || 0} working(s). ${status}</span><button class="btn small primary" id="schConfirm">${D.confirmed_at ? "Confirm again" : "Confirm the schedule"}</button></div>
+    <h3 style="font-size:14px;margin:10px 0 6px">Conclusions</h3>${by("conclusion").length ? table(by("conclusion")) : `<p class="small muted">None.</p>`}
+    <h3 style="font-size:14px;margin:14px 0 6px">Assumptions</h3>${by("assumption").length ? table(by("assumption")) : `<p class="small muted">None among the outputs (the typed-in ones are the levers).</p>`}
+    <details data-k="sch-work" style="margin-top:12px"><summary>Workings (${by("working").length})</summary>${table(by("working"))}</details></div>
+    <div class="card"><h2>The report's figures on none of them</h2><p class="sub">Conclusions and assumptions the report quotes that sit neither on an output nor on an input of the overlay. Mark those the valuation produced outside the model (a split of the equity value, a multiple worked out afterwards): the Summary then counts them as outside the model rather than missing.</p>
+    ${out.length ? `<ul class="why" style="color:var(--ink)">${out.map(f => `<li><label><input type="checkbox" data-outside="${esc(f.key)}" ${f.marked ? "checked" : ""}> <b>${esc(f.label)}</b> ${esc(f.value_text || "")} <span class="muted small">${esc(f.category)}${f.page ? `, page ${f.page}` : ""}</span></label></li>`).join("")}</ul>` : `<p class="small muted" style="margin:0">None: every figure the report quotes sits on an output or an input.</p>`}</div>`;
+}
+async function loadSchedule(force) {
+  const stamp = `${E.id}|${E.overlay_started_at || ""}|${(E.facts || []).filter(f => f.status === "approved").length}`;
+  if (!force && (SCH.stamp === stamp || SCH.loading)) return;
+  Object.assign(SCH, {stamp, loading: true, data: SCH.stamp?.split("|")[0] === String(E.id) ? SCH.data : null});
+  try { SCH.data = await api(`/api/engagements/${E.id}/schedule`); } catch (e) { SCH.data = null; toast(e.message, 6000); }
+  SCH.loading = false;
+  redrawOutputs();
+}
+function redrawOutputs() { const c = $("#ovOut"); if (c && state.step === "python" && OV.tab === "outputs") { keepOpen(c, () => { c.innerHTML = outputsPane(); }); bindOutputs(); } }
+async function putSchedule(body, msg) {
+  try { SCH.data = await api(`/api/engagements/${E.id}/schedule`, {method: "PUT", body}); E.schedule = {...(E.schedule || {}), outside: SCH.data.outside.filter(f => f.marked).map(f => f.key)}; if (msg) toast(msg); }
+  catch (e) { toast(e.message, 6000); }
+  redrawOutputs();
+}
+function bindOutputs() {
+  document.querySelectorAll("#ovOut [data-sch]").forEach(s => s.onchange = () => {
+    const o = SCH.data.outputs.find(x => x.row === s.dataset.sch);
+    putSchedule({classes: {[s.dataset.sch]: s.value === o?.detected ? null : s.value}});
+  });
+  document.querySelectorAll("#ovOut [data-outside]").forEach(c => c.onchange = () => putSchedule({outside: {[c.dataset.outside]: c.checked}}));
+  $("#schConfirm")?.addEventListener("click", () => putSchedule({confirm: true}, "Schedule confirmed."));
+}
 // ---- the engagement's profile: facts about the models the steps would otherwise each guess (engagement.profile_view)
 const PROF = {stamp: null, data: null, loading: false};
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -1527,7 +1570,7 @@ async function bindModels() {
 
 // ---- step 6: python overlay ------------------------------------------------------------------------------
 const OV = {mode: "workbook", changes: {}, vd: null, months: null, result: null, running: false, trace: null, q: "", found: [], eid: null, tab: "live"};
-const OV_TABS = [["live", "Run it live"], ["valuation", "Valuation (DCF)"]];
+const OV_TABS = [["live", "Run it live"], ["valuation", "Valuation (DCF)"], ["outputs", "Outputs"]];
 const serialToISO = s => new Date(Date.UTC(1899, 11, 30) + Math.round(s) * 86400000).toISOString().slice(0, 10);
 function leverShown(l, v) {
   if (v == null || typeof v !== "number") return v ?? "";
@@ -1985,7 +2028,7 @@ function summaryCard(d) {
     const z = col === "this_year" && r.zero_roll;  // this year's model at last year's date, against last year's
     const zero = z && z.value != null ? `<div class="small ${z.ok ? "muted" : "bad-text"}" title="This year's model at last year's valuation date (${esc(z.valuation_date || "")}), rolled by nothing: about last year's figure if the rows found carry the same numbers">at last year's date ${sumNum(r, z.value)}${z.ratio != null ? ` (${z.ratio.toFixed(2)}×)` : ""}</div>` : "";
     if ((col === "this_year" || col === "scenario") && unreliable(t, r)) return `<td class="num"><span class="small muted" title="Too little of this year's model was found for these figures">needs rows</span>${zero}</td>`;
-    return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "rebuilt" ? tick(r) : ""}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}${zero}` : `<span class="muted small">not in the overlay</span>`}</td>`;
+    return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "rebuilt" ? tick(r) : ""}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}${zero}` : `<span class="muted small">${outside.has(r.key) ? "outside the model" : "not in the overlay"}</span>`}</td>`;
   };
   const lev = (r, col) => {
     const l = r.lever; if (!l) return `<td class="num muted small">${col === "scenario" ? "" : "–"}</td>`;
@@ -1995,8 +2038,9 @@ function summaryCard(d) {
     return `<td class="num"><input type="text" data-sumlever="${esc(l.cell)}" value="${esc(cur !== undefined ? leverShown(l, cur) : leverShown(l, v))}" aria-label="${esc(r.label)}">${l.unit === "%" ? " %" : ""}</td>`;
   };
   // a section's rows the overlay has, and those it doesn't: the report quotes more than the overlay computes
-  const scope = (rows, has, yes, no) => { const n = rows.filter(has).length;
-    return rows.length && n < rows.length ? ` <span class="small muted" style="font-weight:400">· ${n} ${yes} · ${rows.length - n} ${no}</span>` : ""; };
+  const outside = new Set(E.schedule?.outside || []);  // marked produced outside the model (the Outputs tab)
+  const scope = (rows, has, yes, no) => { const n = rows.filter(has).length, m = rows.filter(r => !has(r) && outside.has(r.key)).length, rest = rows.length - n - m;
+    return rows.length && n < rows.length ? ` <span class="small muted" style="font-weight:400">· ${n} ${yes}${m ? ` · ${m} marked outside the model` : ""}${rest ? ` · ${rest} ${no}` : ""}</span>` : ""; };
   const vdDefault = t.scenario_roll?.valuation_date || t.roll?.valuation_date || "";
   const sel = (id, opts, cur) => `<select class="in" id="${id}">${opts.map(([v, lab]) => `<option value="${v}" ${v === (cur || "") ? "selected" : ""}>${lab}</option>`).join("")}</select>`;
   const notes = [...conc.filter(r => r.method_note).map(r => `${r.label}: ${r.method_note}`), ...conc.filter(r => r.range_note).map(r => `${r.label}: ${r.range_note}`)];
@@ -2241,6 +2285,7 @@ function viewPython() {
   ${busy(E.overlay_status) ? `<div class="card empty">Rebuilding the module… this comes back when it's done.</div>`
     : OV.tab === "valuation" ? `<div id="ovVal" class="stack">${ovValuationPane()}</div>`
     : OV.tab === "ask" ? `<div id="ovAsk">${ovAskPane()}</div>`
+    : OV.tab === "outputs" ? `<div id="ovOut" class="stack">${outputsPane()}</div>`
     : `<div class="card" id="ovLive">${liveCard(O)}</div>`}
   ${tieCard(O)}
   <div class="card"><h2>The module</h2><p class="sub">${esc(O.files.overlay || "")}, sheets ${esc(O.sheets.join(", "))}: ${st.formula_cells.toLocaleString()} formula cells in ${st.rows.toLocaleString()} functions (${st.branches.toLocaleString()} branches). Each function returns its line item's value for a column; the Excel formula is in the comment beside each branch.
@@ -2371,6 +2416,7 @@ bind.python = () => {
   if (!E.overlay || busy(E.overlay_status)) return;
   if (OV.tab === "valuation") bindOvValuation();
   else if (OV.tab === "ask") bindOvAsk();
+  else if (OV.tab === "outputs") { bindOutputs(); loadSchedule(); }
   else { bindLive(); if (!OV.result && !OV.running) ovSchedule(0); }
 };
 
