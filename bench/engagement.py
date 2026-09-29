@@ -431,11 +431,13 @@ def _settle_table(did: int, tid: str, action: str, markdown: str | None = None) 
               if (a := json.loads(f["agent_json"] or "null") or {}).get("status") == "escalated" and not a.get("held")
               and (f["id"] in changed or t["page"] in reportfacts.fact_pages(f, pg))]
     status = _doc(did)["facts_status"]
-    if reopen and status not in ("queued", "running"):
+    if reopen and status == "running":  # the loop running now took the facts as they were: the next one takes these
+        _AFTER.setdefault(did, set()).update(reopen)
+    elif reopen and status != "queued":
         resolve_facts(did, reopen)
-    elif reopen and status == "queued" and _REOPEN.get(did) is not None:
+    elif reopen and _REOPEN.get(did) is not None:
         _REOPEN[did] |= set(reopen)  # a loop on other reopened facts hasn't started: it takes these too
-    return {**document(did), "reopened": len(reopen)}
+    return {**document(did), "reopened": len(reopen), "after_loop": bool(reopen) and status == "running"}
 
 
 _DOC_LOCK = threading.RLock()  # the background reader and a person's table decisions save into the same document
@@ -691,6 +693,16 @@ def resolve_tables(did: int) -> None:
 
 
 _REOPEN: dict[int, set[int]] = {}  # document -> the facts a table decision sent back to the loop (absent: all open)
+_AFTER: dict[int, set[int]] = {}   # ... reopened while a loop was running: a loop of their own once it's done
+
+
+def _next_loop(did: int) -> None:
+    after = _AFTER.pop(did, None)
+    if after:
+        try:
+            resolve_facts(did, list(after))
+        except ValueError:  # settled meanwhile
+            pass
 
 
 def resolve_facts(did: int, ids: list[int] | None = None) -> None:
@@ -757,6 +769,7 @@ def _resolve_facts_job(did: int) -> None:
             and (only is None or r["id"] in only)]
     if not rows:
         _set("documents", did, facts_status="done", facts_step="Done")
+        _next_loop(did)
         return
     fs = []
     for r in rows:
@@ -787,6 +800,7 @@ def _resolve_facts_job(did: int) -> None:
     _learn(did, "facts", loop["episodes"])
     _set("documents", did, facts_status="done", facts_step="Done")
     _touch(eid)
+    _next_loop(did)
 
 
 def calls_view(eid: int) -> dict:
@@ -1903,6 +1917,7 @@ def _process_facts(did: int) -> None:
                            review_json, status, updated_at, agent_json) VALUES ({', '.join('?' * (len(FACT_FIELDS) + 9))})""",
                        (eid, did, f["id"], *[f.get(k) for k in FACT_FIELDS], f["origin"], json.dumps(f["check"]),
                         json.dumps(f.get("review")), "pending", now, json.dumps(f.get("agent"))))
+    _AFTER.pop(did, None)  # facts reopened during the extraction are gone: every fact is new and checked afresh
     _set("documents", did, facts_notes=res.get("notes"), review_summary=res.get("review_summary"))
     if res.get("loop"):
         _note_loop(did, facts={**res["loop"]["summary"], **auto_decide(did), "at": now}, lessons_facts=None)

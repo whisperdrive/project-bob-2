@@ -176,7 +176,7 @@ person before the next relies on it:
    transcription and every round, and the person approves, takes the reviewer's read or edits it. Edits are
    re-checked against the page, and so are the facts. A fact the reviewer accepted and only a check held up is
    approved by the agents once the check passes. Facts handed to you that rest on that table's page go back to the
-   fact review loop with the new text. Facts on other pages stay with you, since the same loop on the same text
+   fact review loop with the new text (if a loop is already running, once it finishes). Facts on other pages stay with you, since the same loop on the same text
    would come out the same.
 2. **Report reference.** `bench/reportfacts.py` extracts the target, valuation date, conclusions (preferred value and
    range), assumptions (discount rate and basis, terminal growth or exit / RAB multiple, ...), approach and the

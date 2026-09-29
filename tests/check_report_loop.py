@@ -3,7 +3,7 @@
 - Taking the reviewer's read of a table sends back to the fact review loop only the facts handed to a person that
   rest on that table's page; a fact on another page stays with the person (the same loop on the same text would
   come out the same), and a fact only a check held up is approved by the agents once the check passes.
-- The loop takes just those facts.
+- The loop takes just those facts; if a loop is already running, they get one of their own when it finishes.
 - Report jobs and model jobs run in separate lanes, so a review loop never holds up the map, and a queued job says
   what it's waiting behind.
 
@@ -99,6 +99,17 @@ def main() -> None:
     assert view[("map", "queued")]["behind"]["label"] == "the row agents" and view[("map", "queued")]["ahead"] == 1
     assert view[("resolve_facts", "queued")]["behind"] is None, "the fact loop doesn't wait behind the row agents"
     print("lanes: ok (the map waits behind the row agents and says so; the fact loop has its own lane)")
+
+    for q in lanes.values():
+        q.queue.clear()
+    engagement._jobs.running.clear()
+    engagement._set("documents", did, facts_status="running", facts_step="Fact review loop, round 1")
+    got = engagement.settle_table(did, "p2-t1", "reset")  # undone while a loop runs: its page's facts wait for it
+    assert got["reopened"] == 2 and got["after_loop"] and not lanes["report"].queue, got["reopened"]
+    engagement._set("documents", did, facts_status="done", facts_step="Done")
+    engagement._next_loop(did)  # the running loop finished
+    assert list(lanes["report"].queue) == [("resolve_facts", did)] and engagement._REOPEN[did] == {on_page, held_by_check}
+    print("mid-loop: ok (facts a decision reopens while a loop runs get a loop of their own when it finishes)")
 
 
 if __name__ == "__main__":

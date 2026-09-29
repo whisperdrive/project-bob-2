@@ -964,7 +964,7 @@ function bindTables() {
 async function settle(tid, action, markdown) {
   try { const full = await api(`/api/documents/${DOC.id}/tables/${encodeURIComponent(tid)}`, {method: "PUT", body: {action, markdown}});
     DOC = {...full, _stamp: docStamp(full)}; state.table = tid;
-    toast(full.reopened ? `Table saved. ${full.reopened} fact(s) resting on its page go back to the review loop with the new text.` : "Table saved; the facts are checked against it again.", 6000); }
+    toast(full.reopened ? `Table saved. ${full.reopened} fact(s) resting on its page go back to the review loop with the new text${full.after_loop ? ", once the loop running now finishes" : ""}.` : "Table saved; the facts are checked against it again.", 6000); }
   catch (e) { toast(e.message, 6000); }
   await refresh(true);
 }
