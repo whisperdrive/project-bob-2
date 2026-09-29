@@ -14,6 +14,10 @@ rows found but blank, rows found only weakly, timing rows that don't follow from
      may search this year's model and inspect rows before proposing one (or saying the model has no such line
      item). Sol checks each proposal, with the numbers, and accepts or rejects it with a reason; a rejection goes
      back to luna. At most MAX_TURNS actions and MAX_PROPOSALS proposals a row.
+  3. the figures, again: the zero-roll check (this year's model at last year's valuation date should give about
+     last year's figure). Where a figure is still off, the rows the figures read are ranked by how far their
+     numbers are from last year's; sol, as advisor, sees the figures, those rows and the decisions so far, and
+     names the rows to look at again and what to look for; luna looks again with that. At most ROUNDS rounds.
 Each choice is the agents' pick (rowfind.pick(by="agent")): it counts as settled, shows as the agents', and a
 person's pick always wins over it. The agents never keep last year's values for a row the DCF's cash flows come
 from: that figure stays held, saying the agents couldn't find the row.
@@ -27,6 +31,8 @@ import rowfind
 MAX_TURNS = 6        # luna's actions for one row (searches, inspections, proposals)
 MAX_PROPOSALS = 2    # proposals sol may reject before the row is left open
 WORKERS = 3          # rows worked on at once (the model calls; the session's work is one thread anyway)
+ROUNDS = 3           # rounds against the zero-roll check
+ADVISED = 5          # rows the advisor may send back a round
 
 KINDS = ("dcf_missing", "blank_rows", "weak_rows")
 
@@ -135,8 +141,117 @@ def run(sess, summary: dict, facts: list[dict], step=None, reader=None) -> dict:
                     d.update(decision=f"{k[0]}!r{k[1]}", how="agents", to_label=finder.current.labels().get(k, ""))
     step("Checking the figures again")
     after = ovmod.deep(lambda: ovmod.summary_table(sess, summary, facts)["this_year_gaps"]) or {}
+    rounds = []
+    while reader is not None and after.get("zero_roll_off") and len(rounds) < ROUNDS:
+        step(f"Round {len(rounds) + 1}: {len(after['zero_roll_off'])} figure(s) far from last year's at last year's date")
+        r = one_round(reader, finder, after, decisions, rows, step)
+        rounds.append(r)
+        if not r["revisited"]:
+            break
+        step("Checking the figures again")
+        after = ovmod.deep(lambda: ovmod.summary_table(sess, summary, facts)["this_year_gaps"]) or {}
+        r["still_off"] = [x["label"] for x in after.get("zero_roll_off") or []]
     return {"decisions": decisions, "open_before": len(rows), "open_after": len(open_rows(after)),
-            "reliable_after": after.get("reliable")}
+            "reliable_after": after.get("reliable"), "rounds": rounds,
+            "zero_roll_off": after.get("zero_roll_off") or []}
+
+
+def suspects(finder, gaps: dict, limit: int = 12) -> list[dict]:
+    """The rows the figures read that look least like last year's: not found (last year's values stand in), or
+    found with numbers far from last year's, a person's picks left out. The DCF's rows first, then the widest gap."""
+    origins = {_ref(x) for x in gaps.get("dcf_origins") or []}
+    out = []
+    for text in gaps.get("read_rows") or []:
+        k = _ref(text)
+        if finder.pick_by.get(k) == "you":
+            continue
+        ex = finder.explain(*k)
+        if ex.get("stand_in") or ex.get("found") is None:
+            out.append({"row": text, "label": finder.prior.labels().get(k, ""), "now": "not found: last year's values stand in",
+                        "gap": 9.9, "origin": k in origins})
+            continue
+        c = finder.check(k[0], k[1], ex["found"])
+        if c["periods"] and (c["median_gap"] or 0) > rowfind.CHECK_GAP:
+            out.append({"row": text, "label": finder.prior.labels().get(k, ""),
+                        "now": f"{ex['found'][0]}!r{ex['found'][1]} ({ex['how']}): {c['text']}", "gap": c["median_gap"],
+                        "origin": k in origins})
+    return sorted(out, key=lambda x: (not x["origin"], -x["gap"]))[:limit]
+
+
+ADVISE = """You advise on rolling a valuation forward onto this year's version of a client's model. Each of last
+year's client rows the valuation reads was matched to a row of this year's model. A check: this year's model at
+last year's valuation date, rolled by nothing, should give about last year's figures (forecasts are revised, not
+replaced). These figures don't:
+{figures}
+
+The client rows the figures read that look least like last year's (what they're matched to now, and how their
+numbers compare with last year's over the periods both models have):
+{suspects}
+
+What was decided so far:
+{decisions}
+
+Name at most {n} rows to look at again ("Sheet!rN" as above), the most likely cause first, each with why and what
+to look for in this year's model. Say done if none of them could explain the gap."""
+_ADVICE = {"type": "json_schema", "name": "row_advice", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False, "required": ["rows", "done"],
+    "properties": {"done": {"type": "boolean"}, "rows": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["row", "why", "look_for"],
+        "properties": {"row": {"type": "string"}, "why": {"type": "string"}, "look_for": {"type": "string"}}}}}}}
+
+
+def one_round(reader, finder, gaps: dict, decisions: list[dict], rows: list[dict], step) -> dict:
+    """Sol advises which rows to look at again for the figures still off; luna looks again at each with the advice."""
+    sus = ovmod.deep(suspects, finder, gaps)
+    figs = "\n".join(f"- {x['label']}: {x['value']} at last year's date, {x['ratio']}x last year's" for x in gaps["zero_roll_off"])
+    dec = "\n".join(f"- {d['row']} {d.get('label', '')}: " + (f"{d['decision']} ({d.get('how')}: {d.get('why')})"
+                                                               if d.get("decision") else f"open ({d.get('why')})")
+                     for d in decisions) or "- nothing: every row was found by rowfind"
+    sus_text = "\n".join(f"- {x['row']} {x['label']}{' (a DCF cash-flow row)' if x['origin'] else ''}: {x['now']}"
+                         for x in sus) or "- none stands out"
+    advice = reader._call(reader.reviewer_model, ADVISE.format(figures=figs, suspects=sus_text, decisions=dec, n=ADVISED),
+                          None, _ADVICE, "row-advice")
+    known = {x["row"]: x for x in sus} | {d["row"]: d for d in rows}
+    todo = [a for a in advice.get("rows") or [] if a.get("row") in known][:ADVISED]
+    out = {"figures_off": [x["label"] for x in gaps["zero_roll_off"]], "advice": advice.get("rows") or [],
+           "done": advice.get("done"), "revisited": []}
+    if advice.get("done") or not todo:
+        return out
+    for a in todo:
+        k = _ref(a["row"])
+        if finder.pick_by.get(k) == "you":
+            continue
+        step(f"Looking again at {a['row']}: {a['why'][:80]}")
+        before = finder.explain(*k).get("found")
+        ovmod.deep(finder.pick, k[0], k[1], None, "agent")  # the agents' own earlier choice is set aside
+        x = {"row": a["row"], "sheet": k[0], "r": k[1], "label": finder.prior.labels().get(k, ""),
+             "origin": any(s["row"] == a["row"] and s["origin"] for s in sus) or known[a["row"]].get("origin", False)}
+        note = (f"A first pass didn't reproduce last year's figures at last year's date ({figs.strip()}). "
+                f"A reviewer advises looking again at this row: {a['why']} Look for: {a['look_for']}"
+                + (f" It was matched to {before[0]}!r{before[1]}." if before else ""))
+        try:
+            got = agent_row(reader, finder, x, note)
+        except Exception as e:
+            got = {"decision": None, "why": f"the models couldn't be asked: {type(e).__name__}: {e}"[:300]}
+        rec = {"row": a["row"], "advice": a["why"], "why": got.get("why"), "review": got.get("review"),
+               "calls": got.get("calls"), "decision": None}
+        dec_ = got.get("decision")
+        if dec_ == rowfind.STAND_IN and not x["origin"]:
+            ovmod.deep(finder.pick, k[0], k[1], rowfind.STAND_IN, "agent")
+            rec["decision"] = "-"
+        elif dec_ and dec_ != rowfind.STAND_IN:
+            ovmod.deep(finder.pick, k[0], k[1], dec_, "agent")
+            rec["decision"] = f"{dec_[0]}!r{dec_[1]}"
+        out["revisited"].append(rec)
+        d = next((d for d in decisions if d["row"] == a["row"]), None)
+        if d is None:
+            d = {**x, "kind": "advised", "decision": None}
+            decisions.append(d)
+        d.update(decision=rec["decision"], how="agents" if rec["decision"] else None, why=got.get("why"),
+                 review=got.get("review"), advice=a["why"],
+                 to_label=(finder.current.labels().get(dec_, "") if isinstance(dec_, tuple) else
+                           "last year's values, kept" if rec["decision"] == "-" else None))
+    return out
 
 
 # ---- the models ----------------------------------------------------------------------------------------------
@@ -154,7 +269,7 @@ Last year's row:
 
 This year's candidates so far, each checked against last year's numbers:
 {candidates}
-{history}
+{context}{history}
 Reply with one action:
 - "search": rows of this year's model with these words in their label or section (query: a few words)
 - "inspect": one row of this year's model in full, checked against last year's (row: "Sheet!rN")
@@ -250,7 +365,7 @@ def _row(text: str | None, finder) -> tuple | None:
     return k if finder.current.db.execute("SELECT 1 FROM rows WHERE sheet=? AND row=?", k).fetchone() else None
 
 
-def agent_row(reader, finder, x: dict) -> dict:
+def agent_row(reader, finder, x: dict, note: str | None = None) -> dict:
     """Luna finds this year's row for one of last year's, sol checks it: {"decision": (sheet, row) | STAND_IN |
     None, "why", "review", "check", "calls"}. The session's work goes through overlay.deep."""
     s, r = x["sheet"], x["r"]
@@ -261,7 +376,7 @@ def agent_row(reader, finder, x: dict) -> dict:
     history, proposals, calls = [], 0, {"luna": 0, "sol": 0}
     for turn in range(MAX_TURNS):
         left = MAX_TURNS - turn
-        prompt = LUNA.format(row=me, candidates=cand_text, left=left,
+        prompt = LUNA.format(row=me, candidates=cand_text, left=left, context=f"\nContext: {note}\n" if note else "",
                              history=("\nWhat you've done so far:\n" + "\n\n".join(history) + "\n") if history else "",
                              must=": propose a row or say it isn't in this model" if left == 1 else "")
         a = reader._call(reader.model, prompt, None, _ACTION, "row-agent")
@@ -283,7 +398,8 @@ def agent_row(reader, finder, x: dict) -> dict:
             chk = deep(finder.check, s, r, k)
             others = "\n\n".join(v for kk, v in cands if kk != k) or "none"
             v = reader._call(reader.reviewer_model, SOL.format(row=me, proposed=deep(view, finder, s, r, k),
-                                                               check=chk["text"], why=a.get("why"), candidates=others),
+                                                               check=chk["text"], why=a.get("why"), candidates=others)
+                             + (f"\n\nContext: {note}" if note else ""),
                              None, _VERDICT, "row-review")
             calls["sol"] += 1
             if v.get("verdict") == "accept":

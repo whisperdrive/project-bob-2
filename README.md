@@ -338,7 +338,13 @@ person before the next relies on it:
    the model has no such line item (last year's values are then kept, never for a DCF cash-flow row). The
    reviewer (sol) checks each proposal with the numbers and accepts or rejects it with a reason; a rejection
    goes back to luna. At most six actions and two proposals a row, three rows at a time; each decision, with
-   luna's reason and sol's verdict, is on the Summary. Run on the synthetic pack, the renamed and moved
+   luna's reason and sol's verdict, is on the Summary. Last, the figures again: where one still fails the
+   zero-roll check, the rows the figures read are ranked by how far their numbers are from last year's (a DCF
+   cash-flow row first), sol, as advisor, sees the figures, those rows and the decisions so far and names the
+   rows to look at again and what to look for, and luna looks again with that; at most three rounds. A figure
+   still off after that stays held, with the agents' account of what they tried rather than a list of chores;
+   a person's pick on the Summary overrides any of theirs. From a wrong earlier pick on the synthetic pack, one
+   round (an advice, a proposal, a review) put the right row back. Run on the synthetic pack, the renamed and moved
    distributions row took one proposal and one review: about 2,300 tokens. Rows of period flags and dates (by their labels, 0/1 values or rising dates)
    are the timing the discounting depends on: listed apart. The page says why, how alike the two
    models are, and lists each row it needs with a button to pick this year's row; the bridge leaves out the

@@ -339,11 +339,14 @@ class Scripted:
     prompt), in order. No Azure call."""
     model, reviewer_model = "luna", "sol"
 
-    def __init__(self, luna: dict, sol: dict):
+    def __init__(self, luna: dict, sol: dict, advice: list | None = None):
         self.luna, self.sol, self.prompts = {k: list(v) for k, v in luna.items()}, {k: list(v) for k, v in sol.items()}, []
+        self.advice = list(advice or [{"rows": [], "done": True}])
 
     def _call(self, model, prompt, png, schema, purpose):
         self.prompts.append((model, prompt))
+        if purpose == "row-advice":
+            return self.advice.pop(0) if len(self.advice) > 1 else self.advice[0]
         row = prompt.split("Last year's row:", 1)[1]
         key = next(k for k in (self.luna if model == "luna" else self.sol) if k in row.split("\n\n", 2)[0] + row[:400])
         script = self.luna[key] if model == "luna" else self.sol[key]
@@ -397,6 +400,25 @@ def models_check(sess, summary, fnd, sure) -> None:
             ov.deep(fnd.pick, *k, None)
     print("models: ok (luna searches and proposes, sol rejects a wrong row and accepts the right one with the numbers; "
           "limits hold; no last year's values for a cash-flow row)")
+    # ---- rounds against the zero-roll check: an earlier pick of the agents (the reserve top-up for the
+    # distributions) passes as settled, but the figure at last year's date is far off; sol, advising, sends the
+    # row back with what to look for, and luna finds the right one
+    ov.deep(fnd.pick, "CF", 11, ("CF", 13), "agent")
+    try:
+        sol = Scripted({"CF!r11": [act("propose", r="CF!r15", why="the equity distributions, after debt service")]},
+                       {"CF!r11": [ok("accept", "same line item")]},
+                       [{"rows": [{"row": "CF!r11", "why": "matched to a reserve top-up, a tiny amount",
+                                   "look_for": "equity distributions after debt service"}], "done": False},
+                        {"rows": [], "done": True}])
+        res = rowagent.run(sess, summary, FACTS, reader=sol)
+        assert len(res["rounds"]) == 1 and res["rounds"][0]["revisited"][0]["decision"] == "CF!r15", res["rounds"]
+        assert res["reliable_after"] and not res["zero_roll_off"] and fnd.picks[("CF", 11)] == ("CF", 15)
+        assert any("A reviewer advises looking again at this row" in p for m, p in sol.prompts if m == "luna")
+        adv = next(p for m, p in sol.prompts if "don't:" in p)
+        assert "CF!r11" in adv and "a DCF cash-flow row" in adv, adv
+    finally:
+        ov.deep(fnd.pick, "CF", 11, None)
+    print("rounds: ok (a figure far off at last year's date sends its rows back: sol advises, luna finds the right row)")
 
 
 def unlabelled_check(out: Path) -> None:
