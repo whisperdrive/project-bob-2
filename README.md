@@ -193,7 +193,8 @@ person before the next relies on it:
    rejected by them. Both are marked as the agents' decision, and a person can undo either (an undone decision
    stays theirs). The person decides what the agents escalated: edit, take the reviewer's latest correction, or
    reject. If a table is later changed and an agents' approval no longer passes the checks, it goes back to the
-   person.
+   person. A **Needs you** list at the top of the report page gathers what the agents couldn't settle, tables
+   first, each entry going to its table or fact.
 
    **The review loop** (`docingest.resolve_tables`, `reportfacts.resolve`) lets the two models settle problems
    between themselves, up to three rounds. The extractor (gpt-6-luna) answers each open point: it revises, keeps

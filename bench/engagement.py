@@ -1058,7 +1058,7 @@ def _map(eid: int) -> None:
         traceback.print_exc()
     anchors_at = {}
     for fm in report_overlay:
-        for m in fm["matches"]:
+        for m in (x for x in fm["matches"] if x.get("located")):
             anchors_at.setdefault(f"{m['sheet']}!{m['addr']}", []).append(f"{fm['label'] or fm['key']} {fm['value_text']}")
     python = [{"cell": a["cell"], "label": a["label"], "value": a["value"], "python": a.get("total"),
                "reproduced": bool(a.get("matches")), "ok": a.get("ok"), "reason": a.get("reason"),
@@ -1119,7 +1119,7 @@ def model_marks(eid: int, fid: int) -> dict[tuple[str, int], list[str]]:
     chain = m.get("chain") or []
     if has("prior_overlay"):
         for x in m.get("report_overlay") or []:
-            if x["matches"]:
+            if x["matches"] and x["matches"][0].get("located", True):  # a value-only match isn't where the figure is
                 b = x["matches"][0]
                 mark(f"{b['sheet']}!r{b['row']}", _ROW_REF, f"report: {x.get('label') or x['key']} {x['value_text']}")
         for c in chain:

@@ -121,6 +121,7 @@ nav.side .cnt { background: var(--warn-bg); color: var(--warn); border-radius: 9
 .needs { list-style: none; margin: 0; padding: 0; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
 .needs li { border-top: 1px solid var(--rule); }
 .needs li:first-child { border-top: 0; }
+tr.flash > td { background: var(--info-bg); transition: background .4s; }
 .needs button { display: flex; width: 100%; justify-content: space-between; gap: 10px; background: none; border: 0; padding: 9px 12px; cursor: pointer; text-align: left; font-size: 14px; color: var(--ink); }
 .needs button:hover { background: var(--raised); }
 .needs .where { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
@@ -832,10 +833,38 @@ function viewReference() {
   if (!DOC || DOC.id !== d.id || DOC._stamp !== docStamp(d)) loadDoc(d);
   return `<div class="lede"><div><h1><b>The report</b></h1><p>The report's conclusions and assumptions are the guide for finding the valuation in last year's overlay. This starts by itself once the report is read: the key facts are extracted and reviewed, and tables the checks flag and facts the reviewer disputes go through a review loop: the extractor fixes, code re-checks, the reviewer checks again, until they agree or hand it to you. Every fact shows its page, quote, checks and the loop's rounds; what the loop teaches is kept, anonymised, for next time.</p></div></div>
   ${ready.length > 1 ? `<div class="row"><label class="small muted">Report</label><select class="in" id="docSel">${ready.map(x => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.filename)}</option>`).join("")}</select></div>` : ""}
+  <div id="needCard">${reportNeeds(d)}</div>
   <div class="card" id="tablesCard"><h2>Tables in ${esc(d.filename)}</h2><p class="sub">Loading…</p></div>
   <div class="card" id="factsCard">${factsCard(d)}</div>
   <div class="card" id="lessonsCard">${lessonsCard()}</div>
   <div class="card"><details id="docMd"><summary>Read the document as Markdown (what the extraction model sees)</summary><div class="md" id="docMdBody"><p class="muted">Loading…</p></div></details></div>`;
+}
+// one list of what's over to you in this report, tables first (a table decision re-checks the facts on its page);
+// each entry goes to the table or the fact
+function reportNeeds(d) {
+  const read = DOC && DOC.id === d.id && DOC.doc;
+  const ts = read ? DOC.doc.tables.filter(t => ["flagged", "error"].includes(t.status) || (t.status === "unread" && !t.deferred)) : [];
+  const fs = E.facts.filter(f => f.document_id === d.id && needsYou(f));
+  const waiting = !read && d.n_flagged ? d.n_flagged : 0;
+  if (!ts.length && !fs.length && !waiting) return "";
+  const cut = (x, n) => x && x.length > n ? x.slice(0, n - 1) + "…" : (x || "");
+  const items = [
+    ...ts.map(t => `<li><button data-need-table="${esc(t.id)}"><span><b>Table</b> ${esc(t.title || t.id)} <span class="muted">page ${t.page}</span>${t.resolution?.open?.length ? `: ${esc(cut(t.resolution.open.join("; "), 150))}` : t.status === "error" ? ": it couldn't be read" : ""}</span><span class="where">Tables ↓</span></button></li>`),
+    ...(waiting ? [`<li><button data-need-table=""><span><b>${waiting} table(s)</b> to check</span><span class="where">Tables ↓</span></button></li>`] : []),
+    ...fs.map(f => `<li><button data-need-fact="${f.id}"><span><b>${esc(f.label || f.key)}</b> <span class="muted">${esc((CAT[f.category] || f.category || "").toLowerCase())}, page ${esc(f.page ?? "?")}</span>${f.agent?.open?.reason || f.review?.reason ? `: ${esc(cut(f.agent?.open?.reason || f.review?.reason, 150))}` : ""}</span><span class="where">Key facts ↓</span></button></li>`)];
+  return `<div class="card"><h2>Needs you (${ts.length + waiting + fs.length})</h2><p class="sub" style="margin-bottom:8px">What the agents couldn't settle in this report. Settle the tables first: a table decision re-checks the facts on its page, and those resting on it go back to the agents.</p><ul class="needs">${items.join("")}</ul></div>`;
+}
+function bindReportNeeds() {
+  document.querySelectorAll("#needCard [data-need-table]").forEach(b => b.onclick = () => {
+    if (b.dataset.needTable) { state.table = b.dataset.needTable; $("#tablesCard").innerHTML = tablesCard(); bindTables(); }
+    $("#tablesCard").scrollIntoView({behavior: "smooth", block: "start"});
+  });
+  document.querySelectorAll("#needCard [data-need-fact]").forEach(b => b.onclick = () => {
+    const row = document.getElementById(`fact-${b.dataset.needFact}`); if (!row) return;
+    const det = row.closest("details"); if (det) det.open = true;
+    row.scrollIntoView({behavior: "smooth", block: "center"});
+    row.classList.add("flash"); setTimeout(() => row.classList.remove("flash"), 1600);
+  });
 }
 // a table decision, a re-read or a finished table loop (even one that settles nothing) reloads the tables
 const docStamp = d => `${d.n_flagged}|${d.processed_at}|${d.loop?.tables?.at || ""}`;
@@ -843,7 +872,8 @@ async function loadDoc(d) {
   DOC = {id: d.id, _stamp: docStamp(d), loading: true};
   const full = await api(`/api/documents/${d.id}`);
   DOC = {...full, _stamp: docStamp(full)};
-  if (state.step === "reference") { $("#tablesCard") && ($("#tablesCard").innerHTML = tablesCard()); bindTables(); fillDocMd(); }
+  if (state.step === "reference") { $("#tablesCard") && ($("#tablesCard").innerHTML = tablesCard()); bindTables(); fillDocMd();
+    const d1 = E.documents.find(x => x.id === DOC.id); if ($("#needCard") && d1) { $("#needCard").innerHTML = reportNeeds(d1); bindReportNeeds(); } }
 }
 function tableStatus(t) {
   const s = t.status;
@@ -1016,7 +1046,7 @@ function factRow(f) {
     <label class="small">page<br><input type="text" name="page" value="${esc(v.page ?? "")}" style="width:60px"></label>
     <label class="small" style="flex:1;min-width:260px">quote (verbatim)<br><input type="text" name="quote" value="${esc(v.quote || "")}" style="width:100%"></label>
     <button class="btn small primary">Save and approve</button><button type="button" class="btn small" data-cancel>Cancel</button></form></td></tr>` : "";
-  return `<tr><td><b>${esc(v.label || f.key)}</b><div class="small muted mono">${esc(f.key)}</div>${f.origin === "reviewer" ? `<span class="pill info">added by reviewer</span>` : ""}</td>
+  return `<tr id="fact-${f.id}"><td><b>${esc(v.label || f.key)}</b><div class="small muted mono">${esc(f.key)}</div>${f.origin === "reviewer" ? `<span class="pill info">added by reviewer</span>` : ""}</td>
     <td><b>${esc(v.value_text)}</b>${range}${v.basis ? `<div class="small muted">${esc(v.basis)}</div>` : ""}</td>
     <td class="small">p. ${esc(v.page ?? "?")}<div class="quote">${esc((v.quote || "").slice(0, 220))}</div></td>
     <td><ul class="checks">${(ch.items || []).map(i => `<li class="${i.ok ? "" : "no"}">${esc(i.text)}</li>`).join("")}</ul></td>
@@ -1076,6 +1106,7 @@ function bindLessons() {
 }
 bind.reference = () => {
   bindLessons();
+  bindReportNeeds();
   const d0 = E.documents.find(x => x.id === state.doc), stamp = JSON.stringify(d0?.loop || null);
   if (state.lessonStamp !== stamp) { state.lessonStamp = stamp; loadLessons(); }  // a loop just learned something
   $("#loopFacts")?.addEventListener("click", () => act(() => api(`/api/documents/${state.doc}/facts/resolve`, {method: "POST"})));
@@ -1271,25 +1302,29 @@ function viewMapBody(head) {
     ${!Object.values(E.roles).every(r => r.confirmed) ? `<span class="small muted">Roles aren't all confirmed yet; the map uses the current assignment.</span>` : ""}</div>`;
   const m = E.map; if (!m) return head + run;
   const f = m.files;
-  const found = m.report_overlay.filter(x => x.matches.length), missing = m.report_overlay.filter(x => !x.matches.length);
+  // where a figure is: the cell's label says so, or it's a DCF; the value alone may be a coincidence (maps built before
+  // "located" was kept: the same test)
+  const located = b => !!b && (b.located ?? (b.label_match || b.anchor));
+  const found = m.report_overlay.filter(x => located(x.matches[0])), missing = m.report_overlay.filter(x => !located(x.matches[0]));
+  const byValue = missing.filter(x => x.matches.length);
   const books = m.overlay_client.books || [];
   return head + run + `
   ${!m.reference_approved ? `<div class="callout warn">The report facts aren't approved yet: this map uses the facts that pass the checks. Approve them in The report and rebuild.</div>` : ""}
-  <div class="flow">${[["Prior report", E.documents.find(d => d.id === E.roles.prior_report?.id)?.filename, `${found.length} of ${m.report_overlay.length} figures found in the overlay`],
+  <div class="flow">${[["Prior report", E.documents.find(d => d.id === E.roles.prior_report?.id)?.filename, `${found.length} of ${m.report_overlay.length} figures found in the overlay${byValue.length ? ` (${byValue.length} more only by value: coincidences?)` : ""}`],
     ["Prior overlay", f.overlay, `${m.python.filter(p => p.reproduced).length} DCF(s) found by their labels; the DCF under each report figure is in Rebuild in Python → Valuation (DCF) → The facts`],
     ["Prior client model", f.prior_model, `${(m.chain || []).length} overlay row(s) read it (${esc(m.overlay_client.mode || "")})`],
     ["Current client model", f.current_model, `${(m.chain || []).filter(c => c.current).length} of those rows found this year`]].map(([t, n, s]) => `<div class="node"><h3>${t}</h3><div class="small"><b>${esc(n || "not assigned")}</b></div><div class="small muted">${s}</div></div>`).join("")}</div>
   <div class="card"><h2>Overlay DCFs found by their labels</h2><p class="sub">Cells labelled like a valuation whose own formula is a DCF (valuation.py): each one's cash flows and discount factors are read from the overlay, its rate, valuation date and convention worked out, and it's recomputed. "Not a DCF" means the cell adds up or passes on a DCF elsewhere: the DCF under each report figure, followed through every cell it reads, is in <b>Rebuild in Python → Valuation (DCF) → The facts</b>.</p>
   ${m.python.length ? `<div class="scroll"><table><thead><tr><th>Cell</th><th>Line item</th><th class="num">Workbook</th><th class="num">Python</th><th>Reproduced</th><th>In the report as</th></tr></thead><tbody>
   ${m.python.map(p => `<tr><td class="mono">${esc(p.cell)}</td><td>${esc(p.label)}</td><td class="num">${esc(fmt(p.value))}</td><td class="num">${esc(fmt(p.python))}</td><td>${p.reproduced ? `<span class="pill ok">Yes</span>` : `<span class="pill warn">${p.ok ? "Differs" : "Not a DCF"}</span>`}</td><td class="small">${esc(p.report.join("; ") || "")}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted small">No SUMPRODUCT-style DCF found on the overlay sheets.</p>`}</div>
-  <div class="card"><h2>Report → overlay</h2><p class="sub">Best match first; values are matched to the report's printed precision, allowing for units (A$m vs A$) and sign.</p>
+  <div class="card"><h2>Report → overlay</h2><p class="sub">Best match first; values are matched to the report's printed precision, allowing for units (A$m vs A$) and sign. A cell counts as where the figure is when its line item is labelled like the figure or it's a DCF; a cell that only holds the same number, in a sheet of thousands, is shown as a possible coincidence, not a location.</p>
   <div class="scroll"><table><thead><tr><th>Report figure</th><th>Overlay cell</th><th>Line item there</th><th class="num">Cell value</th><th>Other candidates</th></tr></thead><tbody>
   ${m.report_overlay.map(x => { const b = x.matches[0]; return `<tr><td><b>${esc(x.label || x.key)}</b> ${esc(x.value_text)}</td>
-    <td class="mono">${b ? esc(`${b.sheet}!${b.addr}`) : `<span class="pill warn">not found</span>`}${b && b.part !== "value" ? ` <span class="pill">${esc(b.part)}</span>` : ""}</td>
-    <td class="small">${esc(b?.label || "")}${b && !b.label_match && !b.anchor ? ` <span class="pill warn">label differs</span>` : ""}</td>
+    <td class="mono">${!b ? `<span class="pill warn">not found</span>` : located(b) ? esc(`${b.sheet}!${b.addr}`) : `<span class="muted">${esc(`${b.sheet}!${b.addr}`)}</span> <span class="pill warn" title="Only the value matches: the line item there is labelled otherwise and it isn't a DCF">value only: a coincidence?</span>`}${b && b.part !== "value" ? ` <span class="pill">${esc(b.part)}</span>` : ""}</td>
+    <td class="small ${b && !located(b) ? "muted" : ""}">${esc(b?.label || "")}</td>
     <td class="num">${b ? esc(fmt(b.value, 4)) : ""}${b && b.scale > 1 ? ` <span class="small muted" title="The workbook holds this figure in smaller units than the report">×${b.scale.toLocaleString()}</span>` : ""}${b && b.sign < 0 ? ` <span class="small muted">negative</span>` : ""}</td>
     <td class="small">${x.n > 1 ? `${x.n - 1} other cell(s) hold this value` : ""}</td></tr>`; }).join("")}</tbody></table></div>
-  ${missing.length ? `<p class="small muted">Not found in the overlay: ${esc(missing.map(x => x.label || x.key).join(", "))}. Sensitivities are often pasted from data tables and may not be in the workbook.</p>` : ""}</div>
+  ${missing.length ? `<p class="small muted">Not found in the overlay: ${esc(missing.map(x => x.label || x.key).join(", "))}${byValue.length ? ` (${byValue.length} of them only by value, under other line items)` : ""}. The overlay may not compute them, and sensitivities are often pasted from data tables.</p>` : ""}</div>
   ${books.length ? `<div class="card"><h2>External links in the overlay</h2><p class="sub">Each linked file, the values the overlay last read from it, and whether they match the assigned prior client model.</p>
   <div class="scroll"><table><thead><tr><th>[n]</th><th>File</th><th>Read by</th><th>Cached values</th><th>Prior client model?</th></tr></thead><tbody>
   ${books.map(b => `<tr><td class="mono">[${b.idx}]</td><td>${esc(b.filename || b.target || "")}</td><td class="small">${esc(b.read_by.map(r => `${r.sheet} (${r.rows})`).join(", "))}</td><td class="num">${b.cached_cells}</td>
@@ -1491,6 +1526,8 @@ function needs() {
     else if (!st) add(verb, go);
   }
   if (E.charts_status === "error") add("Recreate the report's charts again: it failed", "summary");
+  const pf = E.overlay_status === "done" && priorFeedOff();
+  if (pf) add(`${pf.text}: check which file is last year's client model`, "roles");
   const V = E.overlay?.validation;
   if (E.overlay_status === "done" && V && V.matched < V.cells) {
     const why = [Object.keys(V.unsupported || {}).length && `functions ${Object.keys(V.unsupported).slice(0, 4).join(", ")}`,
@@ -1833,6 +1870,21 @@ function agentsNote(d) {  // the row agents: finding this year's rows without an
     ${r.models_error ? `<p class="small muted">The models weren't asked: ${esc(r.models_error)}</p>` : ""}
     <button class="btn small" id="sumAgentsAgain">Run them again</button></div></details>`;
 }
+// last year's overlay ties the report as saved but moves when fed from the file assigned as last year's client model:
+// that file isn't the version the overlay was built on, and this year's figures rest on the same feed
+function priorFeedOff() {
+  const O = E.overlay, pf = O?.feeds?.prior;
+  if (!O || !pf || pf.same) return null;
+  const moved = (O.outputs || []).map((o, i) => ({...o, fed: pf.outputs?.[i]}))
+    .filter(o => o.tie?.ok && typeof o.fed === "number" && typeof o.value === "number" && Math.abs(o.fed - o.value) > 1e-6 * Math.max(1, Math.abs(o.value)));
+  if (!moved.length) return null;
+  const file = E.workbooks.find(w => w.id === E.roles.prior_model?.id)?.filename || "the file assigned as last year's client model";
+  return {file, moved, text: `Last year's overlay ties the report as saved (${moved.slice(0, 2).map(o => `${o.label} ${o.report}`).join(", ")}), but fed from ${file} it gives ${moved.slice(0, 2).map(o => fmt(o.fed, 1)).join(", ")}`};
+}
+function priorFeedNote() {
+  const x = priorFeedOff(); if (!x) return "";
+  return `<div class="callout bad small" style="margin-top:10px"><b>${esc(x.text)}.</b> So ${esc(x.file)} isn't the version of the client model the overlay was built on, and this year's figures are fed the same way: until last year's rebuild ties from it, they rest on a leg that doesn't reproduce the report. Check <a href="#" data-go="roles">Roles</a>: last year's client model may be another version, or the client sheets inside the overlay's own workbook (a copy it was built beside).</div>`;
+}
 function gapNote(t) {
   const g = t.this_year_gaps;
   const need = g ? [...(g.dcf_missing || []), ...(g.blank_rows || []).map(x => ({...x, why: `found at ${x.found}, but blank there in ${x.blank} of the ${x.of} periods read`})),
@@ -1893,7 +1945,7 @@ function summaryCard(d) {
       <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
       <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>
       ${Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length ? `<button class="btn small ghost" id="sumReset">Reset</button>` : ""}</div></div>
-  ${errNote}${agentsNote(d)}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check || SUM.editDate ? `<div class="callout warn small" style="margin-top:10px">${rp?.date_check ? `<b>This year's valuation date isn't known.</b> This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date, so nothing is rolled and this year's figures wait for it. ` : ""}Set this year's valuation date for the engagement (a model's own "Valuation date" rows usually give it):
+  ${errNote}${priorFeedNote()}${agentsNote(d)}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check || SUM.editDate ? `<div class="callout warn small" style="margin-top:10px">${rp?.date_check ? `<b>This year's valuation date isn't known.</b> This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date, so nothing is rolled and this year's figures wait for it. ` : ""}Set this year's valuation date for the engagement (a model's own "Valuation date" rows usually give it):
       <span class="row" style="margin-top:6px"><input class="in" type="date" id="sumThisVd" value="${esc(rp?.dates?.this_year || "")}" min="${esc(rp?.prior_valuation_date || "")}"><button class="btn small primary" id="sumThisVdSave">Set</button>${rp?.dates?.this_year ? `<button class="btn small ghost" id="sumThisVdClear">Clear</button>` : ""}<span class="small" id="sumThisVdMsg"></span></span></div>` : rp?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${rp.months} months is ${esc(rp.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""; })()}
   <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
     <tr class="sec"><td colspan="${cols.length + 2}">Conclusions</td></tr>
@@ -2386,10 +2438,10 @@ const FEED_NAME = {workbook: "As saved", prior: "Prior client model", current: "
 function ovValuationPane() {
   if (VAL.eid !== E.id) Object.assign(VAL, {eid: E.id, cell: null, step: "validate", v: null, sc: {}, dcf: null, trace: undefined, traceStart: null});
   const v = VAL.v;
-  if (!v) return `${factsCard()}${traceCard()}<div class="card"><p class="muted" style="margin:0">Finding and checking the overlay's DCFs…</p></div>`;
-  if (!v.selected) return `${factsCard()}${traceCard()}<div class="card"><p style="margin:0">No discounting the Python can recompute was found: neither a cell labelled like a valuation whose formula is a <span class="mono">SUMPRODUCT</span> of a cash-flow row and a discount-factor row, nor a <span class="mono">SUMPRODUCT</span>, <span class="mono">XNPV</span> or sum of present values under the report's figures (above).</p></div>${anchorTable(v)}`;
+  if (!v) return `${dcfFactsCard()}${traceCard()}<div class="card"><p class="muted" style="margin:0">Finding and checking the overlay's DCFs…</p></div>`;
+  if (!v.selected) return `${dcfFactsCard()}${traceCard()}<div class="card"><p style="margin:0">No discounting the Python can recompute was found: neither a cell labelled like a valuation whose formula is a <span class="mono">SUMPRODUCT</span> of a cash-flow row and a discount-factor row, nor a <span class="mono">SUMPRODUCT</span>, <span class="mono">XNPV</span> or sum of present values under the report's figures (above).</p></div>${anchorTable(v)}`;
   const step = VAL.step === "methods" && v.validated ? "methods" : "validate";
-  return `${factsCard()}${traceCard()}<div class="card" id="valAnchorCard"><div class="row" style="justify-content:space-between;align-items:flex-end">
+  return `${dcfFactsCard()}${traceCard()}<div class="card" id="valAnchorCard"><div class="row" style="justify-content:space-between;align-items:flex-end">
     <label class="small muted" style="flex:1 1 320px;min-width:0">Anchor value<br><select class="in" id="valCell" style="width:100%">${v.anchors.filter(a => a.ok).map(a => `<option value="${esc(a.cell)}" ${a.cell === v.selected ? "selected" : ""}>${a.matches ? "✓" : "✗"} ${esc(a.label || a.cell)} · ${esc(a.cell)} · ${vN(a.value)}${a.traced_from ? ` · under the report's figure (${esc(a.traced_from)})` : ""}</option>`).join("")}</select></label>
     <div class="seg" role="tablist" aria-label="Step"><button role="tab" data-vstep="validate" class="${step === "validate" ? "on" : ""}">1 · Validate</button><button role="tab" data-vstep="methods" class="${step === "methods" ? "on" : ""}" ${v.validated ? "" : `disabled title="Validate the anchor first"`}>2 · Live module and methods</button></div></div>
     <p class="small muted" style="margin:10px 0 0">${step === "validate" ? "The DCF found in the overlay, recomputed step by step from the values Excel saved (the Model Desk's Validate step)." : "The same DCF on the Python overlay's own numbers (the feed and input changes from <b>Run it live</b>), checked against the module, then under another discounting method."}</p></div>
@@ -2398,7 +2450,7 @@ function ovValuationPane() {
 // The facts: the DCF behind a report figure, followed through what the Python overlay reads (dcffacts.py), and
 // where this year's model has the rows its cash flows come from (rowfind.py), with a person's pick.
 const FX = {eid: null, data: undefined, loading: false, start: null, picker: null};
-function factsCard() {
+function dcfFactsCard() {  // Rebuild in Python: the DCF behind a figure (not the report's key facts, factsCard)
   if (FX.eid !== E.id) Object.assign(FX, {eid: E.id, data: undefined, start: null, picker: null});
   const d = FX.data, head = `<h2>The facts: the DCF behind the report's figure</h2>`;
   if (d === undefined) return `<div class="card" id="fxCard">${head}<p class="muted small" style="margin:0">Following the report's figure through the overlay…</p></div>`;
@@ -2491,7 +2543,7 @@ async function loadFacts() {
   FX.loading = false;
   redrawFacts();
 }
-function redrawFacts() { const c = $("#fxCard"); if (c && state.step === "python" && OV.tab === "valuation") { keepOpen(c.parentElement, () => { c.outerHTML = factsCard(); }); bindFacts(); } }
+function redrawFacts() { const c = $("#fxCard"); if (c && state.step === "python" && OV.tab === "valuation") { keepOpen(c.parentElement, () => { c.outerHTML = dcfFactsCard(); }); bindFacts(); } }
 function bindFacts() {
   $("#fxStart")?.addEventListener("change", e => { FX.start = e.target.value; FX.data = undefined; FX.picker = null; redrawFacts(); loadFacts(); });
   $("#fxCopy")?.addEventListener("click", () => drCopy(FX.data?.text || ""));

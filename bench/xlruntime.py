@@ -302,6 +302,34 @@ def _concat_scalar(a, b):
     return text(a) + text(b)
 
 
+_DATE_FMT = r'(?i)(?:"[^"]*"|\\.|[dmy]+|[\s\-/.,:\'()])+'  # d, m, y codes, separators and literal text only
+_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+           "November", "December"]
+_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def _date_text(d: date, f: str) -> str:
+    """A date in an Excel number format of day, month and year codes ("dd mmm yyyy", "d/mm/yy", "mmmm yyyy")."""
+    out = []
+    for tok in re.findall(r'"[^"]*"|\\.|y+|m+|d+|[^"\\ymd]+', f, re.I):
+        t = tok.lower()
+        if tok.startswith('"'):
+            out.append(tok[1:-1])
+        elif tok.startswith("\\"):
+            out.append(tok[1:])
+        elif t[0] == "y":
+            out.append(f"{d.year:04d}" if len(t) > 2 else f"{d.year % 100:02d}")
+        elif t[0] == "m":
+            name = _MONTHS[d.month - 1]
+            out.append({1: str(d.month), 2: f"{d.month:02d}", 3: name[:3], 4: name}.get(len(t), name[0]))
+        elif t[0] == "d":
+            day = _DAYS[d.weekday()]
+            out.append({1: str(d.day), 2: f"{d.day:02d}", 3: day[:3]}.get(len(t), day))
+        else:
+            out.append(tok)
+    return "".join(out)
+
+
 class _XL:
     """Excel operators and functions, used by compiled overlays as xl.add(...), xl.SUM(...)."""
     ERR = ERR
@@ -973,9 +1001,12 @@ class _XL:
         m = re.fullmatch(r"[#,]*0(?:\.(0+))?(%?)", f.replace(",", "") if f.count(",") <= 1 else f)
         if m:
             d = len(m.group(1) or "")
+            q = (Decimal(repr(x)) * (100 if m.group(2) else 1)).quantize(Decimal(1).scaleb(-d), ROUND_HALF_UP)  # 0.5 up
             if m.group(2):
-                return f"{x * 100:.{d}f}%"
-            return f"{x:,.{d}f}" if "," in f else f"{x:.{d}f}"
+                return f"{q:.{d}f}%"
+            return f"{q:,.{d}f}" if "," in f else f"{q:.{d}f}"
+        if re.fullmatch(_DATE_FMT, f) and re.search(r"[dmy]", f, re.I):  # a date format (no time: m would be minutes)
+            return _date_text(to_date(x), f)
         return text(v)
 
     @staticmethod

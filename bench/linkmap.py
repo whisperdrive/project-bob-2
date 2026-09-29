@@ -88,7 +88,10 @@ def match_fact(f: dict, nums: Numbers, labels: dict, anchors: set[str], limit: i
                         + (0.5 if sign == 1 else 0) + (0.3 if part == "value_text" else 0)
                     out.append({"sheet": s, "addr": a, "row": r, "label": lab, "value": v, "formula": is_f,
                                 "part": part.removesuffix("_text"), "scale": scale, "sign": sign,
-                                "label_match": overlap > 0, "anchor": f"{s}!{a}" in anchors, "score": round(score, 2)})
+                                "label_match": overlap > 0, "anchor": f"{s}!{a}" in anchors, "score": round(score, 2),
+                                # where the figure is: its label says so, or it's a DCF. The value alone, in a
+                                # sheet of thousands of numbers, is as likely a coincidence
+                                "located": overlap > 0 or f"{s}!{a}" in anchors})
     out.sort(key=lambda m: -m["score"])
     return {"matches": out[:limit], "n": n}
 
@@ -117,7 +120,7 @@ def match_facts(db_path: str, facts: list[dict], sheets: set[str] | None = None)
                    "part": "value", "label_match": bool(re.search(r"valu", labels.get((s, r), ""), re.I)),
                    "anchor": False} for s, r, a in hits]
             for m in ms:
-                m["score"] = 3 * m["label_match"]
+                m["score"], m["located"] = 3 * m["label_match"], m["label_match"]
             ms.sort(key=lambda m: -m["score"])
             out.append({"fact_id": f["id"], "key": f["key"], "label": f.get("label"), "value_text": f.get("value_text"),
                         "matches": ms[:5], "n": len(hits)})
