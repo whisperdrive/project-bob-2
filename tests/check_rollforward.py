@@ -504,10 +504,20 @@ def horizon_check(out: Path) -> None:
                              shift=12, base_vd=float(rp.serial(date(2025, 6, 30))),
                              rowmap=rowfind.RowFinder(ov.RowMap(prior, current), prior, current))
         return sess.fixed_horizon(), sess.period_shift(prior, "Ops")
-    assert shift(book("hz_fixed", quarter_ends(2017, 2030))) == (True, 0)
-    assert shift(book("hz_rolled", quarter_ends(2018, 2031))) == (False, 12)
+    fixed, rolled = book("hz_fixed", quarter_ends(2017, 2030)), book("hz_rolled", quarter_ends(2018, 2031))
+    assert shift(fixed) == (True, 0)
+    assert shift(rolled) == (False, 12)
+    assert ov.horizon(prior, fixed, ["Ops"]) == ("fixed", {"fixed": 1, "rolling": 0})
+
+    def shift_set(current, kind):  # set in the engagement's profile: wins over what the models show
+        sess = object.__new__(ov.Session)
+        sess.__dict__.update(prior=prior, ov=prior, current=current, client_sheets={"Ops"}, ext_cached={}, _pshift={},
+                             shift=12, base_vd=float(rp.serial(date(2025, 6, 30))), horizon_set=kind,
+                             rowmap=rowfind.RowFinder(ov.RowMap(prior, current), prior, current))
+        return sess.period_shift(prior, "Ops")
+    assert (shift_set(fixed, "rolling"), shift_set(rolled, "fixed")) == (12, 0)
     print("horizon: ok (a model ending where last year's did keeps its periods on a 12-month roll; one whose "
-          "horizon rolled on moves them four quarters)")
+          "horizon rolled on moves them four quarters; the profile's setting wins over both)")
 
 
 def layout_check(out: Path) -> None:

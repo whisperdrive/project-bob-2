@@ -26,6 +26,8 @@ import sqlite3
 import threading
 import time
 import traceback
+from collections import Counter
+from contextlib import closing
 from pathlib import Path
 
 import diff as diffmod
@@ -111,8 +113,10 @@ def _conn() -> sqlite3.Connection:
     for table, col in (("facts", "agent_json"), ("documents", "loop_json"), ("facts", "decided_by")):  # ... and before the loop
         if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
-    if "arbiter_model" not in {r[1] for r in db.execute("PRAGMA table_info(engagements)")}:
-        db.execute("ALTER TABLE engagements ADD COLUMN arbiter_model TEXT")
+    have = {r[1] for r in db.execute("PRAGMA table_info(engagements)")}
+    for col in ("arbiter_model", "profile_json", "schedule_json"):  # ... and before the profile and the schedule
+        if col not in have:
+            db.execute(f"ALTER TABLE engagements ADD COLUMN {col} TEXT")
     db.execute("CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY, at REAL)")
     if not db.execute("SELECT 1 FROM migrations WHERE name='arbiter-sol'").fetchone():
         # once: the arbiter's default moved from gpt-4o to gpt-6-sol, and engagements showing the old default follow
@@ -1286,12 +1290,16 @@ def _sync_roll(eid: int, sess, summary: dict) -> None:
     """The roll-forward from the dates as they are now (a file's valuation date can be corrected after the build),
     and last year's valuation date set on the session."""
     import overlay as ovmod
+    want = _profile(eid).get("horizon")  # set in the engagement's profile, else worked out
+    if getattr(sess, "horizon_set", None) != want:
+        sess.horizon_set = want
+        sess._pshift.clear()
     roll = summary.get("roll")
     if not roll or not summary["wiring"].get("current"):
         return
     now = _dates(eid)
     d = now["dates"]
-    if d != roll.get("dates") or roll.get("plan") != ovmod.ROLL_PLAN:
+    if d != roll.get("dates") or roll.get("plan") != ovmod.ROLL_PLAN or roll.get("horizon_set") != want:
         w = summary["wiring"]
         fresh = ovmod.deep(ovmod.plan_roll, sess, w.get("prior"), w["overlay"], w.get("same_file"), d["overlay"],
                            d["prior_client"], d["current_client"], d.get("this_year"))
@@ -1389,14 +1397,168 @@ def recreate_charts(eid: int) -> dict:
 
 
 def _fy_hint(eid: int):
-    """The engagement's financial-year end for the charts, from last year's valuation date (chartdata.fy_end_hint)."""
+    """The engagement's financial-year end for the charts (chartdata.fy_end_hint): the profile's if a person set it
+    (it wins over what a model says), else last year's valuation date's month for a model that shows none."""
     import chartdata
+    mine = _profile(eid).get("fy_end_month")
+    if mine:
+        return chartdata.fy_end_hint(mine, forced=True)
+    vd = _prior_vd(eid)
+    return chartdata.fy_end_hint(int(vd[5:7]) if vd else None)
+
+
+def _prior_vd(eid: int) -> str | None:
+    """Last year's valuation date (ISO): the report's fact, else the roll's from the overlay build."""
     vd = next((f for f in reference(eid) if f["key"] == "valuation_date" and f.get("value")), None)
     if vd:
-        return chartdata.fy_end_hint(int(vd["value"]) // 100 % 100)
-    rows = _q("SELECT overlay_json FROM engagements WHERE id=?", eid)  # else the roll's, from the overlay build
-    prior = ((json.loads((rows[0]["overlay_json"] if rows else None) or "null") or {}).get("roll") or {}).get("prior_valuation_date")
-    return chartdata.fy_end_hint(int(prior[5:7]) if prior else None)
+        v = int(vd["value"])
+        return f"{v // 10000:04d}-{v // 100 % 100:02d}-{v % 100:02d}"
+    rows = _q("SELECT overlay_json FROM engagements WHERE id=?", eid)
+    return ((json.loads((rows[0]["overlay_json"] if rows else None) or "null") or {}).get("roll") or {}).get("prior_valuation_date")
+
+
+# ---- the engagement's profile -------------------------------------------------------------------------------
+# The facts about an engagement's models that each step would otherwise guess on its own, in one place: detected,
+# with how, and set by a person where the detection is wrong. The financial-year end and the horizon drive the
+# charts and the roll-forward; the period frequency, the units and the discounting convention are shown (the
+# convention is read back from each DCF's own factors, and the Summary's method selector changes it for a scenario).
+
+MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+          "November", "December"]
+
+
+def _profile(eid: int) -> dict:
+    """A person's settings: {"fy_end_month": 6, "horizon": "fixed"}."""
+    rows = _q("SELECT profile_json FROM engagements WHERE id=?", eid)
+    return json.loads((rows[0]["profile_json"] if rows else None) or "null") or {}
+
+
+def set_profile(eid: int, fields: dict) -> dict:
+    """Set (or, with None, clear) the financial-year end month (1-12) or the horizon ("fixed" / "rolling")."""
+    mine = _profile(eid)
+    for k, v in fields.items():
+        if k == "fy_end_month" and v not in (None, ""):
+            if not (isinstance(v, int) and 1 <= v <= 12):
+                raise ValueError("the financial year ends in a month, 1 to 12")
+        elif k == "horizon" and v not in (None, ""):
+            if v not in ("fixed", "rolling"):
+                raise ValueError('the horizon is "fixed" or "rolling"')
+        elif k not in ("fy_end_month", "horizon"):
+            raise ValueError(f"{k} isn't set here: it's read from the models")
+        if v in (None, ""):
+            mine.pop(k, None)
+        else:
+            mine[k] = v
+    _set("engagements", eid, profile_json=json.dumps(mine), updated_at=time.time())
+    return profile_view(eid)
+
+
+def _frequency(wb) -> tuple[str | None, str]:
+    """The periods' length most sheets with a timeline have: monthly, quarterly, half-yearly or annual."""
+    kinds = Counter()
+    for (s,) in wb.db.execute("SELECT sheet FROM sheets"):
+        ends = sorted(set(wb.timeline(s).values()))
+        if len(ends) < 3:
+            continue
+        gap = sorted(b - a for a, b in zip(ends, ends[1:]))[(len(ends) - 1) // 2]
+        kinds["monthly" if gap <= 35 else "quarterly" if gap <= 100 else "half-yearly" if gap <= 200
+              else "annual" if gap <= 400 else "longer than a year"] += 1
+    if not kinds:
+        return None, "no sheet with a timeline"
+    k, n = kinds.most_common(1)[0]
+    return k, f"{n} of {sum(kinds.values())} sheet(s) with a timeline" + (
+        f" (also {', '.join(f'{x}: {m}' for x, m in kinds.items() if x != k)})" if len(kinds) > 1 else "")
+
+
+def profile_view(eid: int) -> dict:
+    """The profile: each fact detected (value, how), a person's setting where there is one (set), what it drives.
+    Reads the models' own files; no model calls."""
+    import chartdata
+    import overlay as ovmod
+    mine = _profile(eid)
+    prior, cur, ovw = _role_wb(eid, "prior_model"), _role_wb(eid, "current_model"), _role_wb(eid, "prior_overlay")
+    out = {}
+    # the financial year: what the model shows, else last year's valuation date's month
+    src = cur or prior
+    month, how = None, "no client model assigned yet"
+    if src:
+        with closing(rodb.connect(src["db_path"])) as db:  # closed: Windows won't rebuild an open file
+            month, how = chartdata.fy_end_detect(db)
+        how = f"{how}, in {src['filename']}" if month else f"{src['filename']} shows none: {how}"
+    vd = _prior_vd(eid)
+    if not month and vd:
+        month, how = int(vd[5:7]), f"last year's valuation date ({vd}); {how}"
+    out["fy_end_month"] = {"label": "Financial year ends", "value": mine.get("fy_end_month") or month, "detected": month,
+                           "shown": MONTHS[(mine.get("fy_end_month") or month) - 1] if (mine.get("fy_end_month") or month) else None,
+                           "how": how if month else f"{how}; December is assumed", "set": "fy_end_month" in mine,
+                           "drives": "the report's charts: model rows are totalled by financial year to match them"}
+    # the horizon: this year's client model ends its periods where last year's did, or later
+    kind, n = None, {"fixed": 0, "rolling": 0}
+    live = _SESSIONS.get(eid)
+    if live and live[0].current and live[0].rowmap:
+        sess = live[0]
+        kind, n = ovmod.horizon(sess.prior or sess.ov, sess.current, sess.client_sheets or {k[1] for k in sess.ext_cached},
+                                sess.rowmap.sheet_for)
+    elif (prior or ovw) and cur:
+        base = prior or ovw
+        a, b = ovmod.Workbook(base["db_path"]), ovmod.Workbook(cur["db_path"])
+        try:
+            sheets = base["sheets"] or [s for (s,) in a.db.execute("SELECT sheet FROM sheets")]
+            kind, n = ovmod.horizon(a, b, sheets)
+        finally:
+            a.close()
+            b.close()
+    how = (f"this year's client model ends its periods where last year's did on {n['fixed']} sheet(s), later on "
+           f"{n['rolling']}" if kind else "needs last year's and this year's client models, with timelines")
+    out["horizon"] = {"label": "Horizon", "value": mine.get("horizon") or kind, "detected": kind, "how": how,
+                      "set": "horizon" in mine,
+                      "shown": {"fixed": "Fixed: the periods end on the same date each year",
+                                "rolling": "Rolling: the periods move on each year"}.get(mine.get("horizon") or kind),
+                      "drives": "the roll-forward: on a fixed horizon the periods stay and only the valuation date moves"}
+    # shown, not set: the period frequency, the units, the discounting convention
+    freq, how = (None, "no client model assigned yet")
+    if src:
+        w = ovmod.Workbook(src["db_path"])
+        try:
+            freq, how = _frequency(w)
+        finally:
+            w.close()
+    out["frequency"] = {"label": "Periods", "value": freq, "shown": freq, "how": how, "set": False,
+                        "drives": "shown: each sheet's own periods are used"}
+    units = next((f for f in reference(eid) if f["key"] == "currency_units"), None)
+    out["units"] = {"label": "Currency and units", "value": units and units.get("value_text"),
+                    "shown": units and units.get("value_text"), "set": False,
+                    "how": f"the report's facts (page {units.get('page')})" if units else "not among the report's facts",
+                    "drives": "shown: each figure keeps its own units"}
+    conv, how = _conventions(eid)
+    out["discounting"] = {"label": "Discounting", "value": conv, "shown": conv, "how": how, "set": False,
+                          "drives": "shown: read back from each DCF's factors; the Summary's method selector changes "
+                                    "it for a scenario"}
+    return {"fields": out, "settable": ["fy_end_month", "horizon"]}
+
+
+def _conventions(eid: int) -> tuple[str | None, str]:
+    """How the DCFs under the overlay's figures discount (timing, day count), read back from their factors."""
+    import dcftrace
+    rows = _q("SELECT overlay_json FROM engagements WHERE id=?", eid)
+    summary = json.loads((rows[0]["overlay_json"] if rows else None) or "null") or {}
+    if not summary.get("outputs"):
+        return None, "build the Python overlay: it's read from the DCFs under the figures"
+    seen = Counter()
+    with closing(rodb.connect(summary["wiring"]["overlay"]["db_path"])) as db:
+        for o in summary["outputs"][:8]:
+            try:
+                for c in dcftrace.cores(dcftrace.trace(db, o["cell"])):
+                    m = c.get("method")
+                    if m:
+                        seen[f"{m['timing']} of period, {m['day_count']}"] += 1
+            except ValueError:
+                continue
+    if not seen:
+        return None, "no DCF under the figures whose factors could be read back"
+    k, n = seen.most_common(1)[0]
+    return k, f"read back from the factors of {sum(seen.values())} discounting(s) under the figures" + (
+        f" (others: {', '.join(x for x in seen if x != k)})" if len(seen) > 1 else "")
 
 
 def _charts_job(eid: int) -> None:

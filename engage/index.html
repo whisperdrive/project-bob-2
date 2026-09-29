@@ -1163,7 +1163,40 @@ function viewRoles() {
   <button class="btn primary" id="confirmRoles" ${Object.keys(CFG.roles).some(k => roleDraft[k]) ? "" : "disabled"}>Confirm roles</button>${status}</div>
   ${rolesCheckCard(sug, docs, wbs)}
   <div class="flow">${["prior_report", "prior_overlay", "prior_model", "current_model"].map(node).join("")}</div>
+  <div class="card" id="engProfile">${engProfileCard()}</div>
   ${likenessCard(sug, wbs)}${profilesCard(sug, wbs)}`;
+}
+// ---- the engagement's profile: facts about the models the steps would otherwise each guess (engagement.profile_view)
+const PROF = {stamp: null, data: null, loading: false};
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+function engProfileCard() {
+  const head = `<h2>The engagement's profile</h2><p class="sub">Facts about the models that each step would otherwise guess on its own: detected from the files (no model calls), and yours to set where the detection is wrong. The financial-year end and the horizon drive the report's charts and the roll-forward; the others are shown.</p>`;
+  const P = PROF.data;
+  if (!P) return head + `<p class="muted small" style="margin:0">${PROF.loading ? "Reading the models…" : ""}</p>`;
+  const f = P.fields, detected = {fy_end_month: v => MONTHS[v - 1], horizon: v => v};
+  const opts = {fy_end_month: MONTHS.map((m, i) => [i + 1, m]), horizon: [["fixed", "Fixed: the periods end on the same date each year"], ["rolling", "Rolling: the periods move on each year"]]};
+  const value = (k, x) => P.settable.includes(k)
+    ? `<select class="in" data-prof="${k}"><option value="">As detected${x.detected ? `: ${esc(detected[k](x.detected))}` : ": not known"}</option>${opts[k].map(([v, t]) => `<option value="${v}" ${x.set && String(x.value) === String(v) ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`
+    : `<b>${esc(x.shown || "–")}</b>`;
+  return head + `<div class="scroll"><table><thead><tr><th></th><th>Value</th><th>How it was found</th><th>What it drives</th></tr></thead><tbody>
+    ${Object.entries(f).map(([k, x]) => `<tr><td><b>${esc(x.label)}</b></td><td>${value(k, x)}</td><td class="small">${esc(x.how || "")}${x.set ? ` · <b>set by you</b>` : ""}</td><td class="small muted">${esc(x.drives || "")}</td></tr>`).join("")}</tbody></table></div>`;
+}
+async function loadProfile(force) {
+  const stamp = `${E.id}|${JSON.stringify(E.roles)}|${E.overlay_status}|${E.overlay?.roll?.plan || ""}`;
+  if (!force && (PROF.stamp === stamp || PROF.loading)) return;
+  Object.assign(PROF, {stamp, loading: true, data: PROF.stamp?.split("|")[0] === String(E.id) ? PROF.data : null});
+  try { PROF.data = await api(`/api/engagements/${E.id}/profile`); } catch (e) { PROF.data = null; toast(e.message, 6000); }
+  PROF.loading = false;
+  if (state.step === "roles" && $("#engProfile")) { $("#engProfile").innerHTML = engProfileCard(); bindEngProfile(); }
+}
+function bindEngProfile() {
+  document.querySelectorAll("#engProfile [data-prof]").forEach(s => s.onchange = async () => {
+    const k = s.dataset.prof, v = s.value === "" ? null : k === "fy_end_month" ? +s.value : s.value;
+    try { PROF.data = await api(`/api/engagements/${E.id}/profile`, {method: "PUT", body: {fields: {[k]: v}}});
+      toast(k === "fy_end_month" ? "Saved. Recreate the report's charts on the Summary to total them by this year end." : "Saved. The roll-forward uses it from the next Summary.", 6000); }
+    catch (e) { toast(e.message, 6000); }
+    $("#engProfile").innerHTML = engProfileCard(); bindEngProfile();
+  });
 }
 // checks on the suggestion, and the reviewer model's second opinion on the same evidence
 function rolesCheckCard(sug, docs, wbs) {
@@ -1222,6 +1255,7 @@ function profilesCard(sug, wbs) {
   <div class="scroll"><table><thead><tr><th>Workbook</th><th>Looks like, and why</th><th>Valuation terms</th><th>Charts</th><th>External links</th>${anyMade ? "<th>Made by</th>" : ""}</tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 bind.roles = () => {
+  bindEngProfile(); loadProfile();
   const box = $("#likeHeat"), tip = $("#tip");
   if (box) { box.onmousemove = ev => { const td = ev.target.closest("td[data-tip]"); if (!td) { tip.style.display = "none"; return; }
       tip.innerHTML = td.dataset.tip; tip.style.display = "block"; tip.style.left = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px"; tip.style.top = (ev.clientY + 14) + "px"; };

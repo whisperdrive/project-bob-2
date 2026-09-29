@@ -182,12 +182,28 @@ def year_end_check(out: Path) -> None:
         y, m = (y + 1, 3) if m == 12 else (y, m + 3)
     wb.close()
     db = sqlite3.connect(build_map.main(str(path), str(out / "quarters_db"))["db"])
+    assert chartdata.fy_end_detect(db)[0] is None, "a model of quarters shows no financial year (not December)"
     assert chartdata.fy_end_month(db) == 12, "no hint: December, as before"
     with chartdata.fy_end_hint(6):
         assert chartdata.fy_end_month(db) == 6
         row = next(r for r in rc.fy_totals(db) if r["label"] == "Revenue")
     assert row["years"] == {2026: 400.0, 2027: 400.0, 2028: 400.0}, row["years"]
-    print("year end: ok (a quarterly model's rows total by the engagement's June years, not calendar years)")
+    # an annual model of March years shows its own year end; a hint doesn't override it, a person's setting does
+    path = out / "march_years.xlsx"
+    wb = xlsxwriter.Workbook(path)
+    ws = wb.add_worksheet("Ops")
+    ws.write(2, 1, "Period ending")
+    for k in range(5):
+        ws.write_datetime(2, 3 + k, date(2026 + k, 3, 31), wb.add_format({"num_format": "dd-mmm-yy"}))
+    wb.close()
+    db = sqlite3.connect(build_map.main(str(path), str(out / "march_db"))["db"])
+    assert chartdata.fy_end_detect(db)[0] == 3
+    with chartdata.fy_end_hint(6):
+        assert chartdata.fy_end_month(db) == 3
+    with chartdata.fy_end_hint(6, forced=True):
+        assert chartdata.fy_end_month(db) == 6
+    print("year end: ok (a quarterly model's rows total by the engagement's June years, not calendar years; a model's "
+          "own year end beats the hint, a person's setting beats both)")
 
 
 def main() -> None:

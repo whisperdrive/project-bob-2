@@ -117,6 +117,26 @@ def main() -> None:
     print("mid-loop: ok (facts a decision reopens while a loop runs get a loop of their own when it finishes)")
     numbers_check(eid, tmp)
     retry_check()
+    profile_check(eid)
+
+
+def profile_check(eid: int) -> None:
+    import chartdata
+    engagement.set_profile(eid, {"fy_end_month": 6, "horizon": "fixed"})
+    assert engagement._profile(eid) == {"fy_end_month": 6, "horizon": "fixed"}
+    with engagement._fy_hint(eid):
+        assert chartdata._FY_HINT.get() == (6, True), "a person's year end is forced on the charts"
+    for bad in ({"fy_end_month": 13}, {"horizon": "sideways"}, {"frequency": "annual"}):
+        try:
+            engagement.set_profile(eid, bad)
+            raise AssertionError(f"accepted {bad}")
+        except ValueError:
+            pass
+    engagement.set_profile(eid, {"horizon": None})
+    assert engagement._profile(eid) == {"fy_end_month": 6}
+    view = engagement.profile_view(eid)["fields"]
+    assert view["fy_end_month"]["set"] and view["fy_end_month"]["shown"] == "June" and not view["horizon"]["set"]
+    print("profile: ok (a year end and a horizon set, checked and cleared; the charts take the year end as set)")
 
 
 def retry_check() -> None:

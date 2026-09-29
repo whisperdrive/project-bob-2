@@ -276,6 +276,20 @@ person before the next relies on it:
    and checks the link's cached values against the file. Prior vs current is decided by timeline start, within
    the versions of one model. The suggestion redoes itself whenever the files or the report facts change, until
    the person confirms. The page shows the similarity of every pair of workbooks and what each one contains.
+
+   **The engagement's profile**, on the same page, holds the facts about the models that each step would
+   otherwise guess on its own, each detected from the files (no model calls) with how it was found:
+   - the financial-year end: a named range or a labelled month in the client model, the month its annual
+     timelines end in, else last year's valuation date's month. It drives the report's charts (model rows are
+     totalled by financial year to match them).
+   - the horizon: fixed where this year's client model ends its periods on the same date as last year's (a
+     concession with an end date), else rolling. It drives the roll-forward: on a fixed horizon the periods stay
+     and only the valuation date moves.
+   - the periods (monthly, quarterly, annual), the currency and units (from the report's facts) and the
+     discounting convention (read back from the factors of the DCFs under the figures): shown, not set.
+
+   The financial-year end and the horizon can be set where the detection is wrong; a setting wins over what the
+   models show, and is marked as the person's.
 4. **Compare.** `diff.py` between the client models, without the overlay sheets. When the timeline has rolled
    forward, each period is compared with the same period (matched by the timeline row's dates), not the same
    column.

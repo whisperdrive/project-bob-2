@@ -261,6 +261,7 @@ class Session:
         self.client_reads = set()  # (sheet, row, col) of last year's model read on the current feed
         self.base_vd = None  # last year's valuation date (serial): the roll's start
         self._pshift = {}
+        self.horizon_set = None  # "fixed" / "rolling": the engagement's profile says, not worked out (fixed_horizon)
         self.mode = None
         self.holds = {}  # (sheet, row, col) -> value: cells held at Excel's value on every feed (the doctor's fixes)
         self.configure("workbook")
@@ -346,26 +347,18 @@ class Session:
             self.stood_in[(s, r, c)] = v
         return v
 
-    def _ends_as_before(self, s: str) -> bool | None:
-        """Whether this year's model ends client sheet s's periods on the same date as last year's (None: no
-        telling: no current model, no such sheet this year, or no timeline)."""
-        if not self.current or not self.rowmap:
-            return None
-        to = self.rowmap.sheet_for(s)
-        a, b = (self.prior or self.ov).timeline(s), self.current.timeline(to) if to else {}
-        if len(a) < 2 or len(b) < 2:
-            return None
-        return max(a.values()) == max(b.values())
-
     def fixed_horizon(self) -> bool:
-        """This year's client model ends its periods where last year's did, on most client sheets with a timeline:
-        a concession or asset life with an end date. Its period dates are the same dates both years, so rolling
-        forward moves the valuation date, not the periods: moving them would read periods past the end, which
-        this year's model doesn't have, and stand last year's values in for them."""
+        """Whether rolling forward keeps the period dates: set in the engagement's profile (horizon_set), else
+        worked out (horizon()). Cached until the roll is planned again."""
         if ("fixed",) not in self._pshift:
-            sheets = self.client_sheets or {k[1] for k in self.ext_cached}
-            votes = [v for v in (self._ends_as_before(x) for x in sorted(sheets)) if v is not None]
-            self._pshift[("fixed",)] = bool(votes) and sum(votes) * 2 > len(votes)
+            set_ = getattr(self, "horizon_set", None)
+            if set_ in ("fixed", "rolling"):
+                self._pshift[("fixed",)] = set_ == "fixed"
+            elif not self.current or not self.rowmap:
+                self._pshift[("fixed",)] = False
+            else:
+                sheets = self.client_sheets or {k[1] for k in self.ext_cached}
+                self._pshift[("fixed",)] = horizon(self.prior or self.ov, self.current, sheets, self.rowmap.sheet_for)[0] == "fixed"
         return self._pshift[("fixed",)]
 
     def period_shift(self, wb: Workbook, s: str) -> int:
@@ -627,6 +620,23 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
     return summary, sess
 
 
+def horizon(prior: Workbook, current: Workbook, sheets, sheet_for=None) -> tuple[str | None, dict]:
+    """How this year's client model's periods end against last year's: "fixed" where most client sheets with a
+    timeline end on the same date both years (a concession or asset life with an end date: the period dates are the
+    same dates, so rolling forward moves the valuation date, not the periods; moving them would read periods past
+    the end and stand last year's values in for them), "rolling" where they end later, None with no sheet to tell
+    by. sheet_for: last year's sheet -> this year's (rowfind), else the same name. -> (kind, {"fixed": n, "rolling": n})."""
+    n = {"fixed": 0, "rolling": 0}
+    for s in sorted(sheets or []):
+        to = sheet_for(s) if sheet_for else s
+        a, b = prior.timeline(s), current.timeline(to) if to else {}
+        if len(a) >= 2 and len(b) >= 2:
+            n["fixed" if max(a.values()) == max(b.values()) else "rolling"] += 1
+    if not n["fixed"] and not n["rolling"]:
+        return None, n
+    return ("fixed" if n["fixed"] > n["rolling"] else "rolling"), n
+
+
 def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: bool,
                 dates: tuple = (None, None, None, None)) -> tuple[int, str, str | None]:
     """How far to roll forward: (months, how that was worked out, the new valuation date).
@@ -696,7 +706,7 @@ def plan_roll(sess: Session, prior: dict | None, overlay: dict, same_file: bool,
     sess.base_vd = serial(date.fromisoformat(ov_vd[:10])) if ov_vd else None
     sess._pshift.clear()
     return {"prior_valuation_date": ov_vd, "months": months, "months_basis": basis,
-            "fixed_horizon": bool(sess.current) and sess.fixed_horizon(),
+            "fixed_horizon": bool(sess.current) and sess.fixed_horizon(), "horizon_set": getattr(sess, "horizon_set", None),
             "months_assumed": "assumed:" in basis, "date_check": basis.startswith("check:"),
             "current_valuation_date": new_vd, "plan": ROLL_PLAN,
             "dates": {"overlay": ov_vd, "prior_client": prior_vd, "current_client": current_vd, "this_year": this_vd}}

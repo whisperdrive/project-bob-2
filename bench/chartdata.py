@@ -32,49 +32,63 @@ def _d(label) -> date | None:
     return date(int(m[1]), int(m[2]), int(m[3])) if m else None
 
 
-_FY_HINT: contextvars.ContextVar[int | None] = contextvars.ContextVar("fy_end_hint", default=None)
+_FY_HINT: contextvars.ContextVar[tuple | None] = contextvars.ContextVar("fy_end_hint", default=None)
 
 
 @contextlib.contextmanager
-def fy_end_hint(month: int | None):
-    """The engagement's financial-year end (last year's valuation date's month), for a model that doesn't say: a
-    model of quarters or months has no annual timeline to show it, and a calendar year would put every row of a
-    June-year model in the wrong years."""
-    token = _FY_HINT.set(month)
+def fy_end_hint(month: int | None, forced: bool = False):
+    """The engagement's financial-year end, for the models read inside the block. forced: a person set it in the
+    engagement's profile, so it wins over what a model says. Else it's last year's valuation date's month, for a
+    model that doesn't say: a model of quarters or months has no annual timeline to show it, and a calendar year
+    would put every row of a June-year model in the wrong years."""
+    token = _FY_HINT.set((month, forced) if month else None)
     try:
         yield
     finally:
         _FY_HINT.reset(token)
 
 
-def fy_end_month(db: sqlite3.Connection) -> int:
-    """The model's financial-year end month (1-12): a named range, a labelled row (a month number: a "Year end"
-    row holding a date is the model's own convention, not its financial year), the month an annual timeline's
-    periods end in, the engagement's hint (fy_end_hint), else 12."""
+def fy_end_detect(db: sqlite3.Connection) -> tuple[int | None, str]:
+    """The financial-year end month (1-12) a model shows, and how: a named range, a labelled row (a month number: a
+    "Year end" row holding a date is the model's own convention, not its financial year), else the month an
+    annual timeline's periods end in. (None, why) when it shows none."""
     for name, ref in db.execute("SELECT name, ref FROM names"):
         if re.search(r"fy.?(end.?)?month|year.?end.?month", name, re.I) and "!" in ref:
             sheet, addr = ref.rsplit("!", 1)
             row = db.execute("SELECT value FROM cells WHERE sheet=? AND addr=?",
                              (sheet.strip("'"), addr.replace("$", ""))).fetchone()
             if row and isinstance(row[0], (int, float)) and 1 <= row[0] <= 12:
-                return int(row[0])
-    for sheet, r in db.execute("SELECT sheet, row FROM rows WHERE label LIKE '%financial year end month%' "
-                               "OR label LIKE '%year end month%' LIMIT 5"):
+                return int(row[0]), f"the named range {name}"
+    for sheet, r, label in db.execute("SELECT sheet, row, label FROM rows WHERE label LIKE '%financial year end month%' "
+                                      "OR label LIKE '%year end month%' LIMIT 5"):
         for (v,) in db.execute("SELECT value FROM cells WHERE sheet=? AND row=?", (sheet, r)):
             if isinstance(v, (int, float)) and not isinstance(v, bool) and 1 <= v <= 12:
-                return int(v)
-    # else the month an annual timeline's periods end in (30 June every year: a June year end)
-    months = Counter()
+                return int(v), f"the row '{label}' ({sheet}!r{r})"
+    months, sheets = Counter(), 0
     for sheet, lay in db.execute("SELECT sheet, layout FROM sheets"):
         lay = json.loads(lay or "{}")
         if not lay.get("header_row") or not lay.get("tl_first"):
             continue
+        sheets += 1
         ends = [v for (v,) in db.execute("SELECT value FROM cells WHERE sheet=? AND row=? AND col BETWEEN ? AND ? ORDER BY col",
                                          (sheet, lay["header_row"], lay["tl_first"], lay["tl_last"]))]
         ds = [date.fromisoformat(v[:10]) for v in ends if isinstance(v, str) and re.match(r"\d{4}-\d{2}-\d{2}", v)]
         if len(ds) >= 3 and all(330 <= (b - a).days <= 400 for a, b in zip(ds, ds[1:])):
             months[Counter(d.month for d in ds).most_common(1)[0][0]] += 1
-    return months.most_common(1)[0][0] if months else (_FY_HINT.get() or 12)
+    if months:
+        m, n = months.most_common(1)[0]
+        return m, f"the annual timelines' period ends ({n} sheet(s))"
+    return None, f"no annual timeline ({sheets} sheet(s) with periods, none a year apart), no named range or labelled row"
+
+
+def fy_end_month(db: sqlite3.Connection) -> int:
+    """The model's financial-year end month (1-12): the profile's if a person set it, else what the model shows
+    (fy_end_detect), else the engagement's hint (last year's valuation date's month), else 12."""
+    hint = _FY_HINT.get()
+    if hint and hint[1]:
+        return hint[0]
+    month, _ = fy_end_detect(db)
+    return month or (hint[0] if hint else 12)
 
 
 def aggregation(name: str, units: str | None) -> str:

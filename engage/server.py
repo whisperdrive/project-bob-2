@@ -332,6 +332,21 @@ async def put_roles(eid: int, body: Roles):
     return await _run(engagement.confirm_roles, eid, body.roles)
 
 
+class Profile(BaseModel):
+    fields: dict  # {"fy_end_month": 6 | None, "horizon": "fixed" | "rolling" | None}
+
+
+@app.get("/api/engagements/{eid}/profile")
+async def get_profile(eid: int):
+    """The engagement's profile: financial-year end, horizon, periods, units, discounting; detected, and set."""
+    return await _run(engagement.profile_view, eid)
+
+
+@app.put("/api/engagements/{eid}/profile")
+async def put_profile(eid: int, body: Profile):
+    return await _run(engagement.set_profile, eid, body.fields)
+
+
 @app.get("/api/engagements/{eid}/models/{fid}")
 async def model_dashboard(eid: int, fid: int):
     """The Map step's dashboard for one of the engagement's workbooks."""
