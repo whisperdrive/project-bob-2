@@ -177,10 +177,11 @@ class Doctor:
         out = {"cell": _a1k(k), "label": self.label(k), "kind": kind, "python": _show(v), "excel": _show(w)}
         if kind == "client":
             if feed == "current":
-                r2, how = self.sess.rowmap.match(s, r) if self.sess.rowmap else (None, "")
-                out["current_row"] = r2
+                ex = self.sess.rowmap.explain(s, r) if self.sess.rowmap else {"found": None}
+                out["current_row"] = f"{ex['found'][0]}!r{ex['found'][1]}" if ex["found"] else None
                 if (s, r, c) in self.sess.unmatched:
-                    return {**out, "cause": "unmatched", "detail": self.sess.unmatched[(s, r, c)]}
+                    return {**out, "cause": "unmatched", "detail": self.sess.unmatched[(s, r, c)]
+                            + ("; last year's value stands in" if (s, r, c) in self.sess.stood_in else "")}
             if _err(v):
                 where = {"workbook": "the overlay's saved copy of the client value", "prior": "last year's client model",
                          "current": "this year's client model"}[feed]
@@ -475,24 +476,26 @@ class Doctor:
         checked, flagged, n_ok = 0, [], 0
         cur_labels = cur.labels()
         for s, r in items:
-            r2, how = sess.rowmap.match(s, r)
+            ex = sess.rowmap.explain(s, r)
             lab = prior.labels().get((s, r), "")
-            if r2 is None:
+            if ex["found"] is None:
                 flagged.append({"item": f"{s}!r{r}", "label": lab, "status": "missing",
                                 "detail": sess.rowmap.why(s, r, prior.labels())})
                 continue
-            lab2 = cur_labels.get((s, r2), "")
+            s2, r2 = ex["found"]
+            how = "; ".join(f"{n}: {t}" for n, t in ex["evidence"][:2]) or ex["how"]
+            lab2 = cur_labels.get((s2, r2), "")
             hist, fut = [], []
             for c, when in sorted(prior.timeline(s).items()):
-                c2 = cur.column_of(s, when)
-                a, b = prior.value(s, r, c), cur.value(s, r2, c2) if c2 else None
+                c2 = cur.column_of(s2, when)
+                a, b = prior.value(s, r, c), cur.value(s2, r2, c2) if c2 else None
                 if isinstance(a, float) and isinstance(b, float) and (a or b):
                     (hist if pvd_s is not None and when <= pvd_s else fut).append((to_date(when).isoformat(), a, b))
             checked += 1
-            item = {"item": f"{s}!r{r} -> r{r2}", "label": lab, "now": lab2, "matched_by": how}
+            item = {"item": f"{s}!r{r} -> {s2 + '!' if s2 != s else ''}r{r2}", "label": lab, "now": lab2, "matched_by": how}
             pairs = hist or fut
             if not pairs:
-                if how.startswith("same row") and lab and lab2 and lab.strip().lower() != lab2.strip().lower():
+                if "same row" in how and lab and lab2 and lab.strip().lower() != lab2.strip().lower():
                     flagged.append({**item, "status": "check",
                                     "detail": f"matched by position ({how}) but the label reads '{lab2}' now"})
                 else:

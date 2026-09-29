@@ -323,6 +323,24 @@ async def chart_png(eid: int, name: str):
     return FileResponse(p, media_type="image/png")
 
 
+@app.get("/api/engagements/{eid}/overlay/facts")
+async def overlay_facts(eid: int, start: str | None = None):
+    """The facts behind a report figure: its discounting, the path up to it, and where this year's model has
+    the rows its cash flows come from."""
+    return await _run(engagement.overlay_facts, eid, start)
+
+
+class RowPick(BaseModel):
+    prior: str
+    current: str | None = None
+
+
+@app.post("/api/engagements/{eid}/overlay/rowpick")
+async def row_pick(eid: int, body: RowPick):
+    """Your choice of this year's row for one of last year's rows (none: back to what was found)."""
+    return await _run(engagement.row_pick, eid, body.prior, body.current)
+
+
 @app.get("/api/engagements/{eid}/doctor")
 async def doctor_view(eid: int):
     """The overlay doctor's last diagnosis, its progress, and the cells held at Excel's values."""

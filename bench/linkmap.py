@@ -236,16 +236,17 @@ def align_rows(prior_db: str, current_db: str, refs: list[tuple[str, int]]) -> d
     db.execute("ATTACH DATABASE ? AS o", (rodb.uri(prior_db),))
     with _ro(prior_db) as p:
         po = occurrences(p)
+    import rowfind
     pw, cw = ovmod.Workbook(prior_db), ovmod.Workbook(current_db)
-    rm = ovmod.RowMap(pw, cw)  # the same row matching as the rolled-forward feed, fallbacks included
+    rm = rowfind.RowFinder(ovmod.RowMap(pw, cw), pw, cw)  # the same finding as the rolled-forward feed
     out, tl = {}, {}
     for ref in refs:
         key = po.get(ref) or (ref[0], "", 0)
-        r2 = rm.row(*ref)
-        if r2 is None:
+        ex = rm.explain(*ref)
+        if ex["found"] is None:
             out[ref] = {"current": None, "why": rm.why(ref[0], ref[1], pw.labels())}
             continue
-        hit = (ref[0], r2)
+        hit = ex["found"]
         sheet_o, sheet_n = ref[0], hit[0]
         if (sheet_o, sheet_n) not in tl:
             ot, nt = diffmod.timeline(db, "o", sheet_o), diffmod.timeline(db, "main", sheet_n)
@@ -263,7 +264,8 @@ def align_rows(prior_db: str, current_db: str, refs: list[tuple[str, int]]) -> d
                 "ORDER BY col LIMIT 3", (s, r))]
             pv, cv = first("o", *ref), first("main", sheet_n, hit[1])
         out[ref] = {"current": f"{sheet_n}!r{hit[1]}", "label": key[1], "periods": [d for d, _, _ in periods],
-                    "prior_values": pv, "current_values": cv}
+                    "prior_values": pv, "current_values": cv, "how": ex["how"],
+                    "evidence": [f"{n}: {t}" for n, t in ex["evidence"][:3]]}
     db.close()
     return out
 

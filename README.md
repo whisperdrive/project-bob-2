@@ -265,9 +265,20 @@ person before the next relies on it:
    identified in the two client models; failing that, from how far the client sheets' timelines moved (the most
    common forward move across sheets, since a model that keeps more history this year starts earlier); failing
    that, 12 months, flagged for a check. The page says which. Client values come from the same line item in the
-   period with the rolled date: the same label (its n-th occurrence on the sheet), else the same label nearest its
-   old row, else, on a sheet laid out as before, the same row (which also covers unlabelled flag and timing rows).
-   Values that can't be matched are listed with the reason, not zeroed. The Map uses the same matching. Each output shows its Python function and the client values it
+   period with the rolled date, found however this year's model changed (`bench/rowfind.py`). Each of last year's
+   rows is looked for several ways, and the one the evidence supports best is taken:
+   - **label**: the same label on the same sheet (its n-th occurrence, else the nearest), or on the sheet a renamed
+     sheet became (the one sharing most of its labels);
+   - **history**: the same values in the periods both models have as history, on any sheet (actual years don't
+     change between versions), with later years close;
+   - **words**: a label on the same sheet sharing most of its words, the values close;
+   - **neighbours**: the same rows around it in the dependency graph (it reads rows labelled as its inputs were,
+     and is read by rows labelled as its users were);
+   - **banner**: a summary cell in a sheet's first ten rows that read the row last year, found again by its label.
+   The same label in place with last year's history comes first; a label whose history contradicts it gives way
+   to the row that has last year's numbers. A person's pick wins over all of them. Where nothing is found, last
+   year's value for the same period stands in, never a blank (which would read as zero), and the Summary says
+   how many values stood in, on which line items. The Map uses the same finding. Each output shows its Python function and the client values it
    reads. The module is saved as `out/overlays/e<id>/overlay.py`; open it from the page, or run it from a terminal:
    `uv run python bench/overlay.py <id> --mode current --set Val_Inputs!C5=0.075`.
 
@@ -291,6 +302,20 @@ person before the next relies on it:
      into the rows it adds up. Those discountings join the anchors above, so Validate and the methods work for
      overlays whose DCF isn't a labelled `SUMPRODUCT`. The chat has the same trace as `overlay_value`.
      `tests/make_trace_workbook.py` writes a synthetic overlay with each of these shapes.
+     **The facts** (`bench/dcffacts.py`), at the top of the tab, find the same thing from what the Python overlay
+     actually reads (`Book.reads`), so lookups (INDEX, OFFSET, CHOOSE), names and the branch an IF took are
+     followed as Excel took them, across sheets. A discounting is recognised by its numbers: a cell that reads two
+     rows and equals the sum of their products, one of them factors between 0 and 1; or one that reads a row and
+     equals its sum, each cell of it a cash flow (in any row, on any sheet, the client model's too) times a
+     factor; or an NPV, XNPV or SUMPRODUCT with inline factors, checked by value. Each is recomputed from its cash
+     flows and factors and must tie exactly. The card shows the cash-flow row and its periods, what the factors
+     are computed from (the rate, the valuation date, the period dates), a Gordon terminal value, and the path up
+     to the report's figure. It then lists the client-model rows the cash flows come from, and what this year's
+     model has for each, with the evidence and a picker to choose another row. **Copy the facts** gives it all as
+     text. `tests/rollforward_pack.py` writes an overlay inside a copy of a client model (an INDEX-picked scenario,
+     the mid of a low and a high rate, present-value rows reading the client sheet) and a changed version of the
+     model (rows inserted, renamed, restructured, a sheet renamed); `tests/check_rollforward.py` checks the facts,
+     that every row is found, and that the figure rolled forward equals a calculation made from the numbers.
    - **Ask**: the Model Desk's chat agent (`bench/overlay_chat.py` on `bench/agent.py`). It has the workbook tools
      on any of the three workbooks, and tools that run the overlay: `overlay_run`, `overlay_chart` (a row saved
      vs recomputed, several feeds on one chart, and optionally the rows that add up to it as stacked columns

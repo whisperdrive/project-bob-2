@@ -1116,6 +1116,7 @@ def _overlay(eid: int) -> None:
     summary["wiring"] = w
     summary["reference_approved"] = all(f["approved"] for f in reference(eid)) and bool(reference(eid))
     ovmod.deep(_load_holds, eid, sess)
+    _load_rowpicks(eid, sess)
     _SESSIONS[eid] = (sess, summary)
     _set("engagements", eid, overlay_json=json.dumps(summary, default=str), overlay_status="done", overlay_step="Done",
          updated_at=time.time())
@@ -1135,6 +1136,7 @@ def overlay_session(eid: int):
                          None if w["same_file"] else (w["prior"] or {}).get("db_path"), (w["current"] or {}).get("db_path"),
                          w["client_link"], w.get("client_sheets") or ((w["prior"] or {}).get("sheets") if w["same_file"] else None))
     ovmod.deep(_load_holds, eid, sess)
+    _load_rowpicks(eid, sess)
     _SESSIONS[eid] = (sess, summary)
     return _SESSIONS[eid]
 
@@ -1426,6 +1428,97 @@ def _load_holds(eid: int, sess) -> None:
                 keep[k] = h["value"]
     sess.holds = keep
     sess.configure("workbook")
+
+
+def _rowpicks_file(eid: int) -> Path:
+    return OUT / "overlays" / f"e{eid}" / "rowpicks.json"
+
+
+def _load_rowpicks(eid: int, sess) -> None:
+    """A person's choices of this year's row for last year's rows ({"CF!r11": "CF!r15"}), for the roll-forward."""
+    if not sess.rowmap:
+        return
+    f = _rowpicks_file(eid)
+    picks = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    for a, b in picks.items():
+        s, r = a.rsplit("!r", 1)
+        to = b.rsplit("!r", 1) if b else None
+        sess.rowmap.pick(s, int(r), (to[0], int(to[1])) if to else None)
+
+
+def _row_ref(text: str) -> tuple[str, int]:
+    m = re.match(r"^(.+)!r(\d+)$", text or "")
+    if not m:
+        raise ValueError(f"not a row: {text!r} (Sheet!rN)")
+    return m[1], int(m[2])
+
+
+def row_found(sess, s: str, r: int) -> dict:
+    """What this year's model has for one of last year's rows: the row found, how, the evidence, the
+    alternatives, and a few periods of both years' values side by side."""
+    ex = sess.rowmap.explain(s, r)
+    prior = sess.prior or sess.ov
+    out = {"row": f"{s}!r{r}", "label": prior.labels().get((s, r), ""), "found": None, "how": ex["how"],
+           "evidence": [f"{n}: {t}" for n, t in ex["evidence"]], "confidence": ex["confidence"],
+           "alternatives": ex["alternatives"], "picked": (s, r) in sess.rowmap.picks}
+    if ex["found"]:
+        s2, r2 = ex["found"]
+        out.update(found=f"{s2}!r{r2}", found_label=sess.current.labels().get((s2, r2), ""))
+        tl_p, tl_c = prior.timeline(s), sess.current.timeline(s2)
+        both = sorted(set(tl_p.values()) & set(tl_c.values()))[:6]
+        inv_p, inv_c = {v: c for c, v in tl_p.items()}, {v: c for c, v in tl_c.items()}
+        from xlruntime import to_date
+        out["side_by_side"] = [{"period": to_date(w).isoformat(), "last_year": prior.value(s, r, inv_p[w]),
+                                "this_year": sess.current.value(s2, r2, inv_c[w])} for w in both]
+    return out
+
+
+def overlay_facts(eid: int, start: str | None = None) -> dict:
+    """The facts behind a report figure (dcffacts.py), and where this year's model has the client rows its cash
+    flows come from (rowfind.py)."""
+    import dcffacts
+    import overlay as ovmod
+    sess, summary = overlay_session(eid)
+    starts = ovmod.trace_starts(summary)
+    if start and start not in {x["cell"] for x in starts}:
+        starts.append({"cell": start, "label": None, "report": None, "key": None, "ties": False, "value": None})
+    if not starts:
+        return {"starts": [], "selected": None}
+    pick = next((x for x in starts if x["cell"] == start), starts[0])
+    fx = ovmod.deep(dcffacts.facts, sess, summary, pick["cell"])
+    if sess.rowmap:
+        def found():
+            seen = {}
+            for c in fx["discountings"]:
+                for o in c["origins"]:
+                    if o["row"] not in seen and not o["row"].startswith("["):
+                        seen[o["row"]] = row_found(sess, *_row_ref(o["row"]))
+                    o["this_year"] = seen.get(o["row"])
+        ovmod.deep(found)
+    return {"starts": starts, "selected": pick["cell"], "start": pick, "facts": fx, "text": dcffacts.text(fx),
+            "current": bool(sess.rowmap), "current_file": (summary["wiring"].get("current") or {}).get("filename")}
+
+
+def row_pick(eid: int, prior_row: str, current_row: str | None) -> dict:
+    """A person's choice of this year's row for one of last year's (None to go back to what was found)."""
+    import overlay as ovmod
+    sess, summary = overlay_session(eid)
+    if not sess.rowmap:
+        raise ValueError("assign this year's client model (Roles) and rebuild in Python first")
+    s, r = _row_ref(prior_row)
+    to = _row_ref(current_row) if current_row else None
+    if to and not sess.current.db.execute("SELECT 1 FROM rows WHERE sheet=? AND row=?", to).fetchone():
+        raise ValueError(f"{current_row} isn't a line item in this year's model")
+    f = _rowpicks_file(eid)
+    picks = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    if to:
+        picks[prior_row] = current_row
+    else:
+        picks.pop(prior_row, None)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(picks), encoding="utf-8")
+    ovmod.deep(sess.rowmap.pick, s, r, to)
+    return ovmod.deep(row_found, sess, s, r)
 
 
 def start_doctor(eid: int) -> dict:

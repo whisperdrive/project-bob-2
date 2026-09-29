@@ -249,7 +249,12 @@ class Session:
                 self.formula_cells.append((s, r, c))
         self.formula_cells.sort(key=lambda k: (k[2], k[1]))  # column by column: early periods are memoised first
         B.cached = lambda s, r, c: self.ov.value(s, r, c)
-        self.rowmap = RowMap(self.prior or self.ov, self.current) if self.current else None
+        self.rowmap = None
+        if self.current:  # last year's rows in this year's model: by label, history, words, neighbours, banner
+            import rowfind
+            base = self.prior or self.ov
+            self.rowmap = rowfind.RowFinder(RowMap(base, self.current), base, self.current)
+        self.stood_in = {}  # (sheet, row, col) -> last year's value, used where this year's model has no match
         self.mode = None
         self.holds = {}  # (sheet, row, col) -> value: cells held at Excel's value on every feed (the doctor's fixes)
         self.configure("workbook")
@@ -260,6 +265,7 @@ class Session:
         B = self.B
         self.mode, self.shift = mode, shift_months
         self.unmatched = {}
+        self.stood_in = {}
         B.overrides.clear()
         B.overrides.update(self.holds)
         B.reset()
@@ -288,21 +294,34 @@ class Session:
         B.range_cache.clear()
 
     def _rolled(self, prior: Workbook, s, r, c):
-        """Prior client cell -> the current model's value: same line item (label), period rolled on by the shift."""
+        """Prior client cell -> the current model's value: the same line item (found by rowfind, wherever it is
+        now), the period rolled on by the shift. Where this year's model has no match, last year's value stands
+        in (its forecast for the same period), recorded in unmatched and stood_in: never a blank, which would
+        read as zero."""
         cur = self.current
-        r2 = self.rowmap.row(s, r)
-        if r2 is None:
-            self.unmatched[(s, r, c)] = self.rowmap.why(s, r, prior.labels())
-            return None
         tl_p = prior.timeline(s)
+        want = add_months(tl_p[c], self.shift) if c in tl_p else None
+        hit = self.rowmap.locate(s, r)
+        if hit is None:
+            self.unmatched[(s, r, c)] = self.rowmap.why(s, r, prior.labels())
+            return self._stand_in(prior, s, r, c, want)
+        s2, r2 = hit
         c2 = c
-        if c in tl_p:
-            want = add_months(tl_p[c], self.shift)
-            c2 = cur.column_of(s, want)
+        if want is not None:
+            c2 = cur.column_of(s2, want)
             if c2 is None:
                 self.unmatched[(s, r, c)] = f"period {to_date(want).isoformat()} not in the current model"
-                return None
-        return cur.value(s, r2, c2)
+                return self._stand_in(prior, s, r, c, want)
+        return cur.value(s2, r2, c2)
+
+    def _stand_in(self, prior: Workbook, s, r, c, want):
+        """Last year's value for a client cell this year's model doesn't have: last year's forecast for the same
+        period, or the same cell where the row has no timeline."""
+        c0 = prior.column_of(s, want) if want is not None else c
+        v = prior.value(s, r, c0) if c0 is not None else None
+        if v is not None:
+            self.stood_in[(s, r, c)] = v
+        return v
 
     def rolled_timeline(self, months: int) -> dict:
         """The overlay's own period dates moved on: constants in each overlay sheet's timeline row."""
@@ -685,8 +704,16 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
     cols = {}
     cols["rebuilt"], _, _, _ = read(base_feed, False)
     roll = None
+    gaps = None
     if this_feed:
         cols["this_year"], roll, _, _ = read(this_feed, False)
+        # client values this year's model has no match for: last year's stand in; the rows, for the page
+        by_row = Counter((s_, r_) for (s_, r_, _c) in sess.unmatched)
+        labels = (sess.prior or sess.ov).labels()
+        gaps = {"values": len(sess.unmatched), "stood_in": len(sess.stood_in),
+                "rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "values": n,
+                          "why": sess.unmatched[next(k for k in sess.unmatched if k[:2] == (s_, r_))]}
+                         for (s_, r_), n in by_row.most_common(30)]}
     cols["scenario"], sc_roll, sc_defaults, sc_months = read(sc_feed, True, valuation_date, months)
     val = lambda col, cell: _show(cols[col].get(parse_a1(cell))) if cell else None
     for row in rows:
@@ -763,7 +790,7 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
     return {"rows": rows, "columns": [c for c in ("rebuilt", "this_year", "scenario") if c in cols],
             "feeds": {"rebuilt": base_feed, "this_year": this_feed, "scenario": sc_feed},
             "roll": roll, "scenario_roll": sc_roll, "detected_method": detected, "method": method,
-            "changes": changes or {}, "notes": notes}
+            "changes": changes or {}, "notes": notes, "this_year_gaps": gaps}
 
 
 def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
