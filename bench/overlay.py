@@ -455,6 +455,7 @@ class Session:
                 forms[k] = db.execute("SELECT formula FROM cells WHERE sheet=? AND row=? AND col=?", k).fetchone()[0]
         labels = self.ov.labels()
         return {"cells": len(res), "matched": len(res) - len(bad), "cycles": len(self.B.cycles),
+                "text": sum(isinstance(w, str) for _, _, w in bad),  # label cells: Excel saved text (a caption)
                 "unsupported": dict(self.B.unsupported), "quirks": dict(xlruntime.xl.quirks),
                 "mismatches": [{"cell": _a1(*k), "label": labels.get(k[:2], ""), "python": _show(v), "workbook": _show(w),
                                 "formula": forms.get(k)} for k, v, w in bad[:limit]]}
@@ -1086,6 +1087,7 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             d = f"{c['what']}" + (f", {m['timing']} of period, {m['day_count']}" if m else "")
             if d not in detected:
                 detected.append(d)
+    rate_check = _rate_check(sess, db, rows, traces)
     if method and traces:
         need = set(keys)
         for t, cs in traces.values():
@@ -1126,7 +1128,48 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
     return {"rows": rows, "columns": [c for c in ("rebuilt", "this_year", "scenario") if c in cols],
             "feeds": {"rebuilt": base_feed, "this_year": this_feed, "scenario": sc_feed},
             "roll": roll, "scenario_roll": sc_roll, "detected_method": detected, "method": method,
-            "changes": changes or {}, "notes": notes, "this_year_gaps": gaps}
+            "changes": changes or {}, "notes": notes, "this_year_gaps": gaps, "rate_check": rate_check}
+
+
+def _rate_check(sess: Session, db, rows: list[dict], traces: dict) -> dict | None:
+    """The discount rate three ways, where they don't agree: the report's, the lever's (the overlay cell labelled
+    like it) and the rate cells the discountings under the figures use (read back from their factors). None when
+    changing the lever moves one of those cells. Rates on different bases can rightly differ (a WACC, and a
+    cost of equity for equity cash flows); a lever that moves none of them moves nothing, so a scenario on it
+    means nothing. Said, not changed: a person decides which cell is the rate."""
+    import dcf
+    used = {}
+    for _, cs in traces.values():
+        for c in cs:
+            ref = c["inputs"].get("rate")
+            if isinstance(ref, str) and "!" in ref:
+                used.setdefault(ref, c.get("rate_value"))
+    if not used:
+        return None
+    dr = next((r for r in rows if r["kind"] == "assumption" and r.get("key") == "discount_rate"), None)
+    lever = (dr or {}).get("lever")
+    labels = sess.ov.labels()
+    lab = lambda ref: labels.get(parse_a1(ref)[:2], "")
+    moves = False
+    if lever:
+        try:
+            lk = parse_a1(lever["cell"])
+            v0 = sess.ov.value(*lk)
+            if isinstance(v0, float):
+                sess.configure("workbook", {lk: v0 + 0.01})
+                moved = sess.values([parse_a1(ref) for ref in used])
+                moves = any(isinstance(v, float) and isinstance(used[ref], float) and not dcf._close(v, used[ref])
+                            for ref, v in zip(used, moved))  # a low and a high rate: the lever is one of them
+        except (ValueError, KeyError):
+            moves = False
+        finally:
+            sess.configure("workbook")
+    if moves:
+        return None
+    return {"report": {"value": dr.get("report"), "basis": dr.get("basis")} if dr else None,
+            "lever": {"cell": lever["cell"], "label": lever.get("label") or lab(lever["cell"]),
+                      "value": sess.ov.value(*parse_a1(lever["cell"]))} if lever else None,
+            "dcf": [{"cell": ref, "label": lab(ref), "value": v} for ref, v in used.items()]}
 
 
 def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,

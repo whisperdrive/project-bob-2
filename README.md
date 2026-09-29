@@ -515,6 +515,19 @@ next thing for you to do, as a button that takes you there. Every running job sh
 and, where it reports progress, roughly how long is left. Other jobs estimate from how long the last run took,
 and finished jobs show how long they took.
 
+The Overview's **Needs you** lists only what a person can act on, one entry per cause: where last year's rebuild
+doesn't tie because the file assigned as last year's client model isn't the version the overlay was built on,
+that one finding stands for every conclusion it moves. **Limits of the rebuild**, beside it, lists what isn't a
+task: a figure with no discounting found under it (its roll-forward is one step), label cells whose text differs
+from Excel's (a caption built with `TEXT()` is not a figure), and formula differences the doctor has already
+looked at. On the Summary, the conclusions and assumptions the overlay doesn't compute are listed after those it
+does, counted apart, as outside the rebuild's scope rather than failures. Where the discount rate lever doesn't
+move the rate the discountings under the figures use (read back from their factors), the Summary shows the
+report's rate, the lever's and the discountings' side by side with their labels: rates on different bases can
+rightly differ, but a scenario on a lever that moves nothing means nothing. The row agents' record counts the
+rows still open from the gate as it is now, and is marked out of date after a rebuild, a workbook built again,
+or a newer row finder.
+
 Background jobs run in two lanes, each one job at a time: the report's (reading it, the key facts, both review
 loops) and the models' (roles, compare, map, Python overlay, charts, doctor, row agents). A review loop never
 holds up the map. The models' jobs stay one at a time because they share `model.db` and the Python session. Model

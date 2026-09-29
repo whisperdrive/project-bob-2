@@ -1811,7 +1811,7 @@ def _rows_job(eid: int) -> None:
             picks[d["row"]] = {"to": d["decision"], "by": "agent", "v": rowfind.VERSION, "why": d.get("why"),
                                "checked_by": "the numbers" if d.get("how") == "numbers" else d.get("review") or d.get("how")}
     _write_rowpicks(eid, picks)
-    res["at"] = time.time()
+    res["at"], res["v"] = time.time(), rowfind.VERSION
     f = _rowagent_file(eid)
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(res, default=str), encoding="utf-8")
@@ -1825,8 +1825,13 @@ def rows_view(eid: int) -> dict:
     e = rows[0]
     f = _rowagent_file(eid)
     res = json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+    import rowfind
+    built = max([(_role_wb(eid, k) or {}).get("processed_at") or 0 for k in ("prior_overlay", "prior_model", "current_model")]
+                + [e["overlay_started_at"] or 0])
+    # made before the Python overlay or a workbook was built again, or by another version of the row finder
+    stale = bool(res and (res["at"] < built or res.get("v") != rowfind.VERSION))
     return {"status": e["rows_status"], "step": e["rows_step"], "error": e["rows_error"], "secs": e["rows_secs"],
-            "result": res, "stale": bool(res and e["overlay_started_at"] and res["at"] < e["overlay_started_at"])}
+            "result": res, "stale": stale}
 
 
 def start_doctor(eid: int) -> dict:

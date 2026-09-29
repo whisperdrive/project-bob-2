@@ -1528,18 +1528,18 @@ function needs() {
   if (E.charts_status === "error") add("Recreate the report's charts again: it failed", "summary");
   const pf = E.overlay_status === "done" && priorFeedOff();
   if (pf) add(`${pf.text}: check which file is last year's client model`, "roles");
-  const V = E.overlay?.validation;
-  if (E.overlay_status === "done" && V && V.matched < V.cells) {
+  const V = E.overlay?.validation, off = mismatches(V);
+  if (E.overlay_status === "done" && off.numbers && !E.doctor_status) {
     const why = [Object.keys(V.unsupported || {}).length && `functions ${Object.keys(V.unsupported).slice(0, 4).join(", ")}`,
       E.overlay.stats?.missing_names?.length && `names ${E.overlay.stats.missing_names.slice(0, 3).join(", ")}`,
       E.overlay.not_compiled?.length && `${E.overlay.not_compiled.length} formula(s) not compiled`].filter(Boolean).join("; ");
-    add(`The Python overlay differs from Excel in ${(V.cells - V.matched).toLocaleString()} formula cell(s)${why ? `: ${why}` : ""}${E.doctor_status ? "" : ". The doctor finds where and why"}`, "doctor");
+    add(`The Python overlay differs from Excel in ${off.numbers.toLocaleString()} formula cell(s)${why ? `: ${why}` : ""}. The doctor finds where and why`, "doctor");
   }
   const rp = (OVR.eid === E.id ? OVR.sum : null)?.roll_plan || E.overlay?.roll;
   if (E.overlay_status === "done" && rp?.date_check) add(`Set this year's valuation date: this year's model is dated ${rp.dates?.current_client || "?"}, not after last year's (${rp.prior_valuation_date})`, "summary");
   else if (E.overlay_status === "done" && rp?.months_assumed) add(`Check the roll-forward: ${rp.months} months was assumed`, "python");
   const sumErr = ((OVR.eid === E.id ? OVR.sum : null)?.table?.rows || []).filter(r => r.kind === "conclusion" && Object.values(r.values || {}).some(v => typeof v === "string" && v.startsWith("#"))).length;
-  if (E.overlay_status === "done" && sumErr && !(V && V.matched < V.cells) && !E.doctor_status) add(`Run the doctor: ${sumErr} figure(s) come out as errors on this year's model`, "doctor");
+  if (E.overlay_status === "done" && sumErr && !off.numbers && !E.doctor_status) add(`Run the doctor: ${sumErr} figure(s) come out as errors on this year's model`, "doctor");
   if (E.doctor_status === "error") add("Run the doctor again: it failed", "doctor");
   const sum = OVR.eid === E.id ? OVR.sum : null;
   const g = sum?.table?.this_year_gaps;
@@ -1549,10 +1549,25 @@ function needs() {
   const so = E.roles_suggested?.second_opinion;
   if (so?.differs?.length && so.confidence === "high" && Object.values(E.roles).filter(x => x.confirmed).length < 4)
     add(`The reviewer model would assign the roles differently (high confidence): ${so.differs.map(k => k.replace("_", " ")).join(", ")}`, "roles");
-  for (const row of sum?.table?.rows || []) if (row.kind === "conclusion" && row.tie && !row.tie.ok)
+  if (!pf) for (const row of sum?.table?.rows || []) if (row.kind === "conclusion" && row.tie && !row.tie.ok)  // pf explains them
     add(`${row.label} doesn't tie: rebuilt ${sumNum(row, row.values?.rebuilt)} vs the report's ${row.report}`, "summary");
   for (const c of sum?.charts?.charts || []) if (c.picks && c.matches === false) add(`The report's chart “${c.caption || c.read?.title || c.id}” doesn't match its rebuild`, "summary");
-  for (const b of (OVR.eid === E.id ? OVR.br?.bridges : null) || []) if (b.note) add(`${b.label}: ${b.note}`, "bridge");
+  return out;
+}
+// formula cells where the Python differs from Excel: those whose saved value is text (a caption built with TEXT())
+// aren't figures; overlays built before the count was kept: from the listed mismatches
+function mismatches(V) {
+  if (!V) return {numbers: 0, text: 0};
+  const text = V.text ?? (V.mismatches || []).filter(m => typeof m.workbook === "string").length;
+  return {numbers: Math.max(0, V.cells - V.matched - text), text};
+}
+// what the rebuild can't do here: not tasks, but how to read the figures
+function limits() {
+  if (!E || E.overlay_status !== "done") return [];
+  const out = [], off = mismatches(E.overlay?.validation);
+  for (const b of (OVR.eid === E.id ? OVR.br?.bridges : null) || []) if (b.note) out.push(`${b.label}: ${b.note}`);
+  if (off.text) out.push(`${off.text} label cell(s) read differently from Excel's saved text (captions, not figures)`);
+  if (off.numbers && E.doctor_status) out.push(`The Python differs from Excel in ${off.numbers.toLocaleString()} formula cell(s); the doctor has looked (Doctor page)`);
   return out;
 }
 
@@ -1579,6 +1594,7 @@ function viewOverview() {
   const n = needs(), conf = confidence();
   return head + top + `<div class="grid2">${bridge || ""}<div class="stack">
     <div class="card"><h2>Needs you${n.length ? ` (${n.length})` : ""}</h2>${n.length ? `<ul class="needs">${n.map(x => `<li><button data-go="${x.go}"${x.tab ? ` data-tab="${x.tab}"` : ""}><span>${esc(x.text)}</span><span class="where">${esc(NAV.find(s => s.id === x.go)?.name || "")} →</span></button></li>`).join("")}</ul>` : `<p class="muted" style="margin:0">Nothing. The agents have what they need.</p>`}</div>
+    ${(lim => lim.length ? `<div class="card"><h2>Limits of the rebuild</h2><p class="sub" style="margin-bottom:6px">Not tasks: what the rebuild can't do here, to read the figures with in mind.</p><ul class="why small">${lim.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "")(limits())}
     <div class="card"><h2>How sure we are</h2><ul class="conf">${conf.map(([st, txt]) => `<li class="${st}">${esc(txt)}</li>`).join("")}</ul></div></div></div>`;
 }
 function confidence() {
@@ -1861,9 +1877,12 @@ function agentsNote(d) {  // the row agents: finding this year's rows without an
   if (busy(a.status)) return `<div class="callout info small" style="margin-top:10px"><span class="pulse" style="display:inline-block;margin-right:6px"></span>The row agents are finding this year's rows: ${esc(stepNow(["rows"], E.id, a.status, a.step) || "waiting to start")}</div>`;
   if (a.status === "error") return `<div class="callout warn small" style="margin-top:10px">The row agents stopped: ${esc(a.error || "")} <button class="btn small" id="sumAgentsAgain">Run them again</button></div>`;
   const r = a.result; if (!r) return "";
-  const done = (r.decisions || []).filter(x => x.decision), left = (r.decisions || []).filter(x => !x.decision);
+  const done = (r.decisions || []).filter(x => x.decision), g = d.table?.this_year_gaps;
   if (!r.decisions?.length) return "";
-  return `<details class="work" data-k="agents" style="margin-top:10px"><summary>The row agents settled ${done.length} of ${r.decisions.length} row(s)${left.length ? `; ${left.length} still open` : ""}${a.stale ? " (before the last rebuild)" : ""}</summary><div class="in">
+  // still open: the gate's rows now, not the record's (a rebuild or a newer row finder may have settled them)
+  const open = g ? (g.dcf_missing || []).length + (g.blank_rows || []).length + (g.weak_rows || []).length + (g.timing || []).filter(x => x.open).length
+    : r.decisions.length - done.length;
+  return `<details class="work" data-k="agents" style="margin-top:10px"><summary>The row agents settled ${done.length} of ${r.decisions.length} row(s)${open ? `; ${open} still open` : ""}${a.stale ? " (before the last rebuild or a newer row finder: run them again)" : ""}</summary><div class="in">
     <ul class="why small">${r.decisions.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label || "")} → ${x.decision ? `<span class="mono">${esc(x.decision)}</span> ${esc(x.to_label || "")} <span class="muted">(${esc(x.how === "numbers" ? "by its numbers" : x.how === "agents" ? "proposed and checked" : x.how || "")}: ${esc(x.why || "")}${x.review ? ` · reviewer: ${esc(x.review)}` : ""})</span>` : `<span class="muted">open: ${esc(x.why || "")}</span>`}</li>`).join("")}</ul>
     ${(r.rounds || []).length ? `<p class="small" style="margin:8px 0 4px"><b>Against last year's figures at last year's date:</b> ${r.rounds.length} round(s)${r.zero_roll_off?.length ? `; still off: ${esc(r.zero_roll_off.map(x => `${x.label} (${x.ratio}×)`).join(", "))}` : "; the figures now come to about last year's"}.</p>
       <ul class="why small">${r.rounds.map((o, i) => `<li>Round ${i + 1}: ${o.revisited.length ? o.revisited.map(v => `<span class="mono">${esc(v.row)}</span> looked at again (${esc(v.advice || "")}) → ${v.decision ? `<span class="mono">${esc(v.decision)}</span>` : "no better row"}`).join("; ") : esc(o.done ? "the advisor saw nothing more to look at" : "nothing to look at again")}</li>`).join("")}</ul>` : ""}
@@ -1879,7 +1898,15 @@ function priorFeedOff() {
     .filter(o => o.tie?.ok && typeof o.fed === "number" && typeof o.value === "number" && Math.abs(o.fed - o.value) > 1e-6 * Math.max(1, Math.abs(o.value)));
   if (!moved.length) return null;
   const file = E.workbooks.find(w => w.id === E.roles.prior_model?.id)?.filename || "the file assigned as last year's client model";
-  return {file, moved, text: `Last year's overlay ties the report as saved (${moved.slice(0, 2).map(o => `${o.label} ${o.report}`).join(", ")}), but fed from ${file} it gives ${moved.slice(0, 2).map(o => fmt(o.fed, 1)).join(", ")}`};
+  return {file, moved, text: `Last year's overlay ties the report as saved (${moved.slice(0, 2).map(o => `${o.label} ${o.report}`).join(", ")}), but fed from ${file} it gives ${moved.slice(0, 2).map(o => fmt(o.fed, 1)).join(", ")}${moved.length > 1 ? `: ${moved.length} conclusions don't tie on last year's model for this one reason` : ""}`};
+}
+// the discount rate three ways where they don't agree (overlay._rate_check): the report's, the lever's and the one the
+// discountings use; different bases can rightly differ, but a lever that doesn't move the discountings moves nothing
+function rateNote(t) {
+  const x = t.rate_check; if (!x) return "";
+  const pc = v => typeof v === "number" ? `${(100 * v).toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}%` : esc(v ?? "?");
+  const dcfs = x.dcf.map(c => `${pc(c.value)} in <span class="mono">${esc(c.cell)}</span>${c.label ? ` (${esc(c.label)})` : ""}`).join(", ");
+  return `<div class="callout warn small" style="margin-top:10px"><b>The discount rate three ways:</b> the report's ${esc(x.report?.value || "?")}${x.report?.basis ? ` (${esc(x.report.basis)})` : ""}; ${x.lever ? `the lever ${pc(x.lever.value)} in <span class="mono">${esc(x.lever.cell)}</span>${x.lever.label ? ` (${esc(x.lever.label)})` : ""}` : "no lever found for it"}; the discountings under the figures use ${dcfs} (read back from their discount factors). ${x.lever ? "Changing the lever doesn't move the rate the discountings use, so a scenario on it changes nothing." : ""} Rates on different bases can rightly differ (a WACC, and a cost of equity for equity cash flows): check which cell is the rate before reading a rate scenario.</div>`;
 }
 function priorFeedNote() {
   const x = priorFeedOff(); if (!x) return "";
@@ -1933,6 +1960,9 @@ function summaryCard(d) {
     const cur = SUM.changes[l.cell];
     return `<td class="num"><input type="text" data-sumlever="${esc(l.cell)}" value="${esc(cur !== undefined ? leverShown(l, cur) : leverShown(l, v))}" aria-label="${esc(r.label)}">${l.unit === "%" ? " %" : ""}</td>`;
   };
+  // a section's rows the overlay has, and those it doesn't: the report quotes more than the overlay computes
+  const scope = (rows, has, yes, no) => { const n = rows.filter(has).length;
+    return rows.length && n < rows.length ? ` <span class="small muted" style="font-weight:400">· ${n} ${yes} · ${rows.length - n} ${no}</span>` : ""; };
   const vdDefault = t.scenario_roll?.valuation_date || t.roll?.valuation_date || "";
   const sel = (id, opts, cur) => `<select class="in" id="${id}">${opts.map(([v, lab]) => `<option value="${v}" ${v === (cur || "") ? "selected" : ""}>${lab}</option>`).join("")}</select>`;
   const notes = [...conc.filter(r => r.method_note).map(r => `${r.label}: ${r.method_note}`), ...conc.filter(r => r.range_note).map(r => `${r.label}: ${r.range_note}`)];
@@ -1945,13 +1975,13 @@ function summaryCard(d) {
       <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
       <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>
       ${Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length ? `<button class="btn small ghost" id="sumReset">Reset</button>` : ""}</div></div>
-  ${errNote}${priorFeedNote()}${agentsNote(d)}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check || SUM.editDate ? `<div class="callout warn small" style="margin-top:10px">${rp?.date_check ? `<b>This year's valuation date isn't known.</b> This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date, so nothing is rolled and this year's figures wait for it. ` : ""}Set this year's valuation date for the engagement (a model's own "Valuation date" rows usually give it):
+  ${errNote}${priorFeedNote()}${rateNote(t)}${agentsNote(d)}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check || SUM.editDate ? `<div class="callout warn small" style="margin-top:10px">${rp?.date_check ? `<b>This year's valuation date isn't known.</b> This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date, so nothing is rolled and this year's figures wait for it. ` : ""}Set this year's valuation date for the engagement (a model's own "Valuation date" rows usually give it):
       <span class="row" style="margin-top:6px"><input class="in" type="date" id="sumThisVd" value="${esc(rp?.dates?.this_year || "")}" min="${esc(rp?.prior_valuation_date || "")}"><button class="btn small primary" id="sumThisVdSave">Set</button>${rp?.dates?.this_year ? `<button class="btn small ghost" id="sumThisVdClear">Clear</button>` : ""}<span class="small" id="sumThisVdMsg"></span></span></div>` : rp?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${rp.months} months is ${esc(rp.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""; })()}
   <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
-    <tr class="sec"><td colspan="${cols.length + 2}">Conclusions</td></tr>
-    ${conc.map(r => `<tr><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
-    <tr class="sec"><td colspan="${cols.length + 2}">Key assumptions</td></tr>
-    ${ass.map(r => `<tr><td>${esc(r.label)}${r.basis ? `<div class="small muted">${esc(r.basis)}</div>` : ""}</td><td class="num">${esc(r.report || "")}</td>${cols.map(c => lev(r, c)).join("")}</tr>`).join("")}
+    <tr class="sec"><td colspan="${cols.length + 2}">Conclusions${scope(conc, r => r.cell, "rebuilt", "the overlay doesn't compute: out of the rebuild's scope, not a failure")}</td></tr>
+    ${[...conc.filter(r => r.cell), ...conc.filter(r => !r.cell)].map(r => `<tr><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
+    <tr class="sec"><td colspan="${cols.length + 2}">Key assumptions${scope(ass, r => r.lever, "an input in the overlay", "not an input there (the report's value, for reference)")}</td></tr>
+    ${[...ass.filter(r => r.lever), ...ass.filter(r => !r.lever)].map(r => `<tr><td>${esc(r.label)}${r.basis ? `<div class="small muted">${esc(r.basis)}</div>` : ""}</td><td class="num">${esc(r.report || "")}</td>${cols.map(c => lev(r, c)).join("")}</tr>`).join("")}
     <tr class="sec"><td colspan="${cols.length + 2}">Approach</td></tr>
     ${app.map(r => `<tr><td>${esc(r.label)}</td><td colspan="${cols.length + 1}">${esc(r.report || "")}</td></tr>`).join("")}
     ${t.detected_method.length ? `<tr><td>Discounting found in the overlay</td><td colspan="${cols.length + 1}">${t.detected_method.map(esc).join("<br>")}${Object.keys(t.method || {}).length ? `<div class="small"><b>Your scenario:</b> ${esc([t.method.timing && (t.method.timing === "mid" ? "mid-period" : "end of period"), t.method.day_count].filter(Boolean).join(", "))}</div>` : ""}</td></tr>` : ""}
