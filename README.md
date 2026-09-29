@@ -140,7 +140,21 @@ that don't match. The sidebar counts them by page. **Doctor**: why a figure come
 tables and key facts), Rebuild in Python (step 6 below) and the Map. **This year**: Summary (step 7), the
 **Value bridge** and What changed (the client models compared). Ask is a panel beside every page, the
 Azure models sit behind the Models button, and a switch in the header's top-right corner picks the light or dark
-theme (remembered in the browser; the system's until one is picked). The pipeline behind the pages is below; each step is checked by a
+theme (remembered in the browser; the system's until one is picked). The accent is blue (#1a9afa, dark text on
+it), on the off-black and grey palette. A disclaimer at the foot of every page says the desk is experimental,
+that its output must be checked by a qualified person and isn't advice, and gives the copyright and trademark
+notes.
+
+**Your firm's logo** goes in the header's top-left corner. Upload it from the page (hover over the logo, click
+the pencil, then Upload a logo) or put the file in the `brand/` folder at the project root yourself and reload:
+- **file:** `brand/logo.svg` (best: sharp at any size) or `brand/logo.png` (also accepted: `logo.webp`,
+  `logo.jpg`); one logo at a time, 2 MB at most;
+- **size:** 144 px high (it's shown 36 px high, so 4x stays sharp on high-resolution screens), up to 640 px wide
+  (it's shown up to 160 px wide);
+- **look:** a transparent background and light artwork: the header is off-black in both themes.
+`brand/` is git-ignored, so the logo stays on the machine it was added on. Without one, the header shows the
+default mascot (`engage/mascot.svg`: an original animated pixel critter in Claude's colours, still when the
+system asks for reduced motion); "Use the mascot" on the same panel goes back to it. The pipeline behind the pages is below; each step is checked by a
 person before the next relies on it:
 1. **Files.** Workbooks go through the Model Desk pipeline and library (`bench/library.py`), so a model uploaded in
    either app is built once. Reports (PDF, PPTX) are read by `bench/docingest.py` into Markdown with page markers.

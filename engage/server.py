@@ -60,6 +60,61 @@ def charts_js():  # the chart drawing shared with the other app (web/charts.js)
     return FileResponse(Path(__file__).resolve().parent.parent / "web" / "charts.js", media_type="text/javascript")
 
 
+# ---- the logo in the header's top-left corner: your firm's, from the git-ignored brand/ folder, else the mascot ----
+BRAND = ROOT / "brand"
+LOGO_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+LOGO_MAX = 2 * 1024 * 1024
+LOGO_SPEC = {"folder": "brand", "names": ["logo.svg", "logo.png"], "also": ["logo.webp", "logo.jpg"],
+             "height_px": 144, "shown_px": 36, "max_width_px": 640, "max_bytes": LOGO_MAX,
+             "note": "transparent background, light artwork (the header is dark)"}
+
+
+def _logo() -> Path | None:
+    return next((BRAND / f"logo{ext}" for ext in LOGO_TYPES if (BRAND / f"logo{ext}").exists()), None)
+
+
+@app.get("/brand/logo")
+def brand_logo():
+    p = _logo()
+    headers = {"Cache-Control": "no-cache", "Content-Security-Policy": "script-src 'none'"}  # an SVG never runs scripts
+    if p:
+        return FileResponse(p, media_type=LOGO_TYPES[p.suffix.lower()], headers=headers)
+    return FileResponse(Path(__file__).parent / "mascot.svg", media_type="image/svg+xml", headers=headers)
+
+
+@app.get("/api/brand")
+def brand_info():
+    p = _logo()
+    return {"custom": bool(p), "file": f"brand/{p.name}" if p else None, "spec": LOGO_SPEC}
+
+
+@app.post("/api/brand/logo")
+async def brand_upload(file: UploadFile = File(...)):
+    """Your firm's logo for the header: SVG, PNG, WebP or JPEG, kept in brand/ (never committed)."""
+    ext = Path(file.filename or "").suffix.lower()
+    data = await file.read(LOGO_MAX + 1)
+    if ext not in LOGO_TYPES:
+        raise HTTPException(400, "upload the logo as .svg or .png (or .webp / .jpg)")
+    if len(data) > LOGO_MAX:
+        raise HTTPException(400, "the logo must be 2 MB or less")
+    ok = {".png": data[:8] == b"\x89PNG\r\n\x1a\n", ".jpg": data[:3] == b"\xff\xd8\xff", ".jpeg": data[:3] == b"\xff\xd8\xff",
+          ".webp": data[:4] == b"RIFF" and data[8:12] == b"WEBP", ".svg": b"<svg" in data[:4096].lower()}[ext]
+    if not ok:
+        raise HTTPException(400, f"that file isn't a {ext[1:].upper()} image")
+    BRAND.mkdir(exist_ok=True)
+    for other in LOGO_TYPES:
+        (BRAND / f"logo{other}").unlink(missing_ok=True)
+    (BRAND / f"logo{'.jpg' if ext == '.jpeg' else ext}").write_bytes(data)
+    return brand_info()
+
+
+@app.delete("/api/brand/logo")
+def brand_reset():
+    for ext in LOGO_TYPES:
+        (BRAND / f"logo{ext}").unlink(missing_ok=True)
+    return brand_info()
+
+
 @app.get("/api/config")
 def config():
     return {"models": MODELS, "default_model": engagement.DEFAULT_MODEL, "default_reviewer": engagement.DEFAULT_REVIEWER,

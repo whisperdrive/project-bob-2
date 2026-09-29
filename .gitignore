@@ -19,3 +19,6 @@ out/
 # The generated test workbook is safe to keep
 !tests/sample_model.xlsx
 tests/engagement_pack/
+
+# Your firm's logo for the Valuation Desk header (brand/logo.svg or brand/logo.png): stays on this machine
+brand/

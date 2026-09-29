@@ -12,11 +12,12 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/charts.js"></script>
 <style>
-/* Palette: off-black #2e2e38 / #1a1a24, ground #f6f6fa, greys #c4c4cd / #747480, yellow #ffe600, blue #1a9afa. */
+/* Palette: off-black #2e2e38 / #1a1a24, ground #f6f6fa, greys #c4c4cd / #747480, the accent blue #1a9afa (dark ink on
+   it: white on it is too faint to read). */
 :root {
   --ground: #f6f6fa; --surface: #ffffff; --raised: #fbfbfd; --ink: #2e2e38; --muted: #6b6b78; --rule: #e1e1e6;
-  --rule-strong: #c4c4cd; --bar: #1a1a24; --bar-ink: #ffffff; --bar-muted: #c4c4cd; --yellow: #ffe600;
-  --on-yellow: #2e2e38; --link: #1270c2; --blue: #1a9afa;
+  --rule-strong: #c4c4cd; --bar: #1a1a24; --bar-ink: #ffffff; --bar-muted: #c4c4cd; --accent: #1a9afa;
+  --on-accent: #1a1a24; --link: #1270c2; --blue: #1a9afa;
   --ok-bg: #e5f3ea; --ok: #16692f; --warn-bg: #fff3cc; --warn: #7a5200; --bad-bg: #fbe7e5; --bad: #a3261c;
   --info-bg: #e3f1fd; --info: #0f5a9c; --code-bg: #f0f0f4;
   --s1: #1a9afa; --s2: #747480; --s3: #2e2e38;
@@ -62,18 +63,29 @@ button, input, select, textarea { font: inherit; color: inherit; }
 header { background: var(--bar); color: var(--bar-ink); position: sticky; top: 0; z-index: 10; }
 .hbar { display: flex; align-items: center; gap: 14px; padding: 10px 24px; max-width: 1360px; margin: 0 auto; flex-wrap: wrap; }
 .brand { display: flex; align-items: flex-end; gap: 10px; text-decoration: none; color: inherit; }
-.brand .mark { width: 5px; align-self: stretch; background: var(--yellow); border-radius: 1px; }
+.brand .logo { height: 36px; width: auto; max-width: 160px; display: block; object-fit: contain; }
+/* the logo spot: your firm's logo (brand/), else the mascot; a small button changes it */
+.brandwrap { position: relative; display: flex; align-items: center; }
+.logo-edit { position: absolute; left: -6px; top: -6px; width: 20px; height: 20px; border-radius: 50%; border: 1px solid #4a4a57;
+  background: #2e2e38; color: #fff; font-size: 11px; line-height: 1; cursor: pointer; opacity: 0; transition: opacity .15s; padding: 0; }
+.brandwrap:hover .logo-edit, .logo-edit:focus-visible, .logo-edit[aria-expanded="true"] { opacity: 1; }
+#logoCtl { left: 24px; right: auto; width: 340px; }
+/* the disclaimer at the foot of every page */
+footer.disclaimer { max-width: 1360px; margin: 8px auto 0; padding: 14px 24px 22px; border-top: 1px solid var(--rule);
+  color: var(--muted); font-size: 12px; line-height: 1.55; }
+footer.disclaimer p { margin: 0 0 6px; max-width: 110ch; }
+footer.disclaimer b { color: var(--ink); font-weight: 600; }
 .brand .name { font-size: 18px; font-weight: 600; letter-spacing: .1px; line-height: 1; }
 .brand .sub { font-size: 12px; color: var(--bar-muted); font-weight: 400; line-height: 1; margin-left: 2px; }
 .hsp { flex: 1; }
 .hctl { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--bar-muted); flex-wrap: wrap; }
 .hctl select { background: #2e2e38; color: #fff; border: 1px solid #4a4a57; border-radius: 4px; padding: 4px 8px; font-size: 13px; max-width: 280px; }
 .chip { background: #2e2e38; border: 1px solid #4a4a57; color: #fff; border-radius: 99px; padding: 3px 10px; font-size: 12.5px; cursor: default; white-space: nowrap; }
-.yellow-rule { height: 3px; background: var(--yellow); }
+.accent-rule { height: 3px; background: var(--accent); }
 
 .hbtn { background: #2e2e38; color: #fff; border: 1px solid #4a4a57; border-radius: 4px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
-.hbtn:hover, .hbtn[aria-expanded="true"] { border-color: var(--yellow); }
-.hbtn.ask { background: var(--yellow); border-color: var(--yellow); color: var(--on-yellow); font-weight: 600; }
+.hbtn:hover, .hbtn[aria-expanded="true"] { border-color: var(--accent); }
+.hbtn.ask { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .hbtn.icon { display: inline-flex; align-items: center; justify-content: center; padding: 4px 7px; }
 .hbtn.icon svg { width: 16px; height: 16px; }
 /* the theme switch: pinned to the header's top-right corner, clear of the controls however they wrap */
@@ -92,7 +104,7 @@ nav.side .sec { font-size: 11.5px; letter-spacing: .4px; text-transform: upperca
 nav.side button { display: flex; width: 100%; gap: 8px; align-items: center; background: none; border: 0; border-radius: 4px; padding: 7px 8px;
   color: var(--ink); cursor: pointer; font-size: 14px; text-align: left; }
 nav.side button:hover { background: var(--raised); }
-nav.side button.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--yellow); font-weight: 600; }
+nav.side button.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
 nav.side button:disabled { opacity: .45; cursor: not-allowed; }
 nav.side .nm { flex: 1; }
 nav.side .cnt { background: var(--warn-bg); color: var(--warn); border-radius: 99px; font-size: 11.5px; padding: 0 7px; font-weight: 600; }
@@ -118,7 +130,7 @@ nav.side .cnt { background: var(--warn-bg); color: var(--warn); border-radius: 9
 @media (max-width: 900px) { .shell, .shell.asking { grid-template-columns: minmax(0, 1fr); } nav.side { position: static; max-height: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 16px; }
   nav.side .sec { display: none; } nav.side button { width: auto; } .drawer { position: static; height: auto; border-left: 0; border-top: 1px solid var(--rule); } }
 .dot { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #74747f; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; }
-.dot.done { background: var(--yellow); border-color: var(--yellow); color: #2e2e38; }
+.dot.done { background: var(--accent); border-color: var(--accent); color: #2e2e38; }
 .dot.work { border-color: var(--blue); color: var(--blue); }
 
 main { max-width: 1360px; margin: 0; padding: 22px 24px 60px; display: grid; gap: 18px; }
@@ -136,7 +148,7 @@ main { max-width: 1360px; margin: 0; padding: 22px 24px 60px; display: grid; gap
 
 .btn { background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 4px; padding: 6px 14px; cursor: pointer; font-size: 14px; font-weight: 400; }
 .btn:hover { border-color: var(--ink); }
-.btn.primary { background: var(--yellow); border-color: var(--yellow); color: var(--on-yellow); font-weight: 600; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .btn.primary:hover { filter: brightness(.95); }
 .btn.small { padding: 3px 9px; font-size: 12.5px; }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--link); padding-left: 4px; padding-right: 4px; }
@@ -176,7 +188,7 @@ tr.click:hover td { background: var(--raised); }
 .bar i { display: block; height: 100%; background: var(--blue); transition: width .4s; }
 
 .drop { border: 2px dashed var(--rule-strong); border-radius: 6px; padding: 26px; text-align: center; background: var(--raised); cursor: pointer; }
-.drop.over { border-color: var(--yellow); background: var(--warn-bg); }
+.drop.over { border-color: var(--accent); background: var(--info-bg); }
 .drop b { font-size: 16px; }
 .slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 10px; margin-top: 14px; text-align: left; }
 .slot { border: 1px solid var(--rule); border-radius: 4px; padding: 9px 12px; background: var(--surface); font-size: 13px; }
@@ -227,7 +239,7 @@ details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
 /* roles */
 .flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; align-items: stretch; }
 @media (max-width: 900px) { .flow { grid-template-columns: 1fr; } }
-.node { border: 1px solid var(--rule-strong); border-top: 4px solid var(--yellow); border-radius: 4px; padding: 12px 14px; background: var(--surface); position: relative; margin-right: 26px; }
+.node { border: 1px solid var(--rule-strong); border-top: 4px solid var(--accent); border-radius: 4px; padding: 12px 14px; background: var(--surface); position: relative; margin-right: 26px; }
 .node:last-child { margin-right: 0; }
 .node::after { content: "→"; position: absolute; right: -22px; top: 40%; color: var(--muted); font-size: 18px; }
 .node:last-child::after { content: none; }
@@ -237,7 +249,7 @@ details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
 .node select { width: 100%; }
 .sheets { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 12.5px; }
 .sheets label { display: flex; gap: 4px; align-items: center; }
-.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--bar); color: #fff; padding: 9px 16px; border-radius: 4px; font-size: 14px; z-index: 30; border-left: 4px solid var(--yellow); max-width: 90vw; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--bar); color: #fff; padding: 9px 16px; border-radius: 4px; font-size: 14px; z-index: 30; border-left: 4px solid var(--accent); max-width: 90vw; }
 .empty { text-align: center; padding: 40px 20px; color: var(--muted); }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 13.5px; }
 .kv dt { color: var(--muted); }
@@ -246,14 +258,14 @@ details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
 .seg { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: 4px; overflow: hidden; flex-wrap: wrap; }
 .seg button { background: var(--surface); border: 0; border-right: 1px solid var(--rule-strong); padding: 5px 12px; font-size: 13px; cursor: pointer; }
 .seg button:last-child { border-right: 0; }
-.seg button.on { background: var(--bar); color: #fff; font-weight: 600; box-shadow: inset 0 -3px 0 var(--yellow); }
+.seg button.on { background: var(--bar); color: #fff; font-weight: 600; box-shadow: inset 0 -3px 0 var(--accent); }
 .seg button:disabled { opacity: .45; cursor: not-allowed; }
 .chart { position: relative; height: 280px; }
 .heat { border-collapse: separate; border-spacing: 2px; width: auto; font-size: 12px; }
 .heat th { border: 0; padding: 2px 6px; font-weight: 400; color: var(--ink); }
 .heat th.col { writing-mode: vertical-rl; transform: rotate(180deg); text-align: left; padding: 6px 2px; }
-.heat th.ov { font-weight: 600; box-shadow: inset 3px 0 0 var(--yellow); }
-.heat th.col.ov { box-shadow: inset 0 -3px 0 var(--yellow); }
+.heat th.ov { font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
+.heat th.col.ov { box-shadow: inset 0 -3px 0 var(--accent); }
 .heat td { border: 0; width: 34px; height: 26px; padding: 0; text-align: center; border-radius: 3px; font-variant-numeric: tabular-nums; }
 .heat td.z { background: var(--raised); }
 .heat td:not(.z):hover { outline: 2px solid var(--ink); }
@@ -263,7 +275,7 @@ details > summary { cursor: pointer; color: var(--link); font-size: 13px; }
 .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 3px; background: var(--warn-bg); color: var(--warn); margin: 1px 3px 1px 0; white-space: nowrap; }
 .tag.lever { background: var(--info-bg); color: var(--info); }
 .tag.out { background: var(--ok-bg); color: var(--ok); }
-#tip { position: fixed; pointer-events: none; background: var(--bar); color: #fff; font-size: 12.5px; padding: 6px 9px; border-radius: 4px; z-index: 40; max-width: 320px; display: none; border-left: 3px solid var(--yellow); }
+#tip { position: fixed; pointer-events: none; background: var(--bar); color: #fff; font-size: 12.5px; padding: 6px 9px; border-radius: 4px; z-index: 40; max-width: 320px; display: none; border-left: 3px solid var(--accent); }
 /* charts, the DCF tab and the chat (python overlay step), after the Model Desk's */
 .chart-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px 12px; }
 .chart-card h4 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
@@ -281,7 +293,7 @@ details.creview ul { margin: 4px 0 0; padding-left: 18px; }
 .val-cases { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 @media (max-width: 760px) { .val-cases { grid-template-columns: minmax(0, 1fr); } }
 .val-case { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; display: grid; gap: 2px; }
-.val-case.base { border-color: var(--ink); box-shadow: inset 0 3px 0 var(--yellow); }
+.val-case.base { border-color: var(--ink); box-shadow: inset 0 3px 0 var(--accent); }
 .val-case span { font-size: 12px; color: var(--muted); }
 .val-case b { font-size: 22px; font-variant-numeric: tabular-nums; }
 .val-case em { font-style: normal; font-size: 12.5px; }
@@ -305,7 +317,7 @@ tr.pick { cursor: pointer; } tr.pick:hover td { background: var(--raised); }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chips button { background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 99px; padding: 6px 14px; font-size: 13.5px; cursor: pointer; text-align: left; }
 .chips button:hover { border-color: var(--ink); }
-.q { align-self: flex-end; max-width: 80%; background: var(--bar); color: #fff; padding: 10px 14px; border-radius: 10px 10px 2px 10px; white-space: pre-wrap; border-left: 3px solid var(--yellow); }
+.q { align-self: flex-end; max-width: 80%; background: var(--bar); color: #fff; padding: 10px 14px; border-radius: 10px 10px 2px 10px; white-space: pre-wrap; border-left: 3px solid var(--accent); }
 .a { display: flex; flex-direction: column; gap: 10px; }
 details.work { border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); font-size: 13px; }
 details.work summary { padding: 8px 12px; color: var(--muted); list-style: none; display: flex; align-items: center; gap: 8px; }
@@ -349,12 +361,12 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
 .pipe { list-style: none; margin: 0; padding: 12px 14px 10px; display: flex; align-items: flex-start; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px 6px 0 0; overflow-x: auto; }
 .pipe > li { flex: none; }
 .pipe > li.link { flex: 1 1 24px; min-width: 14px; height: 2px; background: var(--rule-strong); margin: 15px 2px 0; }
-.pipe > li.link.done { background: var(--yellow); }
+.pipe > li.link.done { background: var(--accent); }
 .pipe > li.link.flowing, .sf-link.flowing { background: repeating-linear-gradient(90deg, var(--blue) 0 6px, transparent 6px 12px); background-size: 12px 2px; animation: flow .7s linear infinite; }
 .st { display: grid; justify-items: center; gap: 2px; background: none; border: 0; cursor: pointer; padding: 2px 6px; min-width: 104px; text-align: center; color: inherit; }
 .st:hover .nm { text-decoration: underline; }
 .st .ic { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; border: 2px solid var(--rule-strong); font-weight: 700; font-size: 12.5px; position: relative; color: var(--muted); background: var(--surface); }
-.st.done .ic { background: var(--yellow); border-color: var(--yellow); color: #2e2e38; }
+.st.done .ic { background: var(--accent); border-color: var(--accent); color: #2e2e38; }
 .st.you .ic { border-color: #e0b400; color: var(--warn); background: var(--warn-bg); animation: glowy 1.8s ease-out infinite; }
 .st.error .ic { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
 .st.running .ic { border-color: var(--rule); }
@@ -369,10 +381,10 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
 .dot-idle { width: 8px; height: 8px; border-radius: 50%; background: var(--rule-strong); display: inline-block; }
 .subflow { display: flex; align-items: center; flex-wrap: wrap; row-gap: 6px; margin-top: 8px; font-size: 12px; }
 .sf-node { padding: 3px 10px; border-radius: 99px; border: 1px solid var(--rule-strong); color: var(--muted); background: var(--surface); white-space: nowrap; }
-.sf-node.past { color: var(--ink); border-color: var(--yellow); }
+.sf-node.past { color: var(--ink); border-color: var(--accent); }
 .sf-node.cur { color: #fff; background: var(--blue); border-color: var(--blue); font-weight: 600; animation: glow 1.6s ease-out infinite; }
 .sf-link { width: 20px; height: 2px; background: var(--rule-strong); }
-.sf-link.past { background: var(--yellow); }
+.sf-link.past { background: var(--accent); }
 .swap .arr { display: inline-block; animation: flip 1.2s steps(1) infinite; }
 .dot.work { animation: glow 1.8s ease-out infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -389,7 +401,8 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
 <body>
 <header>
   <div class="hbar">
-    <a class="brand" href="#" id="brand"><span class="mark" aria-hidden="true"></span><span><span class="name">Valuation Desk</span><br><span class="sub">Recurring valuation workbench</span></span></a>
+    <div class="brandwrap"><a class="brand" href="#" id="brand"><img class="logo" id="brandLogo" src="/brand/logo" alt=""><span><span class="name">Valuation Desk</span><br><span class="sub">Recurring valuation workbench</span></span></a>
+      <button class="logo-edit" id="logoEdit" type="button" aria-haspopup="true" aria-expanded="false" title="Change the logo" aria-label="Change the logo">✎</button></div>
     <div class="hsp"></div>
     <div class="hctl">
       <label for="engSel">Engagement</label><select id="engSel"></select>
@@ -402,7 +415,14 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
     </div>
     <button class="hbtn icon" id="themeBtn" type="button" aria-pressed="false"></button>
   </div>
-  <div class="yellow-rule"></div>
+  <div class="accent-rule"></div>
+  <div class="popover" id="logoCtl" hidden role="dialog" aria-label="The logo">
+    <p class="small" style="margin:0"><b>Your firm's logo</b> goes here, in place of the mascot.</p>
+    <p class="small muted" style="margin:4px 0 0" id="logoSpec">An SVG (best) or PNG with a transparent background and light artwork (the header is dark), 144 px high (shown at 36 px) and up to 640 px wide, 2 MB at most. It's kept on this machine as <span class="mono">brand/logo.svg</span> or <span class="mono">brand/logo.png</span> and never committed; you can also put the file there yourself and reload.</p>
+    <p class="small" style="margin:8px 0 0" id="logoNow">…</p>
+    <div class="row" style="margin-top:8px"><button class="btn small primary" id="logoUpload" type="button">Upload a logo</button><button class="btn small" id="logoReset" type="button">Use the mascot</button></div>
+    <input type="file" id="logoFile" accept=".svg,.png,.webp,.jpg,.jpeg,image/svg+xml,image/png,image/webp,image/jpeg" hidden>
+  </div>
   <div class="popover" id="modelCtl" hidden role="dialog" aria-label="Models">
     <p class="small muted" style="margin:0 0 8px">The Azure models this engagement uses.</p>
     <label for="mSel">Reads (extractor)</label><select id="mSel" class="in"></select>
@@ -416,6 +436,18 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
   <div class="content"><div id="now" class="nowbox" hidden aria-live="polite"></div><main id="main"></main></div>
   <aside class="drawer" id="askDrawer" hidden aria-label="Ask about the engagement"><div class="drawer-head"><b>Ask</b><span class="small muted">about this engagement</span><button class="btn small ghost" id="askClose" type="button" aria-label="Close">Close</button></div><div id="askBody"></div></aside>
 </div>
+<footer class="disclaimer" id="disclaimer">
+  <p><b>Experimental.</b> The Valuation Desk is a prototype under active development and experimentation. Its figures,
+    row matches, readings of reports and written summaries are produced with automated rules and AI models, can be
+    incomplete or wrong, and must be checked by a qualified person before anyone relies on them. Nothing here is
+    valuation, financial, tax, accounting or legal advice, or an opinion on any value.</p>
+  <p>Files stay on this machine; model calls go to your organisation's Azure AI Foundry. Client files, reports and
+    models remain the property and confidential information of their owners and are used here only for the engagement
+    they belong to.</p>
+  <p>© 2026 the Valuation Desk authors. All rights reserved. Third-party names, logos and trademarks belong to their
+    owners and appear only to identify them; no endorsement is implied. The default mascot is an original drawing in
+    Claude's colours; Claude is a trademark of Anthropic, PBC.</p>
+</footer>
 <div id="tip"></div>
 <input type="file" id="picker" multiple accept=".pdf,.pptx,.xlsx,.xlsm" hidden>
 
@@ -1303,7 +1335,7 @@ function modelBody(d) {
   </div>
   <div class="grid2" style="margin-top:14px">
     <div><h3 style="font-size:14px;margin:0 0 2px">Cells by sheet</h3><p class="small muted" style="margin:0 0 8px">Formula cells and hard-coded inputs in each sheet's line items.</p><div class="chart" id="mdChartBox"><canvas id="mdChart" aria-label="Formula cells and inputs by sheet"></canvas></div></div>
-    <div><h3 style="font-size:14px;margin:0 0 2px">Which sheets feed which</h3><p class="small muted" style="margin:0 0 8px">Row links from the sheet on the left (reads) to the sheet across the top (is read), in the scenario the model is set to. Overlay sheets are marked in yellow.</p><div class="scroll" id="mdHeat"></div></div>
+    <div><h3 style="font-size:14px;margin:0 0 2px">Which sheets feed which</h3><p class="small muted" style="margin:0 0 8px">Row links from the sheet on the left (reads) to the sheet across the top (is read), in the scenario the model is set to. Overlay sheets are marked in blue.</p><div class="scroll" id="mdHeat"></div></div>
   </div>
   <div class="grid2" style="margin-top:14px">
     <div><h3 style="font-size:14px;margin:0 0 6px">Most-read rows</h3>${top(e.most_read, "Read by")}</div>
@@ -1664,6 +1696,24 @@ function bindDoctor() {
     try { changed(await api(`/api/engagements/${E.id}/doctor/holds`, {method: "POST", body: {release: true}})); toast("Released: every cell is computed again"); } catch (err) { toast(err.message, 6000); } });
 }
 bind.doctor = bindDoctor;
+
+// ---- the logo: your firm's (brand/ on this machine), else the mascot --------------------------------------------
+function logoPanel(open) {
+  $("#logoCtl").hidden = !open; $("#logoEdit").setAttribute("aria-expanded", String(open));
+  if (open) api("/api/brand").then(b => { $("#logoNow").innerHTML = b.custom ? `Now: your logo (<span class="mono">${esc(b.file)}</span>).` : "Now: the mascot (no logo in the brand folder yet)."; $("#logoReset").disabled = !b.custom; }).catch(() => {});
+}
+const logoRefresh = () => { $("#brandLogo").src = "/brand/logo?" + Date.now(); };
+$("#logoEdit").onclick = e => { e.stopPropagation(); logoPanel($("#logoCtl").hidden); };
+$("#logoUpload").onclick = () => $("#logoFile").click();
+$("#logoFile").onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+  const fd = new FormData(); fd.append("file", f);
+  try { await api("/api/brand/logo", {method: "POST", body: fd}); logoRefresh(); logoPanel(true); toast("Logo updated"); }
+  catch (err) { toast(err.message, 6000); }
+};
+$("#logoReset").onclick = async () => { try { await api("/api/brand/logo", {method: "DELETE"}); logoRefresh(); logoPanel(true); toast("Back to the mascot"); } catch (err) { toast(err.message, 6000); } };
+document.addEventListener("click", e => { if (!$("#logoCtl").hidden && !e.target.closest("#logoCtl, #logoEdit")) logoPanel(false); });
+$("#brandLogo").onerror = () => { $("#brandLogo").onerror = null; $("#brandLogo").src = "/brand/logo?fallback"; };
 
 // ---- theme: light or dark, as chosen here (remembered in this browser), else as the system has it ----------------
 const THEME_KEY = "vd-theme";

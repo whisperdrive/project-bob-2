@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 36" width="44" height="36" role="img" aria-label="The default mascot, in Claude's colours" shape-rendering="crispEdges">
+  <!-- An original pixel critter in Claude's terracotta: the logo slot's default until a firm logo is added
+       (brand/logo.svg or brand/logo.png). It bobs, blinks and steps; still for reduced motion. -->
+  <style>
+    .all { animation: bob 1.6s ease-in-out infinite; }
+    .eye { animation: blink 4.2s infinite; transform-box: fill-box; transform-origin: center; }
+    .a { animation: stepA .8s steps(1) infinite; }
+    .b { animation: stepB .8s steps(1) infinite; }
+    .spark { animation: twinkle 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+    @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.5px); } }
+    @keyframes blink { 0%, 90%, 100% { transform: scaleY(1); } 94% { transform: scaleY(.12); } }
+    @keyframes stepA { 0% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+    @keyframes stepB { 0% { transform: translateY(-2px); } 50% { transform: translateY(0); } }
+    @keyframes twinkle { 0%, 100% { opacity: .15; transform: scale(.6); } 50% { opacity: 1; transform: scale(1); } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+  <g class="all" fill="#D97757">
+    <rect x="6" y="6" width="32" height="18"/>
+    <rect x="2" y="12" width="4" height="6"/>
+    <rect x="38" y="12" width="4" height="6"/>
+    <rect class="eye" x="14" y="11" width="4" height="5" fill="#1A1A24"/>
+    <rect class="eye" x="26" y="11" width="4" height="5" fill="#1A1A24"/>
+    <rect class="a" x="10" y="24" width="4" height="6"/>
+    <rect class="b" x="16" y="24" width="4" height="6"/>
+    <rect class="a" x="24" y="24" width="4" height="6"/>
+    <rect class="b" x="30" y="24" width="4" height="6"/>
+  </g>
+  <path class="spark" d="M40 0 L41.2 2.8 L44 4 L41.2 5.2 L40 8 L38.8 5.2 L36 4 L38.8 2.8 Z" fill="#F0B79E"/>
+</svg>
