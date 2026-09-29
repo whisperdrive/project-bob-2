@@ -330,7 +330,16 @@ person before the next relies on it:
    difference within 15%, the same kind of row, not blank where last year's has values) is taken as the
    agents' pick, with the numbers as the reason. The agents' picks count as settled and show as theirs; a
    person's pick always wins over them. The agents never keep last year's values for a row the DCF's cash
-   flows come from: that figure stays held, saying they couldn't find it. Rows of period flags and dates (by their labels, 0/1 values or rising dates)
+   flows come from: that figure stays held, saying they couldn't find it.
+   Then, for the rows the numbers didn't settle, the models: the engagement's model (luna) gets a dossier on
+   last year's row that doesn't lean on its label (sheet, section, the labelled rows around it, a formula, the
+   kind of row, its values by period, the rows it reads and that read it) and the candidates with their
+   numbers checked. It can search this year's model by words and inspect rows before it proposes one, or says
+   the model has no such line item (last year's values are then kept, never for a DCF cash-flow row). The
+   reviewer (sol) checks each proposal with the numbers and accepts or rejects it with a reason; a rejection
+   goes back to luna. At most six actions and two proposals a row, three rows at a time; each decision, with
+   luna's reason and sol's verdict, is on the Summary. Run on the synthetic pack, the renamed and moved
+   distributions row took one proposal and one review: about 2,300 tokens. Rows of period flags and dates (by their labels, 0/1 values or rising dates)
    are the timing the discounting depends on: listed apart. The page says why, how alike the two
    models are, and lists each row it needs with a button to pick this year's row; the bridge leaves out the
    figures held back. The Map uses the same finding. Each output shows its Python function and the client values it

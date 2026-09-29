@@ -974,7 +974,7 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
                     by_cell[row[part]] = by_cell[row["cell"]]
         gaps = {"values": len(sess.unmatched), "stood_in": len(sess.stood_in), "reads": reads,
                 "found_share": round(share, 3), "family": family, "basis": "dcf" if origins else "share",
-                "dcf_rows": len(origins),
+                "dcf_rows": len(origins), "dcf_origins": [f"{s_}!r{r_}" for s_, r_ in origins],
                 "dcf_missing": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "why": why_missing((s_, r_))}
                                 for s_, r_ in missing],
                 "blank_rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""),

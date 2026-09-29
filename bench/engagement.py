@@ -1675,12 +1675,23 @@ def _rows_job(eid: int) -> None:
     step("Loading the Python overlay")
     sess, summary = overlay_session(eid)
     _sync_roll(eid, sess, summary)
-    res = rowagent.run(sess, summary, reference(eid), step)
+    reader, why = None, None
+    try:  # luna proposes, sol checks: the engagement's model and its reviewer
+        e = _q("SELECT model, reviewer_model FROM engagements WHERE id=?", eid)[0]
+        reader = docingest.Reader(e["model"] or DEFAULT_MODEL, e["reviewer_model"] or DEFAULT_REVIEWER, _logger(eid))
+    except Exception as ex:
+        why = friendly(ex)
+    res = rowagent.run(sess, summary, reference(eid), step, reader)
+    if reader is not None:
+        res["models"] = {"proposes": reader.model, "checks": reader.reviewer_model}
+    else:
+        res["models_error"] = why
     # the agents' picks, beside a person's (a person's always win; the agents' from an earlier run are replaced)
     picks = {k: v for k, v in _read_rowpicks(eid).items() if not (isinstance(v, dict) and v.get("by") == "agent")}
     for d in res["decisions"]:
         if d.get("decision") and d["row"] not in picks:
-            picks[d["row"]] = {"to": d["decision"], "by": "agent", "why": d.get("why"), "checked_by": d.get("how")}
+            picks[d["row"]] = {"to": d["decision"], "by": "agent", "why": d.get("why"),
+                               "checked_by": "the numbers" if d.get("how") == "numbers" else d.get("review") or d.get("how")}
     _write_rowpicks(eid, picks)
     res["at"] = time.time()
     f = _rowagent_file(eid)

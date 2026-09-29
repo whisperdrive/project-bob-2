@@ -331,6 +331,72 @@ def agents_check(sess, summary, fnd, sure) -> None:
             ov.deep(fnd.pick, *k, None)
     print(f"agents: ok (a row the gate waited on settled by its numbers, as the agents' pick; a person's pick stays; "
           f"a cash-flow row they can't find keeps its figure held)")
+    models_check(sess, summary, fnd, sure)
+
+
+class Scripted:
+    """The models, scripted: luna's actions and sol's verdicts per row (by a phrase of last year's row in the
+    prompt), in order. No Azure call."""
+    model, reviewer_model = "luna", "sol"
+
+    def __init__(self, luna: dict, sol: dict):
+        self.luna, self.sol, self.prompts = {k: list(v) for k, v in luna.items()}, {k: list(v) for k, v in sol.items()}, []
+
+    def _call(self, model, prompt, png, schema, purpose):
+        self.prompts.append((model, prompt))
+        row = prompt.split("Last year's row:", 1)[1]
+        key = next(k for k in (self.luna if model == "luna" else self.sol) if k in row.split("\n\n", 2)[0] + row[:400])
+        script = self.luna[key] if model == "luna" else self.sol[key]
+        return script.pop(0) if len(script) > 1 else script[0]
+
+
+def models_check(sess, summary, fnd, sure) -> None:
+    """The row agents' second stage, on rows the numbers didn't settle: luna searches, inspects and proposes, sol
+    checks with the numbers. A wrong proposal is rejected and the next one accepted; a model that only searches
+    stops at its limit; "not in this model" keeps last year's values, except for a DCF cash-flow row."""
+    import rowagent
+    import rowfind
+    act = lambda a, q=None, r=None, why="": {"action": a, "query": q, "row": r, "why": why, "confidence": "high"}
+    ok = lambda v, why="": {"verdict": v, "why": why, "better_row": None}
+    doubt = {("CF", 3), ("CF", 11)}
+    fnd.confident = lambda s_, r_: (s_, r_) in fnd.picks or (sure(s_, r_) and (s_, r_) not in doubt)
+    real = rowagent.by_numbers
+    rowagent.by_numbers = lambda *a: None  # as if the numbers settled nothing
+    try:
+        luna = Scripted({"CF!r11": [act("search", q="equity distributions"), act("propose", r="CF!r13", why="a reserve?"),
+                                    act("propose", r="CF!r15", why="distributions to equity, renamed and moved")],
+                         "CF!r3": [act("inspect", r="CF!r3"), act("propose", r="CF!r3", why="the period dates")]},
+                        {"CF!r11": [ok("reject", "a reserve top-up isn't the distributions"), ok("accept", "same line item")],
+                         "CF!r3": [ok("accept", "the same period dates")]})
+        res = rowagent.run(sess, summary, FACTS, reader=luna)
+        got = {d["row"]: (d["decision"], d["how"], d.get("calls")) for d in res["decisions"]}
+        assert got["CF!r11"] == ("CF!r15", "agents", {"luna": 3, "sol": 2}), got
+        assert got["CF!r3"][:2] == ("CF!r3", "agents") and res["reliable_after"], (got, res)
+        assert any("the reviewer rejected it: a reserve top-up" in p for m, p in luna.prompts if m == "luna")
+        assert any("against last year's:" in p for m, p in luna.prompts if m == "sol")  # sol sees the numbers
+        for k in doubt:
+            ov.deep(fnd.pick, *k, None)
+        # a model that only searches stops at its limit; "not in this model" for a cash-flow row changes nothing
+        busy = Scripted({"CF!r11": [act("not_in_this_model", why="nothing like it")],
+                         "CF!r3": [act("search", q="period")]}, {})
+        res = rowagent.run(sess, summary, FACTS, reader=busy)
+        got = {d["row"]: d for d in res["decisions"]}
+        assert got["CF!r11"]["decision"] is None and got["CF!r11"]["why"].startswith("the models found no such row")
+        assert got["CF!r3"]["decision"] is None and "ran out of actions" in got["CF!r3"]["why"]
+        assert got["CF!r3"]["calls"]["luna"] == rowagent.MAX_TURNS and ("CF", 11) not in fnd.picks
+        assert not res["reliable_after"]
+        # ... and for a row that isn't the DCF's cash flows, last year's values, kept by the agents
+        keep = Scripted({"CF!r11": [act("propose", r="CF!r15")], "CF!r3": [act("not_in_this_model", why="dates only")]},
+                        {"CF!r11": [ok("accept")]})
+        res = rowagent.run(sess, summary, FACTS, reader=keep)
+        assert fnd.picks[("CF", 3)] == rowfind.STAND_IN and fnd.pick_by[("CF", 3)] == "agent"
+    finally:
+        rowagent.by_numbers = real
+        fnd.confident = sure
+        for k in doubt:
+            ov.deep(fnd.pick, *k, None)
+    print("models: ok (luna searches and proposes, sol rejects a wrong row and accepts the right one with the numbers; "
+          "limits hold; no last year's values for a cash-flow row)")
 
 
 def unlabelled_check(out: Path) -> None:
