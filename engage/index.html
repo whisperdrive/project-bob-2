@@ -1440,7 +1440,7 @@ function needs() {
     add(`The Python overlay differs from Excel in ${(V.cells - V.matched).toLocaleString()} formula cell(s)${why ? `: ${why}` : ""}${E.doctor_status ? "" : ". The doctor finds where and why"}`, "doctor");
   }
   const rp = (OVR.eid === E.id ? OVR.sum : null)?.roll_plan || E.overlay?.roll;
-  if (E.overlay_status === "done" && rp?.date_check) add(`Check this year's model's valuation date on Files: ${rp.dates?.current_client || "it"} isn't after last year's valuation date (${rp.prior_valuation_date})`, "files");
+  if (E.overlay_status === "done" && rp?.date_check) add(`Set this year's valuation date: this year's model is dated ${rp.dates?.current_client || "?"}, not after last year's (${rp.prior_valuation_date})`, "summary");
   else if (E.overlay_status === "done" && rp?.months_assumed) add(`Check the roll-forward: ${rp.months} months was assumed`, "python");
   const sumErr = ((OVR.eid === E.id ? OVR.sum : null)?.table?.rows || []).filter(r => r.kind === "conclusion" && Object.values(r.values || {}).some(v => typeof v === "string" && v.startsWith("#"))).length;
   if (E.overlay_status === "done" && sumErr && !(V && V.matched < V.cells) && !E.doctor_status) add(`Run the doctor: ${sumErr} figure(s) come out as errors on this year's model`, "doctor");
@@ -1702,6 +1702,8 @@ const unreliable = (t, row) => {  // this year's figure held back: its own gate 
 };
 function gapReasons(g) {  // why this year's figures aren't shown: [{short, long}]
   const out = [];
+  if (g.date_check) out.push({short: "this year's valuation date isn't set",
+    long: "this year's valuation date isn't known (this year's model is dated on or before last year's valuation date), so nothing is rolled forward"});
   if (g.basis === "dcf" && g.dcf_missing?.length) out.push({short: `${g.dcf_missing.length} of the DCF's cash-flow rows not found`,
     long: `${g.dcf_missing.length} of the ${g.dcf_rows} rows the DCF's cash flows come from weren't found in this year's model`});
   if (g.blank_rows?.length) out.push({short: `${g.blank_rows.length} row(s) found but blank this year`,
@@ -1729,7 +1731,8 @@ function rollDates() {
   const r = SUM.data?.roll_plan || E.overlay?.roll, c = r?.confirmed || {};
   if (!r?.dates) return "";
   const d = r.dates, chk = k => c[k] ? "" : ` <span class="pill warn" title="Read from the file, not checked: check it in Files">not checked</span>`;
-  if (r.date_check) return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(r.current_valuation_date || "?")}, ${r.months} month(s): this year's model is dated ${esc(d.current_client || "?")}${chk("current_client")}, which isn't after last year's, so the months come from the timelines.</span>`;
+  if (r.date_check) return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}); this year's isn't known: this year's model is dated ${esc(d.current_client || "?")}${chk("current_client")}, which isn't after last year's, so nothing is rolled.</span>`;
+  if (d.this_year) return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(d.this_year)} (this year's, set for the engagement: <a href="#" id="sumThisVdEdit">change</a>), ${r.months} month(s); annual periods move only when a year-end has passed.</span>`;
   return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(r.current_valuation_date || "?")} (this year's model${chk("current_client")}), ${r.months} month(s); annual periods move only when a year-end has passed.</span>`;
 }
 function summaryCard(d) {
@@ -1765,7 +1768,8 @@ function summaryCard(d) {
       <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
       <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>
       ${Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length ? `<button class="btn small ghost" id="sumReset">Reset</button>` : ""}</div></div>
-  ${errNote}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check ? `<div class="callout warn small" style="margin-top:10px">This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date. The roll-forward of ${rp.months} months comes ${esc(rp.months_basis.replace(/^check: [^;]*; /, ""))}. Correct the date on <a href="#" data-go="files">Files</a>.</div>` : rp?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${rp.months} months is ${esc(rp.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""; })()}
+  ${errNote}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check || SUM.editDate ? `<div class="callout warn small" style="margin-top:10px">${rp?.date_check ? `<b>This year's valuation date isn't known.</b> This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date, so nothing is rolled and this year's figures wait for it. ` : ""}Set this year's valuation date for the engagement (a model's own "Valuation date" rows usually give it):
+      <span class="row" style="margin-top:6px"><input class="in" type="date" id="sumThisVd" value="${esc(rp?.dates?.this_year || "")}" min="${esc(rp?.prior_valuation_date || "")}"><button class="btn small primary" id="sumThisVdSave">Set</button>${rp?.dates?.this_year ? `<button class="btn small ghost" id="sumThisVdClear">Clear</button>` : ""}<span class="small" id="sumThisVdMsg"></span></span></div>` : rp?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${rp.months} months is ${esc(rp.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""; })()}
   <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
     <tr class="sec"><td colspan="${cols.length + 2}">Conclusions</td></tr>
     ${conc.map(r => `<tr><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
@@ -1882,6 +1886,14 @@ function bindSummary() {
   $("#sumDc")?.addEventListener("change", e => { if (e.target.value) SUM.method.day_count = e.target.value; else delete SUM.method.day_count; loadSummary(); });
   $("#sumReset")?.addEventListener("click", () => { SUM.changes = {}; SUM.vd = null; SUM.method = {}; loadSummary(); });
   $("#sumShowAnyway")?.addEventListener("click", e => { e.preventDefault(); SUM.showAnyway = !SUM.showAnyway; redrawSummary(); });
+  $("#sumThisVdEdit")?.addEventListener("click", e => { e.preventDefault(); SUM.editDate = true; redrawSummary(); });
+  const setThisVd = async v => {
+    $("#sumThisVdMsg").textContent = " Saving…";
+    try { await api(`/api/engagements/${E.id}/roll/this_year_date`, {method: "POST", body: {valuation_date: v}}); SUM.editDate = false; OVR.sum = null; BR.data = null; FX.data = undefined; await loadSummary(); toast(v ? `This year's valuation date set: ${v}` : "This year's valuation date cleared"); }
+    catch (err) { $("#sumThisVdMsg").textContent = " " + err.message; }
+  };
+  $("#sumThisVdSave")?.addEventListener("click", () => { const v = $("#sumThisVd").value; if (v) setThisVd(v); });
+  $("#sumThisVdClear")?.addEventListener("click", () => setThisVd(null));
   document.querySelectorAll("[data-sumpick]").forEach(b => b.onclick = async () => {
     const row = b.dataset.sumpick, g = SUM.data?.table?.this_year_gaps;
     const x = [...(g?.dcf_missing || []), ...(g?.blank_rows || [])].find(y => y.row === row);

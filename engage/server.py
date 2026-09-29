@@ -438,6 +438,16 @@ async def overlay_dcf(eid: int, body: OverlayDcf):
                       b.pop("months"), **b)
 
 
+class ThisYearDate(BaseModel):
+    valuation_date: str | None = None
+
+
+@app.post("/api/engagements/{eid}/roll/this_year_date")
+async def this_year_date(eid: int, body: ThisYearDate):
+    """This year's valuation date for the engagement (None clears it): the roll-forward runs to it."""
+    return await _run(engagement.set_this_year_date, eid, body.valuation_date)
+
+
 class Dictated(BaseModel):
     seconds: float
 

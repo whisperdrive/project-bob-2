@@ -1136,9 +1136,42 @@ def _overlay(eid: int) -> None:
          updated_at=time.time())
 
 
+def _this_year_file(eid: int) -> Path:
+    return OUT / "overlays" / f"e{eid}" / "this_year.json"
+
+
+def this_year_date(eid: int) -> str | None:
+    """This year's valuation date as set for the engagement (a client model's own date is the model's, which a
+    fresh model built for another date doesn't make this year's), or None."""
+    f = _this_year_file(eid)
+    try:
+        return json.loads(f.read_text(encoding="utf-8")).get("valuation_date") if f.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+def set_this_year_date(eid: int, valuation_date: str | None) -> dict:
+    """Set (or clear, with None) this year's valuation date for the engagement: the roll-forward runs to it."""
+    if valuation_date and not re.match(r"^\d{4}-\d{2}-\d{2}$", valuation_date):
+        raise ValueError("give the date as YYYY-MM-DD")
+    last = _dates(eid)["dates"]
+    base = last.get("overlay") or last.get("prior_client")
+    if valuation_date and base and valuation_date <= base[:10]:
+        raise ValueError(f"this year's valuation date must be after last year's ({base[:10]})")
+    f = _this_year_file(eid)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"valuation_date": valuation_date}), encoding="utf-8")
+    if eid in _SESSIONS:
+        sess, summary = _SESSIONS[eid]
+        _sync_roll(eid, sess, summary)
+    _touch(eid)
+    return {"valuation_date": valuation_date}
+
+
 def _dates(eid: int) -> dict:
     """The valuation dates the roll-forward uses, as the files and the report give them now: last year's (the
-    report's, else the overlay file's), last year's and this year's client models', and which are confirmed."""
+    report's, else the overlay file's), last year's and this year's client models', this year's as set for the
+    engagement, and which are confirmed."""
     vd = next((f for f in reference(eid) if f["key"] == "valuation_date" and f.get("value")), None)
     out, confirmed = {}, {}
     for role, key in (("prior_overlay", "overlay"), ("prior_model", "prior_client"), ("current_model", "current_client")):
@@ -1150,6 +1183,8 @@ def _dates(eid: int) -> dict:
         v = int(vd["value"])
         out["overlay"] = f"{v // 10000:04d}-{v // 100 % 100:02d}-{v % 100:02d}"
         confirmed["overlay"] = bool(vd.get("approved"))
+    out["this_year"] = this_year_date(eid)
+    confirmed["this_year"] = bool(out["this_year"])
     return {"dates": out, "confirmed": confirmed}
 
 
@@ -1165,7 +1200,7 @@ def _sync_roll(eid: int, sess, summary: dict) -> None:
     if d != roll.get("dates") or roll.get("plan") != ovmod.ROLL_PLAN:
         w = summary["wiring"]
         fresh = ovmod.deep(ovmod.plan_roll, sess, w.get("prior"), w["overlay"], w.get("same_file"), d["overlay"],
-                           d["prior_client"], d["current_client"])
+                           d["prior_client"], d["current_client"], d.get("this_year"))
         roll.update(fresh)
     elif roll.get("prior_valuation_date"):
         sess.base_vd = ovmod.serial(ovmod.date.fromisoformat(roll["prior_valuation_date"][:10]))

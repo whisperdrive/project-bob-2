@@ -45,7 +45,9 @@ Drop .xlsx/.xlsm files on the page. Each file is:
    version keeps its own folder, so older versions stay available.
 3. **Identified** (`bench/identify.py`): SQL collects candidate cells (named ranges like `Val_date`, rows
    labelled "Valuation date", sheet-header text), then one gpt-4o call picks the target, code name and
-   valuation date and cites the cell. Shown as "Check" until the user confirms or corrects it.
+   valuation date and cites the cell. Rows labelled exactly "Valuation date" come first, before rows that only
+   mention one (a model that rolls back to last year's date has many, such as "Roll forward valuation date (to
+   …)"), and a date is never read from a label's text. Shown as "Check" until the user confirms or corrects it.
 4. **Compared** (`bench/diff.py`) with the latest earlier file for the same target (or, failing that, the
    same file name without dates/v2/final). Line items are aligned per sheet like a text diff, so inserted,
    removed and renamed rows don't shift everything else. When the timeline has moved (next year's model), each
@@ -277,8 +279,11 @@ person before the next relies on it:
    on a copy of a model of another date); only without last year's, by the gap between the client models;
    failing those, by how far the client sheets' timelines moved; failing that, 12 months, flagged for a check.
    Where this year's model is dated on or before last year's valuation date (likely the model's own date, not
-   this year's valuation date), that's flagged for a check on Files too, and the months come from the
-   timelines. The new date is always last year's moved by the months, so the plan and the feed agree. The dates
+   this year's valuation date), nothing is rolled: every figure waits, and the Summary asks for this year's
+   valuation date, which is set for the engagement (a client model's own date is the model's; a date set there
+   comes before it). The timelines count only as a last resort: the most common forward move across at least
+   five sheets, each against the sheet it is this year, the smaller on a tie, at most two years. The new date is
+   always last year's moved by the months, so the plan and the feed agree. The dates
    are read from the files each time (a date corrected in Files moves the roll without a rebuild) and can be
    checked on the Files page; the Summary shows them and which are checked. Periods move separately from the
    valuation date, sheet by sheet, by the whole periods that ended in between: from September to December an

@@ -126,8 +126,8 @@ def main() -> None:
     assert got2 > 0 and abs(got2 - expect) > 1e-3, got2  # last year's forecast, not zero
     print(f"standing in: ok (with the distributions missing: {got2:.3f}, from last year's forecast, not 0)")
     # ---- the roll: from last year's valuation date to this year's model's; periods move by whole periods
-    def plan(ov_vd, prior_vd, cur_vd):
-        r = ov.plan_roll(sess, w["prior"], w["overlay"], False, ov_vd, prior_vd, cur_vd)
+    def plan(ov_vd, prior_vd, cur_vd, this_vd=None):
+        r = ov.plan_roll(sess, w["prior"], w["overlay"], False, ov_vd, prior_vd, cur_vd, this_vd)
         sess.shift = r["months"]
         return r, sess.period_shift(sess.prior, "CF"), sess.period_shift(sess.ov, "Val")
     r, cf, val = ov.deep(plan, "2025-09-30", "2025-06-30", "2025-12-31")  # the overlay dated after its client copy
@@ -136,14 +136,26 @@ def main() -> None:
     assert (r["months"], cf, val) == (6, 0, 0), (r, cf, val)
     r, cf, val = ov.deep(plan, "2025-06-30", "2025-06-30", "2026-06-30")  # a year: FY2026 has ended
     assert (r["months"], cf, val) == (12, 12, 12), (r, cf, val)
-    # this year's model dated on last year's valuation date: no roll from the dates. It says so and is flagged;
-    # the months come from the timelines, the new date is last year's moved by them, and the feed runs the same
+    # this year's model dated on last year's valuation date (its own date, not this year's valuation date):
+    # nothing is rolled, it's flagged, and the feed agrees; guessing a roll from the timelines put a 21-year roll
+    # on a real engagement
     r, cf, val = ov.deep(plan, "2025-09-30", "2025-06-30", "2025-09-30")
     assert r["date_check"] and not r["months_assumed"] and r["months_basis"].startswith(
         "check: this year's model's date (2025-09-30) isn't after last year's valuation date (2025-09-30)"), r
-    assert "isn't known" not in r["months_basis"] and (r["months"], r["current_valuation_date"]) == (12, "2026-09-30"), r
-    assert ov._feed({**summary, "roll": {**summary["roll"], **r}}, "current", None, None)[2] == r["months"]
+    assert "isn't known" not in r["months_basis"] and (r["months"], r["current_valuation_date"]) == (0, "2025-09-30"), r
+    assert ov._feed({**summary, "roll": {**summary["roll"], **r}}, "current", None, None)[2] == 0
     assert ov._feed({**summary, "roll": {**summary["roll"], **r}}, "current", "2026-03-31", None)[2] == 6  # a date chosen
+    held = {**summary, "roll": {**summary["roll"], **r}}
+    g = ov.deep(lambda: ov.summary_table(sess, held, FACTS)["this_year_gaps"])
+    assert g["date_check"] and not g["reliable"] and not any(x["reliable"] for x in g["by_cell"].values()), g
+    # this year's valuation date set for the engagement: the roll runs to it, whatever the model's own date
+    r, cf, val = ov.deep(plan, "2025-09-30", "2025-06-30", "2025-09-30", "2025-12-31")
+    assert (r["months"], r["current_valuation_date"], r["date_check"]) == (3, "2025-12-31", False), r
+    assert r["months_basis"].endswith("set for the engagement"), r
+    # no dates at all: the timelines of only three sheets don't make a roll (at least five), so 12 is assumed, flagged
+    r = ov.deep(ov.plan_roll, sess, w["prior"], w["overlay"], False, None, None, None)
+    assert r["months_assumed"] and r["months"] == 12 and "moves seen on 3 sheet(s)" in r["months_basis"], r
+    timelines_check()
     summary["roll"].update(ov.deep(plan, "2025-09-30", "2025-06-30", "2025-12-31")[0])
     starts_check(out)
 
@@ -214,6 +226,25 @@ def main() -> None:
     actuals_check(out)
     catalogue_check(out)
     print("rollforward: all checks passed")
+
+
+def timelines_check() -> None:
+    """The roll from the timelines alone: the most common move, the smaller on a tie; a move beyond two years
+    isn't a roll-forward (a sheet matched to another that starts decades later)."""
+    class TL:
+        def __init__(self, firsts):
+            self.f = firsts
+
+        def timeline(self, s):
+            return {4: self.f[s]} if s in self.f else {}
+    d = lambda y, m: ov.serial(date(y, m, 30 if m in (6, 9) else 31))
+    last = {f"S{i}": d(2024, 6) for i in range(6)}
+    now = {"S0": d(2024, 9), "S1": d(2024, 9), "S2": d(2045, 6), "S3": d(2045, 6), "S4": d(2025, 6), "S5": d(2025, 6)}
+    fake = type("Sess", (), {"prior": TL(last), "ov": None, "current": TL(now), "rowmap": None,
+                             "client_sheets": set(last), "ext_cached": {}})()
+    m, basis, _ = ov.roll_months(fake, None, {}, False, (None, None, None, None))
+    assert m == 3 and "on 2 of 6 sheet(s)" in basis, (m, basis)  # 3 and 12 twice each: the smaller; 252 isn't a roll
+    print("timelines: ok (the most common move, the smaller on a tie, never beyond two years, from five sheets or more)")
 
 
 def starts_check(out: Path) -> None:

@@ -16,6 +16,21 @@ DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 VAL_DATE_NAME = re.compile(r"val.*date|valuation|as_?at", re.I)
 TARGET_NAME = re.compile(r"name|company|target|asset|entity|project|client|borrower|issuer|deal", re.I)
 VAL_DATE_LABELS = ("%valuation date%", "%val. date%", "%val date%", "%valuation as at%", "%as at date%")
+# how a label names the valuation date: exactly ("Valuation Date"), first ("Valuation date (base case)"), or in
+# passing ("Roll forward valuation date (to 30/9/2025)", which also carries a date in its text: another date's row)
+VD_EXACT = re.compile(r"^\s*(the\s+)?(valuation|val\.?)\s+date\s*[:\-]?\s*$|^\s*valuation\s+as\s+at\s*[:\-]?\s*$", re.I)
+VD_FIRST = re.compile(r"^\s*(the\s+)?(valuation|val\.?)\s+date\b", re.I)
+MONTHS = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*"
+DATE_IN_TEXT = re.compile(rf"\b\d{{1,2}}[/.-]\d{{1,2}}[/.-]\d{{2,4}}\b|\b\d{{4}}-\d{{2}}-\d{{2}}\b|\b\d{{1,2}}\s+{MONTHS}\s+\d{{2,4}}\b|"
+                          rf"\b{MONTHS}[\s'-]?\d{{2,4}}\b", re.I)
+
+
+def label_rank(label: str) -> int:
+    """0: the label is the valuation date's own; 1: it starts with it; 2: it mentions it; 3: it mentions it and
+    has a date in its text (a row about another date)."""
+    if DATE_IN_TEXT.search(label or ""):
+        return 3
+    return 0 if VD_EXACT.search(label or "") else 1 if VD_FIRST.search(label or "") else 2
 TARGET_LABELS = ("%model name%", "%project name%", "%company%", "%target%", "%asset name%", "%entity%",
                  "%client%", "%borrower%", "%issuer%", "%deal name%")
 
@@ -55,14 +70,24 @@ def candidates(db_path: str) -> dict:
             texts.append({"value": v, "where": where, "why": f"named range {name}"})
 
     def labelled(patterns, want_date):
+        """Rows labelled with the patterns, best first: for the valuation date, the rows whose label is exactly it
+        before those that only mention it (a large model has many), not the first forty the file happens to list."""
         q = " OR ".join("label LIKE ?" for _ in patterns)
-        for sheet, row, label in db.execute(f"SELECT sheet, row, label FROM rows WHERE {q} LIMIT 40", patterns):
+        found = db.execute(f"SELECT sheet, row, label FROM rows WHERE {q} LIMIT 400", patterns).fetchall()
+        if want_date:
+            found.sort(key=lambda x: label_rank(x[2]))
+        for sheet, row, label in found[:40]:
             for addr, v in db.execute("SELECT addr, value FROM cells WHERE sheet=? AND row=? ORDER BY col",
                                       (sheet, row)):
                 ok = _as_date(v) if want_date else (isinstance(v, str) and 1 < len(v) <= 80 and v != label)
                 if ok:
-                    yield {"value": _as_date(v) if want_date else v, "where": f"{sheet}!{addr}",
+                    hit = {"value": _as_date(v) if want_date else v, "where": f"{sheet}!{addr}",
                            "why": f"row labelled '{label}'"}
+                    if want_date:
+                        hit["rank"] = label_rank(label)
+                        hit["why"] += {0: " (the valuation date's own row)", 1: "", 2: " (mentions it in passing)",
+                                       3: " (its label names another date: not this row's)"}[hit["rank"]]
+                    yield hit
                     break
     dates += labelled(VAL_DATE_LABELS, True)
     texts += labelled(TARGET_LABELS, False)
@@ -94,7 +119,9 @@ def candidates(db_path: str) -> dict:
 def fallback(c: dict, filename: str) -> dict:
     """Best guess without a model: the most-cited date and the most-repeated header text."""
     votes = Counter(d["value"] for d in c["valuation_date"])
-    vd = votes.most_common(1)[0][0] if votes else None
+    # the best-labelled first (a named range, or a row labelled exactly "Valuation date"), then the most cited
+    best = min(c["valuation_date"], key=lambda d: (d.get("rank", 0), -votes[d["value"]]), default=None)
+    vd = best["value"] if best else None
     heads = [t for t in c["target"] if t["why"].startswith("in the header")]
     tgt = (heads or c["target"] or [{"value": filename, "where": None}])[0]
     return {"target_name": tgt["value"], "target_evidence": tgt["where"], "project_name": None,
@@ -106,7 +133,9 @@ def fallback(c: dict, filename: str) -> dict:
 PROMPT = """You are checking an Excel valuation model. From the candidate cells below, identify:
 - target_name: the company or asset being valued (a real-world name, e.g. an airport or company, not a code name)
 - project_name: the deal code name if there is one (e.g. "Project X"), else null
-- valuation_date: the date the valuation is as at, YYYY-MM-DD (not the model date, acquisition date or a log entry)
+- valuation_date: the date the valuation is as at, YYYY-MM-DD (not the model date, acquisition date or a log entry).
+  Prefer a named range or a row labelled exactly "Valuation date" (rank 0) over rows that only mention one. Never
+  take a date from a label's text: a row like "Roll forward valuation date (to 30/9/2025)" is about another date.
 - target_evidence / valuation_date_evidence: the cell address you used ("Sheet!A1")
 - confidence: high / medium / low, and notes: one sentence on anything ambiguous (e.g. conflicting dates)
 Use only the candidates; use null if none fits.

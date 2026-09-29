@@ -594,64 +594,76 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
 
 
 def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: bool,
-                dates: tuple = (None, None, None)) -> tuple[int, str, str | None]:
-    """How far to roll forward: (months, how that was worked out, the new valuation date). The new date is always
-    last year's valuation date moved by the months, where that date is known, so the plan and the feed agree.
+                dates: tuple = (None, None, None, None)) -> tuple[int, str, str | None]:
+    """How far to roll forward: (months, how that was worked out, the new valuation date).
     dates: (last year's valuation date: the overlay's, from the report; last year's client model's; this year's
-    client model's).
+    client model's; this year's valuation date as set for the engagement).
+    0. This year's valuation date set for the engagement: from last year's to it.
     1. From last year's valuation date to this year's client model's, when both are known and this year's is
        later: the new valuation date is this year's model's. (Not the move between the two client models: the
        overlay can sit on a copy of a client model of another date.)
+    Where this year's model isn't dated after last year's valuation date, that date is likely the model's own,
+    not this year's valuation date: nothing is rolled (0 months, "check:" in the basis) and the figures wait for
+    this year's valuation date. Guessing a roll from anything else would put numbers on the page that aren't
+    this year's.
     2. Else, only when last year's valuation date isn't known, the move between the two client models' dates.
-    3. Else the client sheets' timelines: how far each sheet's first period moved, the most common move across
-       sheets, if it is forward.
-    4. Else 12 months, flagged so the page asks for a check.
-    Where this year's model's date isn't after last year's valuation date (a roll to the same date is no roll: the
-    date found is likely the model's own, not this year's valuation date), the basis says so and starts with
-    "check:"."""
-    ov_vd, prior_vd, current_vd = (list(dates) + [None, None, None])[:3]
+    3. Else the client sheets' timelines: how far each sheet's first period moved (each of last year's sheets
+       against the sheet it is this year), the most common move, the smaller on a tie; only forward, at most
+       ROLL_MAX months, and from at least ROLL_SHEETS sheets.
+    4. Else 12 months, flagged so the page asks for a check."""
+    ov_vd, prior_vd, current_vd, this_vd = (list(dates) + [None] * 4)[:4]
+    base = ov_vd or prior_vd
+    if this_vd and base and this_vd[:10] > base[:10]:
+        return (months_between(base[:10], this_vd[:10]),
+                f"from last year's valuation date ({base[:10]}) to this year's ({this_vd[:10]}), set for the engagement",
+                this_vd[:10])
     if ov_vd and current_vd and current_vd[:10] > ov_vd[:10]:
         return (months_between(ov_vd[:10], current_vd[:10]),
                 f"from last year's valuation date ({ov_vd[:10]}) to this year's client model's ({current_vd[:10]})",
                 current_vd[:10])
+    if ov_vd and current_vd:
+        return 0, (f"check: this year's model's date ({current_vd[:10]}) isn't after last year's valuation date "
+                   f"({ov_vd[:10]}), so it's likely the model's own date, not this year's valuation date; nothing is "
+                   "rolled until this year's valuation date is set"), ov_vd[:10]
     if not ov_vd and prior_vd and current_vd and current_vd[:10] > prior_vd[:10]:
         m = months_between(prior_vd[:10], current_vd[:10])
         return m, (f"from the valuation dates in the two client models ({prior_vd[:10]} to {current_vd[:10]}); last "
                    "year's own valuation date isn't known"), current_vd[:10]
-    check = (f"check: this year's model's date ({current_vd[:10]}) isn't after last year's valuation date ({ov_vd[:10]}), "
-             "so the roll-forward can't run from it; " if ov_vd and current_vd else "")
-    base = ov_vd or prior_vd
     new = lambda m: to_date(add_months(serial(date.fromisoformat(base[:10])), m)).isoformat() if base else None
     src = sess.prior or sess.ov
     sheets = sess.client_sheets or ((prior or {}).get("sheets") if same_file else None)
     moves = Counter()
     for s in sorted(sheets or {k[1] for k in sess.ext_cached} or []):
-        a, b = src.timeline(s), sess.current.timeline(s) if sess.current else {}
+        to = sess.rowmap.sheet_for(s) if sess.rowmap else s
+        a, b = src.timeline(s), sess.current.timeline(to) if sess.current and to else {}
         if a and b:
             moves[months_between(to_date(min(a.values())).isoformat(), to_date(min(b.values())).isoformat())] += 1
-    forward = [(n, m) for m, n in moves.items() if m > 0]
-    if forward:
-        n, m = max(forward)
-        return m, (check + f"from the client sheets' timelines (the first period moved {m} months on {n} of "
-                   f"{sum(moves.values())} sheet(s))"), new(m)
-    return 12, (check + "assumed: the valuation dates don't give a roll and the timelines don't show a forward move"
-                + (f" (moves seen: {', '.join(f'{m:+d}' for m in sorted(moves))} months)" if moves else "")
+    seen = sum(moves.values())
+    forward = sorted(((n, -m) for m, n in moves.items() if 0 < m <= ROLL_MAX), reverse=True)
+    if forward and seen >= ROLL_SHEETS:
+        n, m = forward[0][0], -forward[0][1]
+        return m, (f"from the client sheets' timelines (the first period moved {m} months on {n} of {seen} "
+                   "sheet(s))"), new(m)
+    return 12, ("assumed: the valuation dates don't give a roll and the timelines don't show one"
+                + (f" (moves seen on {seen} sheet(s): {', '.join(f'{m:+d}' for m in sorted(moves))} months)" if moves else "")
                 + "; check the roll-forward"), new(12)
 
 
-ROLL_PLAN = 2  # the rules' version: a roll planned by older rules is planned again when a session loads
+ROLL_PLAN = 3  # the rules' version: a roll planned by older rules is planned again when a session loads
+ROLL_MAX = 24  # months: a move beyond it from the timelines isn't a roll-forward
+ROLL_SHEETS = 5  # sheets: fewer can't show how far the timelines moved
 
 
 def plan_roll(sess: Session, prior: dict | None, overlay: dict, same_file: bool, ov_vd: str | None,
-              prior_vd: str | None, current_vd: str | None) -> dict:
+              prior_vd: str | None, current_vd: str | None, this_vd: str | None = None) -> dict:
     """The roll-forward's settings (roll_months), and last year's valuation date set on the session."""
-    months, basis, new_vd = roll_months(sess, prior, overlay, same_file, (ov_vd, prior_vd, current_vd))
+    months, basis, new_vd = roll_months(sess, prior, overlay, same_file, (ov_vd, prior_vd, current_vd, this_vd))
     sess.base_vd = serial(date.fromisoformat(ov_vd[:10])) if ov_vd else None
     sess._pshift.clear()
     return {"prior_valuation_date": ov_vd, "months": months, "months_basis": basis,
             "months_assumed": "assumed:" in basis, "date_check": basis.startswith("check:"),
             "current_valuation_date": new_vd, "plan": ROLL_PLAN,
-            "dates": {"overlay": ov_vd, "prior_client": prior_vd, "current_client": current_vd}}
+            "dates": {"overlay": ov_vd, "prior_client": prior_vd, "current_client": current_vd, "this_year": this_vd}}
 
 
 def _feed(summary: dict, mode: str, valuation_date: str | None, months: int | None) -> tuple[dict, dict | None, int]:
@@ -851,6 +863,8 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         # each figure on its own basis: the rows its own discountings' cash flows come from, where it has any;
         # else the share of client values found (a figure whose discounting isn't recognised can't lean on
         # another figure's rows). A row found but blank this year holds every figure back.
+        # with no valuation date for this year, nothing is rolled and no figure is this year's
+        date_hold = bool((summary.get("roll") or {}).get("date_check"))
         by_cell = {}
         for row in rows:
             if row["kind"] != "conclusion" or not row.get("cell"):
@@ -859,7 +873,7 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             gone = [k for k in mine if k in missing]
             by_cell[row["cell"]] = {"basis": "dcf" if mine else "share", "dcf_rows": len(mine),
                                     "missing": [f"{s_}!r{r_}" for s_, r_ in gone],
-                                    "reliable": (not gone if mine else share >= 0.5) and not blank_rows}
+                                    "reliable": (not gone if mine else share >= 0.5) and not blank_rows and not date_hold}
             for part in ("low_cell", "high_cell"):
                 if row.get(part):
                     by_cell[row[part]] = by_cell[row["cell"]]
@@ -874,9 +888,9 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
                 "timing": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "why": why,
                             "found": (lambda h: f"{h[0]}!r{h[1]}" if h else None)(sess.rowmap.locate(s_, r_))}
                            for s_, r_, why in timing],
-                "by_cell": by_cell,
+                "by_cell": by_cell, "date_check": date_hold,
                 "reliable": all(x["reliable"] for x in by_cell.values()) if by_cell
-                else (not missing if origins else share >= 0.5) and not blank_rows,
+                else (not missing if origins else share >= 0.5) and not blank_rows and not date_hold,
                 "rebuilt": family is not None and family < 0.5,
                 "rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "values": n,
                           "why": sess.unmatched[next(k for k in sess.unmatched if k[:2] == (s_, r_))]}
