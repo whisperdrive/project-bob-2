@@ -63,7 +63,7 @@ def client_numbers(fy0: int, revision: float = 0.0) -> dict:
     return out
 
 
-def write_client(wb, fy0: int, this_year: bool) -> dict:
+def write_client(wb, fy0: int, this_year: bool, banner: bool = True) -> dict:
     """The client sheets. Returns where things are: {"cf_dist_row", "cf_date_row", "years", "numbers"}."""
     n = client_numbers(fy0, 0.04 if this_year else 0.0)
     years = list(range(fy0, fy0 + N))
@@ -138,6 +138,8 @@ def write_client(wb, fy0: int, this_year: bool) -> dict:
     fc = [i for i, fy in enumerate(years) if fy > fy0 + 1]
     total = sum(n["dist"][years[i]] for i in fc)
     vd_col = col(1)
+    if not banner:  # (an adviser who reused the name for the valuation's own summary)
+        return {"years": years, "numbers": n, "rows": R, "fin": fin_name}
     sm = wb.add_worksheet("Summary")
     sm.write(0, 1, "Model summary")
     sm.write(2, 1, "Equity distributions (forecast total)")
@@ -149,7 +151,7 @@ def write_client(wb, fy0: int, this_year: bool) -> dict:
     return {"years": years, "numbers": n, "rows": R, "fin": fin_name}
 
 
-def write_overlay(wb, made: dict, vd: date) -> dict:
+def write_overlay(wb, made: dict, vd: date, report_sheet: str = "Report") -> dict:
     """The overlay's sheets, reading the client sheets' distributions for the forecast years."""
     n, years, R = made["numbers"], made["years"], made["rows"]
     num, dt, pct = wb.add_format({"num_format": "#,##0.0"}), wb.add_format({"num_format": "dd-mmm-yy"}), \
@@ -194,7 +196,7 @@ def write_overlay(wb, made: dict, vd: date) -> dict:
                          (7, "Equity value (ex-div)", "=C5+C6", mid - DIST_PAYABLE)):
         br.write(r - 1, 1, lab)
         br.write_formula(f"C{r}", f, num, v)
-    rp = wb.add_worksheet("Report")
+    rp = wb.add_worksheet(report_sheet)
     rp.write(4, 1, "Fair value of equity (ex-div)")
     rp.write_formula("C5", "=Bridge!C7", num, mid - DIST_PAYABLE)
     return {"low": pv[LOW], "high": pv[HIGH], "mid": mid, "ex_div": mid - DIST_PAYABLE}

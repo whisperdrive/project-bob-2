@@ -28,7 +28,9 @@ import rollforward_pack as rp  # noqa: E402
 FACTS = [{"id": 1, "category": "identity", "key": "valuation_date", "label": "Valuation date", "value_text": "30 June 2025",
           "value": 20250630.0, "unit": "date"},
          {"id": 2, "category": "assumption", "key": "discount_rate", "label": "Discount rate (low)", "value_text": "8.00%",
-          "value": 8.0, "unit": "%"}]
+          "value": 8.0, "unit": "%"},
+         {"id": 5, "category": "conclusion", "key": "equity_value", "label": "Fair value of equity (ex-div)",
+          "value_text": "198.4", "value": 198.4, "unit": "A$m"}]
 
 
 def main() -> None:
@@ -120,6 +122,7 @@ def main() -> None:
     r, cf, val = ov.deep(plan, "2025-06-30", "2025-06-30", "2026-06-30")  # a year: FY2026 has ended
     assert (r["months"], cf, val) == (12, 12, 12), (r, cf, val)
     summary["roll"].update(ov.deep(plan, "2025-09-30", "2025-06-30", "2025-12-31")[0])
+    starts_check(out)
 
     def three_months():
         defaults, _, months = ov._feed(summary, "current", None, None)
@@ -129,10 +132,55 @@ def main() -> None:
     reads, missed = ov.deep(three_months)
     assert reads and not missed, list(missed.items())[:3]
     print(f"roll: ok (Sep-25 overlay, Dec-25 model: 3 months, annual periods stay; {reads} client values read, none missed)")
+    # ---- the gate: this year's figures show once every row the DCF's cash flows come from is found (or picked)
+    gate = lambda: ov.summary_table(sess, summary, FACTS)["this_year_gaps"]
+    g = ov.deep(gate)
+    assert g["basis"] == "dcf" and g["dcf_rows"] == 1 and g["reliable"], g
+    real = fnd.locate
+    fnd.locate = lambda s_, r_: None if (s_, r_) == ("CF", 11) else real(s_, r_)
+    try:
+        g = ov.deep(gate)
+        assert not g["reliable"] and [x["row"] for x in g["dcf_missing"]] == ["CF!r11"], g
+    finally:
+        fnd.locate = real
+    ov.deep(fnd.pick, "CF", 11, ("CF", 15))  # a person's pick opens it again
+    assert ov.deep(gate)["reliable"]
+    ov.deep(fnd.pick, "CF", 11, None)
+    print("gate: ok (shut while the DCF's cash-flow row is missing, open once it's found or picked)")
     ov.deep(sess.configure, "workbook")
     roles_check(res, db)
     rebuilt_check(out)
     print("rollforward: all checks passed")
+
+
+def starts_check(out: Path) -> None:
+    """A timeline of period starts (1 July each year, as many models date their columns): periods move only by
+    the years that have ended, counted by their ends, not by the starts that fall in the window."""
+    import xlsxwriter
+    path = out / "starts.xlsx"
+    wb = xlsxwriter.Workbook(path)
+    dt = wb.add_format({"num_format": "dd-mmm-yy"})
+    ws = wb.add_worksheet("Annual")
+    ws.write(2, 1, "Year starting")
+    for k in range(8):
+        ws.write_datetime(2, 3 + k, date(2024 + k, 7, 1), dt)
+    ws.write(4, 1, "Revenue")
+    for k in range(8):
+        ws.write_number(4, 3 + k, 100.0 + k)
+    wb.close()
+    wbk = ov.Workbook(build_map.main(str(path), str(out / "starts_db"))["db"])
+
+    class Roll:  # the parts of a session period_shift uses
+        _pshift = {}
+
+    def shift(frm, to):
+        r = Roll()
+        r._pshift, r.base_vd = {}, ov.serial(date.fromisoformat(frm))
+        r.shift = ov.months_between(frm, to)
+        return ov.Session.period_shift(r, wbk, "Annual")
+    got = (shift("2025-06-30", "2025-12-31"), shift("2025-06-30", "2026-06-30"), shift("2025-09-30", "2025-12-31"))
+    assert got == (0, 12, 0), got  # the year starting 1 July 2025 hasn't ended by December
+    print("starts: ok (a 1-July-start timeline moves a year only once the year has ended)")
 
 
 def rebuilt_check(out: Path) -> None:
@@ -195,6 +243,40 @@ def roles_check(res: dict, db: dict) -> None:
     print("  roles:", r)
     assert r["prior_overlay"] == (2, ["Inputs", "Val", "Bridge", "Report"]), r["prior_overlay"]
     assert r["prior_model"][0] == 1 and r["current_model"][0] == 3, r
+    # this year's model has a sheet named like one of the overlay's, with other contents; and a report figure
+    # (opening debt) whose value is only on a client sheet: neither moves a sheet across
+    import xlsxwriter
+    out = res["paths"]["prior"].parent
+    path = out / "Client_model_FY26_named_alike.xlsx"
+    wb = xlsxwriter.Workbook(path)
+    rp.write_client(wb, 2025, True)
+    ws = wb.add_worksheet("Val")
+    for i, lab in enumerate(["Asset register", "Depreciation", "Written-down value", "Disposals"]):
+        ws.write(4 + i, 1, lab)
+        for k in range(6):
+            ws.write_number(4 + i, 4 + k, 50.0 * (i + 1) + k)
+    wb.close()
+    wbs[2] = {**wbs[2], "filename": path.name, "db_path": build_map.main(str(path), str(out / "named_alike_db"))["db"],
+              "source_path": str(path)}
+    od = n["debt_open"][2025]
+    facts2 = facts + [{"id": 6, "category": "assumption", "key": "opening_debt", "label": "Opening debt",
+                       "value_text": f"{od:.1f}", "value": od, "unit": "A$m"}]
+    got = roles.suggest([{"id": 9, "filename": "report.pdf", "n_facts": 5}], wbs, facts2)
+    r = {k: (v["id"], v.get("sheets")) for k, v in got["roles"].items()}
+    assert r["prior_overlay"] == (2, ["Inputs", "Val", "Bridge", "Report"]), r["prior_overlay"]
+    assert r["prior_model"][0] == 1 and r["current_model"][0] == 3, r
+    # the adviser reused a client sheet's name: the client's "Summary" replaced by the valuation's own summary,
+    # which holds the report's figure. Same name as the client's, other contents: it's the overlay's
+    path = out / "Client_model_FY25_valuation_summary.xlsx"
+    wb = xlsxwriter.Workbook(path)
+    made = rp.write_client(wb, 2024, False, banner=False)
+    rp.write_overlay(wb, made, date(2025, 6, 30), report_sheet="Summary")
+    wb.close()
+    wbs3 = [wbs[0], {**wbs[1], "filename": path.name, "db_path": build_map.main(str(path), str(out / "val_summary_db"))["db"],
+                     "source_path": str(path)}, wbs[2]]
+    got = roles.suggest([{"id": 9, "filename": "report.pdf", "n_facts": 5}], wbs3, facts2)
+    r = {k: (v["id"], v.get("sheets")) for k, v in got["roles"].items()}
+    assert r["prior_overlay"] == (2, ["Inputs", "Val", "Bridge", "Summary"]), r["prior_overlay"]
     print("roles: ok (a report figure on a client sheet doesn't make it the overlay; different dates don't stop the "
           "client's own file being last year's model)")
 

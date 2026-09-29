@@ -344,9 +344,15 @@ class Session:
             else:
                 gaps = sorted(b - a for a, b in zip(tl, tl[1:]))
                 plen = max(1, round(gaps[len(gaps) // 2] / 30.44))
+                # a timeline of period starts (1 July, 1 October: all on the 1st) is counted by its periods' ends,
+                # the day before the next start: a year that began in the window hasn't ended in it
+                if all(to_date(d).day == 1 for d in tl):
+                    ends = [add_months(d, plen) - 1 for d in tl]
+                else:
+                    ends = tl
                 if self.base_vd is not None:
                     new = add_months(self.base_vd, self.shift)
-                    out = plen * sum(1 for d in tl if self.base_vd < d <= new)
+                    out = plen * sum(1 for d in ends if self.base_vd < d <= new)
                 else:
                     out = plen * (max(0, self.shift) // plen)
             self._pshift[key] = out
@@ -701,6 +707,29 @@ def _range_cells(db, cell: str, texts: list, scale: float, sign: int, sheets: li
     return out
 
 
+def dcf_origins(sess: Session, summary: dict, cells: list[str]) -> list[tuple]:
+    """The client rows the discountings under these figures take their cash flows from (dcffacts.py): the rows
+    this year's model must have for the figures to be this year's. Cached on the session."""
+    import dcffacts
+    cache = sess.__dict__.setdefault("_origins", {})
+    out = set()
+    for cell in cells:
+        if cell not in cache:
+            rows = []
+            try:
+                fx = dcffacts.Facts(sess, summary).run(cell)
+                for c in fx["discountings"]:
+                    for o in c["origins"]:
+                        m = re.match(r"^(?:\[\d+\])?(.+)!r(\d+)$", o["row"])
+                        if m:
+                            rows.append((m[1], int(m[2])))
+            except Exception:
+                pass
+            cache[cell] = rows
+        out |= set(cache[cell])
+    return sorted(out)
+
+
 def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
                   valuation_date: str | None = None, months: int | None = None, method: dict | None = None) -> dict:
     """The report's summary, rebuilt and rolled forward. Rows: the report's conclusions (with their ranges), its
@@ -747,6 +776,8 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             rows.append({"kind": "approach", "key": f.get("key"), "label": f.get("label") or f.get("key"),
                          "report": f.get("value_text"), "page": f.get("page")})
     keys = sorted(keys)
+    origins = dcf_origins(sess, summary, [r["cell"] for r in rows if r["kind"] == "conclusion" and r.get("cell")]) \
+        if w.get("current") and sess.rowmap else []
 
     def read(feed, with_changes, vd=None, mo=None):
         defaults, roll, mo = _feed(summary, feed, vd, mo)
@@ -766,10 +797,18 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         reads = len(sess.client_reads)
         share = 1 - len(sess.unmatched) / reads if reads else 1.0
         family = sess.rowmap.family() if sess.rowmap else None
+        # the rows the discountings' cash flows come from decide: each found this year (or picked), with its
+        # periods; without discountings found, at least half of all the client values the figures read
+        read_by_row = Counter((s_, r_) for (s_, r_, _c) in sess.client_reads)
+        missing = [k for k in origins if sess.rowmap.locate(*k) is None
+                   or by_row.get(k, 0) > 0.5 * max(1, read_by_row.get(k, 0))]
         gaps = {"values": len(sess.unmatched), "stood_in": len(sess.stood_in), "reads": reads,
-                "found_share": round(share, 3), "family": family,
-                # under half of what the figures read found this year: the column isn't this year's figure
-                "reliable": share >= 0.5, "rebuilt": family is not None and family < 0.5,
+                "found_share": round(share, 3), "family": family, "basis": "dcf" if origins else "share",
+                "dcf_rows": len(origins),
+                "dcf_missing": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""),
+                                 "why": "not found this year" if sess.rowmap.locate(s_, r_) is None
+                                 else "found, but most of its periods aren't in this year's model"} for s_, r_ in missing],
+                "reliable": not missing if origins else share >= 0.5, "rebuilt": family is not None and family < 0.5,
                 "rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "values": n,
                           "why": sess.unmatched[next(k for k in sess.unmatched if k[:2] == (s_, r_))]}
                          for (s_, r_), n in by_row.most_common(30)]}
@@ -873,10 +912,12 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
     table = summary_table(sess, summary, facts, changes, valuation_date, months, method)
     gaps = table.get("this_year_gaps") or {}
     if gaps and not gaps.get("reliable", True):
+        what = (f"{len(gaps['dcf_missing'])} of the {gaps['dcf_rows']} rows the DCF's cash flows come from weren't found in "
+                "this year's model" if gaps.get("basis") == "dcf" else
+                f"only {gaps['found_share']:.0%} of the client values the report's figures read were found in this year's model")
         return {"bridges": [], "this_year_gaps": gaps,
-                "why": f"only {gaps['found_share']:.0%} of the client values the report's figures read were found in this "
-                       "year's model, so there's no this-year value to bridge to yet: find or pick the rows the figures' "
-                       "cash flows come from (Rebuild in Python → Valuation (DCF) → The facts)"}
+                "why": f"{what}, so there's no this-year value to bridge to yet: find or pick them in Rebuild in Python → "
+                       "Valuation (DCF) → The facts"}
     path = w["overlay"]["db_path"]
     db = rodb.connect(path)
     base_feed = table["feeds"]["rebuilt"]

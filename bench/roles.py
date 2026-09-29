@@ -202,6 +202,25 @@ def split(prof: dict, seed: dict[str, list[str]] | None = None, shared: set[str]
     return sorted(overlay, key=list(sh).index), sorted(client, key=list(sh).index)
 
 
+SAME_SHEET = 0.35  # a sheet of the same name in another version is the same sheet if it shares this much of its labels
+
+
+def _shared(sig: dict, family: list[dict], sheet: str) -> bool:
+    """Another version of the model has this sheet: one of the same name with much the same line items. A name
+    alone isn't enough: an overlay's "Inputs" or "Summary" isn't the client's sheet of that name."""
+    ns = likeness.norm(sheet) or sheet.lower()
+    mine = {lab for (s, lab) in sig["items"] if s == ns}
+    for other in family:
+        if ns not in other["sheet_keys"]:
+            continue
+        theirs = {lab for (s, lab) in other["items"] if s == ns}
+        if not mine and not theirs:
+            return True
+        if mine and theirs and len(mine & theirs) / len(mine | theirs) >= SAME_SHEET:
+            return True
+    return False
+
+
 def suggest(reports: list[dict], workbooks: list[dict], facts: list[dict]) -> dict:
     """reports: [{"id", "filename", "n_facts"}]; workbooks: [{"id", "filename", "db_path", "source_path",
     "valuation_date", "uploaded_at"}]; facts: approved (or all) report facts.
@@ -218,8 +237,7 @@ def suggest(reports: list[dict], workbooks: list[dict], facts: list[dict]) -> di
         prof = profile(wb, fm)
         sp = st["shape"][wb["id"]]
         sig = st["sigs"][wb["id"]]
-        shared = {s for s in prof["sheets"] if likeness.norm(s) in
-                  {k for j in sp["family"] for k in st["sigs"][j]["sheet_keys"]}}
+        shared = {s for s in prof["sheets"] if _shared(sig, [st["sigs"][j] for j in sp["family"]], s)}
         # extra sheets count as the overlay only with some sign of valuation work (a new client sheet isn't)
         seed = {s: r for s, r in sp["extra"].items() if r or prof["sheets"].get(s, {}).get("anchors")}
         ov, cl = split(prof, seed, shared)
