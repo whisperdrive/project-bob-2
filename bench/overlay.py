@@ -923,7 +923,9 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         # the rows the discountings' cash flows come from decide: each found this year (or picked), with its
         # periods; without discountings found, at least half of all the client values the figures read
         read_by_row = Counter((s_, r_) for (s_, r_, _c) in sess.client_reads)
-        kept = lambda k: sess.rowmap.explain(*k).get("stand_in")  # last year's values kept on purpose
+        # last year's values kept on purpose, by a person: the agents may keep them for other rows, not for the
+        # rows the DCF's cash flows come from (keeping every hard row would pass every check with last year's numbers)
+        kept = lambda k: sess.rowmap.explain(*k).get("stand_in") and sess.rowmap.explain(*k).get("by", "you") == "you"
         missing = [k for k in origins if not kept(k) and (sess.rowmap.locate(*k) is None
                    or by_row.get(k, 0) > 0.5 * max(1, read_by_row.get(k, 0)))]
         # rows found this year but blank in more than a fifth of the periods read, where last year's had values:
@@ -944,6 +946,8 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
                        and not sess.rowmap.confident(*k)]
 
         def why_missing(k):
+            if sess.rowmap.explain(*k).get("stand_in"):
+                return "the agents couldn't find it this year (last year's values stand in)"
             if sess.rowmap.locate(*k) is None:
                 return "not found this year"
             if blank_by_row.get(k, 0) > 0.5 * by_row.get(k, 0):

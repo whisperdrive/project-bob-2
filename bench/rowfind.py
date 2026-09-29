@@ -20,6 +20,7 @@ or the other way round. A reconciliation sheet of pasted values ("LINKED EBITDA"
 and a full series, and would otherwise win every row it copies.
 A person's pick for a row always wins: a row, or last year's values kept on purpose (STAND_IN). explain() gives what was found for a row and why, with the alternatives.
 """
+import bisect
 import re
 from collections import defaultdict
 
@@ -28,6 +29,8 @@ EXACT = 1e-9
 SAME_SHEET = 0.35     # a sheet of the same name is the same sheet only if it shares this much of its labels
 RENAMED_SHEET = 0.5   # a sheet of another name is a renamed one if it shares this much
 CONFIDENT = 0.5      # a row found with less than this needs a person's look before its figures are this year's
+CHECK_GAP = 0.15     # a row carries last year's numbers when its median difference from them is within this
+CHECK_PERIODS = 3    # ... over at least this many periods side by side
 SHAPE = 0.6           # a candidate whose share of formulas differs from last year's row's by this much is another shape
 STAND_IN = "stand-in"  # a person's pick: keep last year's values for the row
 
@@ -48,7 +51,8 @@ class RowFinder:
     def __init__(self, rowmap, prior, current, picks: dict | None = None):
         """rowmap: overlay.RowMap (the label matching); prior, current: overlay.Workbook."""
         self.rowmap, self.prior, self.current = rowmap, prior, current
-        self.picks = dict(picks or {})   # {(sheet, row): (sheet, row)}: a person's choice
+        self.picks = dict(picks or {})   # {(sheet, row): (sheet, row) or STAND_IN}: a person's or the agents' choice
+        self.pick_by: dict = {}          # {(sheet, row): "you" | "agent"}: whose choice it is (a person's by default)
         self._cache: dict = {}
         self._idx = None
         self._shapes: dict = {}
@@ -307,9 +311,11 @@ class RowFinder:
             return self._cache[key]
         if key in self.picks:
             k = self.picks[key]
-            res = {"found": None if k == STAND_IN else k, "how": "your pick", "confidence": 1.0, "alternatives": [],
-                   "in_place": False, "stand_in": k == STAND_IN,
-                   "evidence": [("you", "last year's values kept on purpose" if k == STAND_IN else "picked by you")]}
+            by = self.pick_by.get(key, "you")
+            who = "the agents" if by == "agent" else "you"
+            res = {"found": None if k == STAND_IN else k, "how": "the agents' pick" if by == "agent" else "your pick",
+                   "confidence": 1.0, "alternatives": [], "in_place": False, "stand_in": k == STAND_IN, "by": by,
+                   "evidence": [(who, "last year's values kept on purpose" if k == STAND_IN else f"picked by {who}")]}
             self._cache[key] = res
             return res
         found = defaultdict(dict)
@@ -395,11 +401,69 @@ class RowFinder:
         ex = self.explain(s, r)
         return ex["how"] == "your pick" or (ex["found"] is not None and (ex["confidence"] >= CONFIDENT or ex["in_place"]))
 
-    def pick(self, s: str, r: int, to) -> None:
-        """A person's choice for a row: (sheet, row), STAND_IN (keep last year's values), or None (back to what's
-        found)."""
+    def pick(self, s: str, r: int, to, by: str = "you") -> None:
+        """A choice for a row: (sheet, row), STAND_IN (keep last year's values), or None (back to what's found);
+        by: "you" (a person) or "agent". The agents never replace a person's choice."""
+        if by == "agent" and self.pick_by.get((s, r), "you" if (s, r) in self.picks else None) == "you":
+            return
         if to:
             self.picks[(s, r)] = to
+            self.pick_by[(s, r)] = by
         else:
             self.picks.pop((s, r), None)
+            self.pick_by.pop((s, r), None)
         self._cache.pop((s, r), None)
+
+    # ---- checking a match by its numbers, and finding rows by them -------------------------------------------
+    def check(self, s: str, r: int, k: tuple) -> dict:
+        """Whether this year's row k carries last year's row's numbers: over the periods both have (no roll), the
+        median gap between them, how many are equal (history), and whether it's the same kind of row. Forecasts
+        are revised between valuations, not replaced: ok when the median gap is within CHECK_GAP over at least
+        CHECK_PERIODS periods, the kind agrees, and the row isn't blank where last year's has values."""
+        mine = self._series(self.prior, s, r)
+        theirs = self._series(self.current, *k)
+        both = [w for w in mine if w in theirs and mine[w]]
+        dates = self._index()["dates"].get(k[0], {})
+        could = [w for w in mine if mine[w] and w in dates]
+        gaps = sorted(abs(theirs[w] / mine[w] - 1) for w in both)
+        med = gaps[len(gaps) // 2] if gaps else None
+        equal = sum(1 for g in gaps if g <= 1e-9)
+        shape = self.other_shape(s, r, k)
+        cover = len(both) / len(could) if could else 0.0
+        ok = len(both) >= CHECK_PERIODS and med is not None and med <= CHECK_GAP and not shape and cover >= 0.8
+        return {"row": f"{k[0]}!r{k[1]}", "periods": len(both), "median_gap": None if med is None else round(med, 4),
+                "equal": equal, "cover": round(cover, 3), "shape": shape, "ok": ok,
+                "text": (f"{len(both)} period(s) side by side, median difference {med:.1%}" if med is not None else
+                         "no periods side by side") + (f", {equal} equal" if equal else "")
+                        + (f"; {shape}" if shape else "") + (f"; blank in {len(could) - len(both)} of {len(could)}"
+                                                              if could and cover < 1 else "")}
+
+    def _sorted_values(self, sheet: str, col: int) -> tuple[list, list]:
+        idx = self._index()
+        key = ("sorted", sheet, col)
+        if key not in idx:
+            vals = sorted((v, rr) for (rr, cc), v in self.current.sheet(sheet).items()
+                          if cc == col and isinstance(v, float) and v)
+            idx[key] = ([v for v, _ in vals], [rr for _, rr in vals])
+        return idx[key]
+
+    def near(self, s: str, r: int, limit: int = 8, tol: float = CHECK_GAP) -> list[tuple]:
+        """Rows of this year's model, on any sheet, whose values are close to last year's row's (within tol) in
+        several of the same periods: a row found by its numbers when its label says nothing (or there's none)."""
+        mine = [(w, v) for w, v in self._series(self.prior, s, r).items() if v]
+        if len(mine) < CHECK_PERIODS:
+            return []
+        step = max(1, len(mine) // 8)
+        sample = mine[::step][:8]
+        hits = defaultdict(int)
+        for sheet, dates in self._index()["dates"].items():
+            for w, v in sample:
+                c = dates.get(w)
+                if c is None:
+                    continue
+                vals, rows = self._sorted_values(sheet, c)
+                lo, hi = sorted((v * (1 - tol), v * (1 + tol)))
+                for i in range(bisect.bisect_left(vals, lo), bisect.bisect_right(vals, hi)):
+                    hits[(sheet, rows[i])] += 1
+        need = max(CHECK_PERIODS, len(sample) // 2)
+        return sorted((k for k, n in hits.items() if n >= need), key=lambda k: (-hits[k], k))[:limit]

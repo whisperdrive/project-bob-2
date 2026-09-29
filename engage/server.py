@@ -358,6 +358,12 @@ async def overlay_row(eid: int, row: str):
     return await _run(engagement.row_info, eid, row)
 
 
+@app.get("/api/engagements/{eid}/rows")
+async def rows_view(eid: int):
+    """The row agents: their status and what they decided for each row the Summary was waiting on."""
+    return await _run(engagement.rows_view, eid)
+
+
 @app.get("/api/engagements/{eid}/doctor")
 async def doctor_view(eid: int):
     """The overlay doctor's last diagnosis, its progress, and the cells held at Excel's values."""
@@ -383,7 +389,7 @@ async def doctor_holds(eid: int, body: Holds):
 
 @app.post("/api/engagements/{eid}/{kind}")
 async def start_step(eid: int, kind: str):
-    if kind not in ("compare", "map", "overlay"):
+    if kind not in ("compare", "map", "overlay", "rows"):
         raise HTTPException(404, "unknown step")
     return await _run(engagement.start, kind, eid)
 

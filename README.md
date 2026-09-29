@@ -320,7 +320,17 @@ person before the next relies on it:
    count like any other row where none did. Last, the **zero-roll check**: this year's model at last year's
    valuation date, rolled by nothing, should give about last year's figure (0.75 to 1.33 times it:
    forecasts are revised, not replaced). A figure outside that is held whatever the other tests say (the rows
-   found don't carry last year's numbers), and every figure shows its value at last year's date. Rows of period flags and dates (by their labels, 0/1 values or rising dates)
+   found don't carry last year's numbers), and every figure shows its value at last year's date.
+
+   **The row agents** (`bench/rowagent.py`) settle the rows the gate waits on without a person stopping the
+   work. They run by themselves after every build in Python (and when this year's valuation date is set), as a
+   background job the Summary follows. First by the numbers, with no model: for each open row, the rows
+   `rowfind` has for it and rows whose values are close to last year's in several periods (which finds a row
+   with no label at all). A candidate that carries last year's numbers (over the periods both have, a median
+   difference within 15%, the same kind of row, not blank where last year's has values) is taken as the
+   agents' pick, with the numbers as the reason. The agents' picks count as settled and show as theirs; a
+   person's pick always wins over them. The agents never keep last year's values for a row the DCF's cash
+   flows come from: that figure stays held, saying they couldn't find it. Rows of period flags and dates (by their labels, 0/1 values or rising dates)
    are the timing the discounting depends on: listed apart. The page says why, how alike the two
    models are, and lists each row it needs with a button to pick this year's row; the bridge leaves out the
    figures held back. The Map uses the same finding. Each output shows its Python function and the client values it

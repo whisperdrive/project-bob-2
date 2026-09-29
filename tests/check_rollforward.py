@@ -15,6 +15,8 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
   weak          a row found only weakly holds the figures until a person keeps it, picks another, or keeps last
                 year's values on purpose
   snapshot      a pasted copy of last year's rows (typed values) doesn't win over this year's own formula row
+  agents        the rows the gate waits on settled by their numbers without a person, as the agents' picks
+  unlabelled    a row with no label found by its numbers
 
     uv run python tests/check_rollforward.py
 """
@@ -289,13 +291,81 @@ def main() -> None:
         fnd.locate = real
     print(f"zero roll: ok (at last year's date this year's model gives {zr['ratio']:.3f}x last year's; a wrong row "
           f"gives {row['zero_roll']['ratio']:.3f}x and holds the figure)")
+    agents_check(sess, summary, fnd, sure)
     ov.deep(sess.configure, "workbook")
     roles_check(res, db)
     rebuilt_check(out)
     actuals_check(out)
     catalogue_check(out)
     snapshot_check(out)
+    unlabelled_check(out)
     print("rollforward: all checks passed")
+
+
+def agents_check(sess, summary, fnd, sure) -> None:
+    """The row agents' first stage, by the numbers: rows the gate waits on are settled without a person, as the
+    agents' picks, where a row of this year's model carries last year's numbers. A person's pick stays; the agents
+    may not keep last year's values for a DCF cash-flow row."""
+    import rowagent
+    import rowfind
+    doubt = {("CF", 3), ("CF", 11)}
+    fnd.confident = lambda s_, r_: (s_, r_) in fnd.picks or (sure(s_, r_) and (s_, r_) not in doubt)
+    try:
+        assert not ov.deep(lambda: ov.summary_table(sess, summary, FACTS)["this_year_gaps"])["reliable"]
+        ov.deep(fnd.pick, "CF", 3, ("CF", 3))  # a person's pick
+        res = rowagent.run(sess, summary, FACTS)
+        got = {d["row"]: (d["decision"], d["how"]) for d in res["decisions"]}
+        assert got == {"CF!r11": ("CF!r15", "numbers")}, res["decisions"]
+        assert fnd.pick_by[("CF", 11)] == "agent" and fnd.pick_by[("CF", 3)] == "you"
+        assert fnd.explain("CF", 11)["how"] == "the agents' pick" and res["reliable_after"], res
+        ov.deep(fnd.pick, "CF", 3, ("Ops", 5), "agent")  # the agents never replace a person's pick
+        assert fnd.picks[("CF", 3)] == ("CF", 3)
+        # the agents keeping last year's values for the DCF's cash-flow row: the figure stays held, and says why
+        ov.deep(fnd.pick, "CF", 11, None)
+        ov.deep(fnd.pick, "CF", 11, rowfind.STAND_IN, "agent")
+        g = ov.deep(lambda: ov.summary_table(sess, summary, FACTS)["this_year_gaps"])
+        assert not g["reliable"] and g["dcf_missing"][0]["why"].startswith("the agents couldn't find it"), g["dcf_missing"]
+    finally:
+        fnd.confident = sure
+        for k in doubt:
+            ov.deep(fnd.pick, *k, None)
+    print(f"agents: ok (a row the gate waited on settled by its numbers, as the agents' pick; a person's pick stays; "
+          f"a cash-flow row they can't find keeps its figure held)")
+
+
+def unlabelled_check(out: Path) -> None:
+    """A row with no label (a block of figures under a heading, as valuation outputs often are), moved to another
+    sheet this year with its forecast revised: found by its numbers."""
+    import xlsxwriter
+    import rowagent
+    import rowfind
+    years = [date(2024 + k, 6, 30) for k in range(8)]
+
+    def book(path, sheets):
+        wb = xlsxwriter.Workbook(path)
+        dt = wb.add_format({"num_format": "dd-mmm-yy"})
+        for name, rows in sheets.items():
+            ws = wb.add_worksheet(name)
+            ws.write(2, 1, "Period ending")
+            for k, d in enumerate(years):
+                ws.write_datetime(2, 3 + k, d, dt)
+            for i, (label, vals) in enumerate(rows):
+                if label:
+                    ws.write(4 + i, 1, label)
+                for k, v in enumerate(vals):
+                    ws.write_number(4 + i, 3 + k, v)
+        wb.close()
+        return build_map.main(str(path), str(out / (path.stem + "_db")))["db"]
+    flows = [120.0 + 7 * k for k in range(8)]
+    prior = book(out / "unl_prior.xlsx", {"Output": [("", flows), ("", [5.0] * 8)]})
+    later = [v * (1.03 if k >= 2 else 1.0) for k, v in enumerate(flows)]
+    current = book(out / "unl_current.xlsx", {"Output": [("", [60.0 + k for k in range(8)])],
+                                              "Valuation": [("", [9.0] * 8), ("", [300.0] * 8), ("", later)]})
+    a, b = ov.Workbook(prior), ov.Workbook(current)
+    f = rowfind.RowFinder(ov.RowMap(a, b), a, b)
+    got = rowagent.by_numbers(f, "Output", 5)
+    assert got and got["to"] == ("Valuation", 7) and got["check"]["ok"], got
+    print(f"unlabelled: ok (a row with no label found by its numbers: {got['check']['text']})")
 
 
 def timelines_check() -> None:

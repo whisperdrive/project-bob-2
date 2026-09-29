@@ -86,7 +86,9 @@ def _conn() -> sqlite3.Connection:
     for col, kind in (("charts_status", "TEXT"), ("charts_step", "TEXT"), ("charts_error", "TEXT"),
                       ("charts_started_at", "REAL"), ("charts_secs", "REAL"),  # ... and before the Summary page
                       ("doctor_status", "TEXT"), ("doctor_step", "TEXT"), ("doctor_error", "TEXT"),
-                      ("doctor_started_at", "REAL"), ("doctor_secs", "REAL")):  # ... and before the doctor
+                      ("doctor_started_at", "REAL"), ("doctor_secs", "REAL"),  # ... and before the doctor
+                      ("rows_status", "TEXT"), ("rows_step", "TEXT"), ("rows_error", "TEXT"),
+                      ("rows_started_at", "REAL"), ("rows_secs", "REAL")):  # ... and before the row agents
         if col not in have:
             db.execute(f"ALTER TABLE engagements ADD COLUMN {col} {kind}")
     for table, col in (("facts", "agent_json"), ("documents", "loop_json"), ("facts", "decided_by")):  # ... and before the loop
@@ -933,6 +935,8 @@ def start(kind: str, eid: int) -> dict:
         raise ValueError("assign the prior and current client models first")
     if kind in ("map", "overlay") and not _role_wb(eid, "prior_overlay"):
         raise ValueError("assign the prior overlay first")
+    if kind == "rows":
+        return start_rows(eid)
     _set("engagements", eid, **{f"{kind}_status": "queued", f"{kind}_step": "Waiting to start", f"{kind}_error": None})
     _jobs.put((kind, eid))
     return get(eid)
@@ -1134,6 +1138,8 @@ def _overlay(eid: int) -> None:
     _SESSIONS[eid] = (sess, summary)
     _set("engagements", eid, overlay_json=json.dumps(summary, default=str), overlay_status="done", overlay_step="Done",
          updated_at=time.time())
+    if summary["wiring"].get("current"):  # the row agents take it from here, without anyone starting them
+        start_rows(eid)
 
 
 def _this_year_file(eid: int) -> Path:
@@ -1165,6 +1171,10 @@ def set_this_year_date(eid: int, valuation_date: str | None) -> dict:
         sess, summary = _SESSIONS[eid]
         _sync_roll(eid, sess, summary)
     _touch(eid)
+    try:  # the rows to find follow the roll: the agents look again
+        start_rows(eid)
+    except ValueError:
+        pass
     return {"valuation_date": valuation_date}
 
 
@@ -1343,6 +1353,7 @@ def summary_view(eid: int, changes: dict | None = None, valuation_date: str | No
     out["table"] = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid), clean, valuation_date, months, method)
     out["identity"] = {f["key"]: f.get("value_text") for f in reference(eid) if f.get("category") == "identity"}
     out["roll_plan"] = summary.get("roll")  # as the dates are now (_sync_roll), with which are checked
+    out["rows"] = rows_view(eid)  # the row agents: running, or what they decided
     return out
 
 
@@ -1529,14 +1540,29 @@ def _load_rowpicks(eid: int, sess) -> None:
     if not sess.rowmap:
         return
     import rowfind
-    f = _rowpicks_file(eid)
-    picks = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-    for a, b in picks.items():
+    for a, b in _read_rowpicks(eid).items():
         try:  # "[1]Sheet!r9" (a row of the linked client model) is Sheet row 9, as when it was picked
             s, r = _row_ref(a)
-            sess.rowmap.pick(s, r, rowfind.STAND_IN if b == "-" else _row_ref(b) if b else None)
+            to, by = (b.get("to"), b.get("by", "you")) if isinstance(b, dict) else (b, "you")
+            sess.rowmap.pick(s, r, rowfind.STAND_IN if to == "-" else _row_ref(to) if to else None, by)
         except ValueError:
             continue
+
+
+def _read_rowpicks(eid: int) -> dict:
+    """{"Sheet!r9": "Sheet!r12" | "-" | {"to", "by": "you" | "agent", "why", "checked_by"}}: a person's picks were
+    saved as plain strings before the agents made picks too."""
+    f = _rowpicks_file(eid)
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_rowpicks(eid: int, picks: dict) -> None:
+    f = _rowpicks_file(eid)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(picks, indent=1), encoding="utf-8")
 
 
 def _row_ref(text: str) -> tuple[str, int]:
@@ -1605,14 +1631,12 @@ def row_pick(eid: int, prior_row: str, current_row: str | None) -> dict:
     to = rowfind.STAND_IN if keep else _row_ref(current_row) if current_row else None
     if to and not keep and not sess.current.db.execute("SELECT 1 FROM rows WHERE sheet=? AND row=?", to).fetchone():
         raise ValueError(f"{current_row} isn't a line item in this year's model")
-    f = _rowpicks_file(eid)
-    picks = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    picks = _read_rowpicks(eid)
     if to:
-        picks[prior_row] = current_row
+        picks[prior_row] = {"to": current_row, "by": "you"}
     else:
         picks.pop(prior_row, None)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(picks), encoding="utf-8")
+    _write_rowpicks(eid, picks)
     ovmod.deep(sess.rowmap.pick, s, r, to)
     return ovmod.deep(row_found, sess, s, r)
 
@@ -1624,6 +1648,56 @@ def row_info(eid: int, prior_row: str) -> dict:
     if not sess.rowmap:
         raise ValueError("assign this year's client model (Roles) and rebuild in Python first")
     return ovmod.deep(row_found, sess, *_row_ref(prior_row))
+
+
+def _rowagent_file(eid: int) -> Path:
+    return OUT / "overlays" / f"e{eid}" / "rowagent.json"
+
+
+def start_rows(eid: int) -> dict:
+    """Queue the row agents: this year's row for each row the Summary is waiting on, found and checked."""
+    rows = _q("SELECT overlay_status, rows_status FROM engagements WHERE id=?", eid)
+    if not rows:
+        raise ValueError("no such engagement")
+    if rows[0]["overlay_status"] != "done":
+        raise ValueError("rebuild in Python first: the row agents work on the Python overlay")
+    if not _role_wb(eid, "current_model"):
+        raise ValueError("assign this year's client model (Roles) first")
+    if rows[0]["rows_status"] not in ("queued", "running"):
+        _set("engagements", eid, rows_status="queued", rows_step="Waiting to start", rows_error=None)
+        _jobs.put(("rows", eid))
+    return rows_view(eid)
+
+
+def _rows_job(eid: int) -> None:
+    import rowagent
+    step = lambda msg: _set("engagements", eid, rows_status="running", rows_step=msg)
+    step("Loading the Python overlay")
+    sess, summary = overlay_session(eid)
+    _sync_roll(eid, sess, summary)
+    res = rowagent.run(sess, summary, reference(eid), step)
+    # the agents' picks, beside a person's (a person's always win; the agents' from an earlier run are replaced)
+    picks = {k: v for k, v in _read_rowpicks(eid).items() if not (isinstance(v, dict) and v.get("by") == "agent")}
+    for d in res["decisions"]:
+        if d.get("decision") and d["row"] not in picks:
+            picks[d["row"]] = {"to": d["decision"], "by": "agent", "why": d.get("why"), "checked_by": d.get("how")}
+    _write_rowpicks(eid, picks)
+    res["at"] = time.time()
+    f = _rowagent_file(eid)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(res, default=str), encoding="utf-8")
+    _set("engagements", eid, rows_status="done", rows_step="Done")
+
+
+def rows_view(eid: int) -> dict:
+    rows = _q("SELECT rows_status, rows_step, rows_error, rows_secs, overlay_started_at FROM engagements WHERE id=?", eid)
+    if not rows:
+        raise ValueError("no such engagement")
+    e = rows[0]
+    f = _rowagent_file(eid)
+    res = json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+    return {"status": e["rows_status"], "step": e["rows_step"], "error": e["rows_error"], "secs": e["rows_secs"],
+            "result": res, "stale": bool(res and e["overlay_started_at"] and res["at"] < e["overlay_started_at"])}
 
 
 def start_doctor(eid: int) -> dict:
@@ -1774,12 +1848,12 @@ def _process_facts(did: int) -> None:
 
 _STEP = {"doc": "read the report", "resolve_tables": "table review loop", "facts": "key facts",
          "resolve_facts": "fact review loop", "compare": "compare models", "map": "map", "overlay": "python overlay",
-         "roles": "roles", "charts": "report charts", "doctor": "overlay doctor"}
+         "roles": "roles", "charts": "report charts", "doctor": "overlay doctor", "rows": "row agents"}
 # where each job's start time and duration go: (table, started column, seconds column)
 _TIMED = {"doc": ("documents", "started_at", "doc_secs"), "resolve_tables": ("documents", "started_at", "doc_secs"),
           "facts": ("documents", "facts_started_at", "facts_secs"),
           "resolve_facts": ("documents", "facts_started_at", "facts_secs"),
-          **{k: ("engagements", f"{k}_started_at", f"{k}_secs") for k in ("compare", "map", "overlay", "charts", "doctor")}}
+          **{k: ("engagements", f"{k}_started_at", f"{k}_secs") for k in ("compare", "map", "overlay", "charts", "doctor", "rows")}}
 
 
 def _run(kind: str, rid: int) -> None:
@@ -1800,7 +1874,7 @@ def _run_job(kind: str, rid: int) -> bool:
     try:
         {"doc": _process_doc, "facts": _process_facts, "compare": _compare, "map": _map, "overlay": _overlay,
          "resolve_tables": _resolve_tables_job, "resolve_facts": _resolve_facts_job, "roles": _suggest_job,
-         "charts": _charts_job, "doctor": _doctor_job}[kind](rid)
+         "charts": _charts_job, "doctor": _doctor_job, "rows": _rows_job}[kind](rid)
         return True
     except Exception as e:
         traceback.print_exc()
@@ -1875,7 +1949,7 @@ def start_worker() -> None:
     for r in _q("SELECT id FROM documents WHERE facts_status IN ('queued','running')"):
         # an interrupted loop reruns as a loop (on the facts saved); an interrupted extraction starts again
         _jobs.put(("resolve_facts" if _q("SELECT 1 FROM facts WHERE document_id=?", r["id"]) else "facts", r["id"]))
-    for kind in ("compare", "map", "overlay", "charts", "doctor"):
+    for kind in ("compare", "map", "overlay", "charts", "doctor", "rows"):
         for r in _q(f"SELECT id FROM engagements WHERE {kind}_status IN ('queued','running')"):
             _jobs.put((kind, r["id"]))
     threading.Thread(target=_worker, daemon=True, name="engagement-worker").start()

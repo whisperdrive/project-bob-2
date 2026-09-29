@@ -474,7 +474,7 @@ function schedule() {
   clearTimeout(pollTimer);
   if (!E) return;
   const working = E.documents.some(d => busy(d.status) || busy(d.facts_status) || ["queued", "reading"].includes(d.tables_status)) || E.workbooks.some(w => busy(w.status))
-    || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || busy(E.charts_status) || busy(E.doctor_status) || E.roles_pending || uploads.some(u => !u.done);
+    || busy(E.compare_status) || busy(E.map_status) || busy(E.overlay_status) || busy(E.charts_status) || busy(E.doctor_status) || busy(E.rows_status) || E.roles_pending || uploads.some(u => !u.done);
   if (working) pollTimer = setTimeout(async () => { await refresh(); spend(); }, 1500);
 }
 async function spend() {
@@ -1720,6 +1720,17 @@ function gapReasons(g) {  // why this year's figures aren't shown: [{short, long
     long: `only ${Math.round(g.found_share * 100)}% of the ${g.reads.toLocaleString()} client values they read were found in this year's model`});
   return out;
 }
+function agentsNote(d) {  // the row agents: finding this year's rows without anyone stopping the work
+  const a = d.rows; if (!a || !a.status) return "";
+  if (busy(a.status)) return `<div class="callout info small" style="margin-top:10px"><span class="pulse" style="display:inline-block;margin-right:6px"></span>The row agents are finding this year's rows: ${esc(a.step || "waiting to start")}</div>`;
+  if (a.status === "error") return `<div class="callout warn small" style="margin-top:10px">The row agents stopped: ${esc(a.error || "")} <button class="btn small" id="sumAgentsAgain">Run them again</button></div>`;
+  const r = a.result; if (!r) return "";
+  const done = (r.decisions || []).filter(x => x.decision), left = (r.decisions || []).filter(x => !x.decision);
+  if (!r.decisions?.length) return "";
+  return `<details class="work" data-k="agents" style="margin-top:10px"><summary>The row agents settled ${done.length} of ${r.decisions.length} row(s)${left.length ? `; ${left.length} still open` : ""}${a.stale ? " (before the last rebuild)" : ""}</summary><div class="in">
+    <ul class="why small">${r.decisions.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label || "")} → ${x.decision ? `<span class="mono">${esc(x.decision)}</span> ${esc(x.to_label || "")} <span class="muted">(${esc(x.how === "numbers" ? "by its numbers" : x.how === "agents" ? "proposed and checked" : x.how || "")}: ${esc(x.why || "")})</span>` : `<span class="muted">open: ${esc(x.why || "")}</span>`}</li>`).join("")}</ul>
+    <button class="btn small" id="sumAgentsAgain">Run them again</button></div></details>`;
+}
 function gapNote(t) {
   const g = t.this_year_gaps;
   const need = g ? [...(g.dcf_missing || []), ...(g.blank_rows || []).map(x => ({...x, why: `found at ${x.found}, but blank there in ${x.blank} of the ${x.of} periods read`})),
@@ -1780,7 +1791,7 @@ function summaryCard(d) {
       <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
       <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>
       ${Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length ? `<button class="btn small ghost" id="sumReset">Reset</button>` : ""}</div></div>
-  ${errNote}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check || SUM.editDate ? `<div class="callout warn small" style="margin-top:10px">${rp?.date_check ? `<b>This year's valuation date isn't known.</b> This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date, so nothing is rolled and this year's figures wait for it. ` : ""}Set this year's valuation date for the engagement (a model's own "Valuation date" rows usually give it):
+  ${errNote}${agentsNote(d)}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check || SUM.editDate ? `<div class="callout warn small" style="margin-top:10px">${rp?.date_check ? `<b>This year's valuation date isn't known.</b> This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date, so nothing is rolled and this year's figures wait for it. ` : ""}Set this year's valuation date for the engagement (a model's own "Valuation date" rows usually give it):
       <span class="row" style="margin-top:6px"><input class="in" type="date" id="sumThisVd" value="${esc(rp?.dates?.this_year || "")}" min="${esc(rp?.prior_valuation_date || "")}"><button class="btn small primary" id="sumThisVdSave">Set</button>${rp?.dates?.this_year ? `<button class="btn small ghost" id="sumThisVdClear">Clear</button>` : ""}<span class="small" id="sumThisVdMsg"></span></span></div>` : rp?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${rp.months} months is ${esc(rp.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""; })()}
   <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
     <tr class="sec"><td colspan="${cols.length + 2}">Conclusions</td></tr>
@@ -1880,12 +1891,14 @@ async function loadSummary() {
     SUM.data = d; SUM.chartsSeen = d.charts_status;
   } catch (e) { if (seq === SUM.seq) SUM.data = {table: null, why: e.message}; }
   SUM.loading = false;
-  if (state.step === "summary") { keepOpen($("#main"), () => { $("#main").innerHTML = viewSummary(); bindSummary(); }); if (busy(SUM.data?.charts_status)) schedule(); }
+  if (state.step === "summary") { keepOpen($("#main"), () => { $("#main").innerHTML = viewSummary(); bindSummary(); }); if (busy(SUM.data?.charts_status) || busy(SUM.data?.rows?.status)) schedule(); }
 }
 function bindSummary() {
   const d = SUM.data;
   if (!d) { if (!SUM.loading) loadSummary(); return; }
   if (busy(E.charts_status) !== busy(SUM.chartsSeen) || (E.charts_status === "done" && SUM.chartsSeen !== "done")) { SUM.chartsSeen = E.charts_status; loadSummary(); }
+  else if ((E.rows_status === "done" || E.rows_status === "error") && busy(d.rows?.status)) loadSummary();  // the row agents finished
+  else if (busy(E.rows_status) && d.rows && !busy(d.rows.status)) { Object.assign(d.rows, {status: E.rows_status, step: E.rows_step}); }
   let t;
   const rerun = () => { clearTimeout(t); t = setTimeout(loadSummary, 400); };
   document.querySelectorAll("[data-sumlever]").forEach(inp => inp.oninput = () => {
@@ -1899,6 +1912,7 @@ function bindSummary() {
   $("#sumReset")?.addEventListener("click", () => { SUM.changes = {}; SUM.vd = null; SUM.method = {}; loadSummary(); });
   $("#sumShowAnyway")?.addEventListener("click", e => { e.preventDefault(); SUM.showAnyway = !SUM.showAnyway; redrawSummary(); });
   $("#sumThisVdEdit")?.addEventListener("click", e => { e.preventDefault(); SUM.editDate = true; redrawSummary(); });
+  $("#sumAgentsAgain")?.addEventListener("click", () => act(async () => { await api(`/api/engagements/${E.id}/rows`, {method: "POST"}); await loadSummary(); }));
   const setThisVd = async v => {
     $("#sumThisVdMsg").textContent = " Saving…";
     try { await api(`/api/engagements/${E.id}/roll/this_year_date`, {method: "POST", body: {valuation_date: v}}); SUM.editDate = false; OVR.sum = null; BR.data = null; FX.data = undefined; await loadSummary(); toast(v ? `This year's valuation date set: ${v}` : "This year's valuation date cleared"); }
