@@ -160,6 +160,10 @@ def friendly(e: Exception) -> str:
     if name in ("AuthenticationRequiredError", "ClientAuthenticationError"):
         return ("Azure sign-in needed: run `uv run python bench/llm.py` in a terminal, sign in with the device code, "
                 "then retry.")
+    if name == "APITimeoutError":
+        import llm
+        return (f"the model didn't answer within {llm.READ_TIMEOUT:.0f} s, {llm.MAX_RETRIES + 1} tries "
+                "(LLM_READ_TIMEOUT in .env): retry")
     return f"{name}: {e}"
 
 

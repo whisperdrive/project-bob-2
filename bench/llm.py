@@ -13,7 +13,7 @@ from pathlib import Path
 
 from azure.identity import (AuthenticationRecord, AuthenticationRequiredError, DeviceCodeCredential,
                             TokenCachePersistenceOptions, get_bearer_token_provider)
-from openai import OpenAI
+from openai import OpenAI, Timeout
 
 def _load_env(path: Path = Path(__file__).resolve().parent.parent / ".env") -> None:
     """Minimal .env reader (KEY=value lines); real environment variables take precedence."""
@@ -34,6 +34,10 @@ SCOPE = "https://ai.azure.com/.default"
 # not /common. Leave empty for work accounts.
 TENANT_ID = os.environ.get("AZURE_TENANT_ID", "")
 DEFAULT_MODEL = "gpt-5-nano"
+# A call that never answers must not hold its job: the SDK's default waits 10 minutes a try, three tries. The
+# longest real call seen took about 6 minutes (a reviewer running on to its output limit). The SDK retries a timeout.
+READ_TIMEOUT = float(os.environ.get("LLM_READ_TIMEOUT") or 300)
+MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES") or 2)
 RECORD = Path.home() / ".excel-agent" / "auth_record.json"
 CACHE = TokenCachePersistenceOptions(name="excel-agent")
 
@@ -59,7 +63,8 @@ def credential(interactive: bool = True) -> DeviceCodeCredential:
 def client(interactive: bool = True) -> OpenAI:
     if not ENDPOINT:
         raise RuntimeError("Set AZURE_OPENAI_ENDPOINT (see .env.example)")
-    return OpenAI(base_url=ENDPOINT, api_key=get_bearer_token_provider(credential(interactive), SCOPE))
+    return OpenAI(base_url=ENDPOINT, api_key=get_bearer_token_provider(credential(interactive), SCOPE),
+                  timeout=Timeout(READ_TIMEOUT, connect=10.0), max_retries=MAX_RETRIES)
 
 
 def create(llm: OpenAI, model: str, on_wait=None, purpose: str | None = None, log: dict | None = None, **kwargs):

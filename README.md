@@ -117,7 +117,9 @@ Costs use Azure list prices (`bench/pricing.py`, from prices.azure.com, East US,
 Rate limits: `bench/ratelimit.py` keeps every call 10% below each deployment's tokens/min and requests/min
 (`RATE_LIMIT_BUFFER=0.05` for 5%). Limits are capacity x 1,000 TPM with Microsoft's per-model RPM ratios;
 capacities are read from the Foundry project at startup. Calls that would exceed the budget wait, and the
-chat shows the pause. The app offers gpt-4o (default), gpt-6-sol, gpt-6-luna, gpt-4o-mini and gpt-5-nano; gpt-4 (gpt-4.1),
+chat shows the pause. A call that doesn't answer within 5 minutes is tried again, twice at most
+(`LLM_READ_TIMEOUT=300`, `LLM_MAX_RETRIES=2`), and then fails its step with a retry, instead of holding the job
+for half an hour as the SDK's defaults would. The app offers gpt-4o (default), gpt-6-sol, gpt-6-luna, gpt-4o-mini and gpt-5-nano; gpt-4 (gpt-4.1),
 o3-mini and DeepSeek-V4-Flash were dropped because their capacities (8k-20k TPM) were too low for tool use.
 Registry: `out/registry.db`; uploaded originals: `uploads/<sha12>/`. `bench/library.py` runs the pipeline on
 one background worker thread and re-queues anything interrupted by a restart.
