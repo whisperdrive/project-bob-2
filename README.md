@@ -268,8 +268,11 @@ person before the next relies on it:
    prior client model, or the current client model **rolled forward**. Rolling forward moves the overlay's period
    dates on and sets the valuation-date lever to the new date. The valuation date moves from last year's (the
    report's) to this year's client model's, not by the gap between the two client models (the overlay can sit
-   on a copy of a model of another date); without last year's, by the gap between the client models; failing
-   those, by how far the client sheets' timelines moved; failing that, 12 months, flagged for a check. The dates
+   on a copy of a model of another date); only without last year's, by the gap between the client models;
+   failing those, by how far the client sheets' timelines moved; failing that, 12 months, flagged for a check.
+   Where this year's model is dated on or before last year's valuation date (likely the model's own date, not
+   this year's valuation date), that's flagged for a check on Files too, and the months come from the
+   timelines. The new date is always last year's moved by the months, so the plan and the feed agree. The dates
    are read from the files each time (a date corrected in Files moves the roll without a rebuild) and can be
    checked on the Files page; the Summary shows them and which are checked. Periods move separately from the
    valuation date, sheet by sheet, by the whole periods that ended in between: from September to December an
@@ -292,11 +295,14 @@ person before the next relies on it:
    to the row that has last year's numbers. A person's pick wins over all of them. Where nothing is found, or the row
    found is blank in a period where last year's had a value, last year's value stands in (its forecast for the
    same period, else the cell it read), never a blank (which would read as zero), and the Summary says how many
-   values stood in, on which line items. The Summary doesn't show this year's figures (they'd be last year's
-   numbers under this year's name) while a row the DCF's cash flows come from isn't found or mostly stands in,
-   while a row the figures read is found but blank this year in more than a fifth of its periods, or, with no
-   discounting to go by, while under half of the client values they read are found. It says why, how alike the
-   two models are, and lists each row it needs with a button to pick this year's row; the bridge waits too. The Map uses the same finding. Each output shows its Python function and the client values it
+   values stood in, on which line items. Each of this year's figures on the Summary is held back (it would be
+   last year's numbers under this year's name) while a row its own discountings' cash flows come from isn't
+   found or mostly stands in, or, with no discounting recognised under it, while under half of the client
+   values the figures read are found; all are while a row the figures read is found but blank this year in more
+   than a fifth of its periods. Rows of period flags and dates (by their labels, 0/1 values or rising dates)
+   are the timing the discounting depends on: listed apart, not asked for. The page says why, how alike the two
+   models are, and lists each row it needs with a button to pick this year's row; the bridge leaves out the
+   figures held back. The Map uses the same finding. Each output shows its Python function and the client values it
    reads. The module is saved as `out/overlays/e<id>/overlay.py`; open it from the page, or run it from a terminal:
    `uv run python bench/overlay.py <id> --mode current --set Val_Inputs!C5=0.075`.
 

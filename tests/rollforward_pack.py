@@ -3,7 +3,8 @@ for the DCF facts (bench/dcffacts.py) and for finding last year's rows in this y
 
 Last year's client model (FY2024-FY2043, June years; FY2024-FY2025 actual, valued at 30 June 2025):
   Ops        Revenue, Operating costs, EBITDA
-  CF         EBITDA, Capital expenditure, Tax paid, Free cash flow, Debt service, Distributions to equity
+  CF         a forecast flag (0 in actual years, 1 after: the overlay's cash flows are multiplied by it), EBITDA,
+             Capital expenditure, Tax paid, Free cash flow, Debt service, Distributions to equity
   Financing  Opening debt, Interest, Debt service, Net debt
   Summary    a banner in its first rows (the forecast distributions' total, net debt at the valuation date),
              repeated in CF's first row
@@ -90,6 +91,9 @@ def write_client(wb, fy0: int, this_year: bool, banner: bool = True) -> dict:
     fin_name = "Debt" if this_year else "Financing"
     cf = wb.add_worksheet("CF")
     timeline(cf)
+    cf.write(1, 1, "Forecast flag")
+    for i, fy in enumerate(years):
+        cf.write_number(1, C0 + i, 0 if fy <= fy0 + 1 else 1)
     if this_year:  # two rows inserted above the capital expenditure; tax renamed; FCF restructured; distributions moved
         rows = {"ebitda": 5, "maint": 6, "growth": 7, "capex": 8, "tax": 9, "wc": 10, "fcf": 11, "ds": 12, "reserve": 13, "dist": 15}
         labels = {"ebitda": "EBITDA", "maint": "Maintenance programme", "growth": "Growth programme",
@@ -174,7 +178,7 @@ def write_overlay(wb, made: dict, vd: date, report_sheet: str = "Report") -> dic
         t = (end - vd).days / 365 - 0.5
         flow = n["dist"][years[i]]
         val.write_formula(f"{c}3", f"=CF!{src}3", dt, serial(end))
-        val.write_formula(f"{c}5", f"=CF!{src}{R['dist']}", num, flow)
+        val.write_formula(f"{c}5", f"=CF!{src}{R['dist']}*CF!{src}2", num, flow)
         for rate, dr, pr in ((LOW, 7, 8), (HIGH, 10, 11)):
             cell = "$C$5" if rate == LOW else "$C$6"
             f = 1 / (1 + rate) ** t

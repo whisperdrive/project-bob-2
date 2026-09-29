@@ -1162,7 +1162,7 @@ def _sync_roll(eid: int, sess, summary: dict) -> None:
         return
     now = _dates(eid)
     d = now["dates"]
-    if d != roll.get("dates"):
+    if d != roll.get("dates") or roll.get("plan") != ovmod.ROLL_PLAN:
         w = summary["wiring"]
         fresh = ovmod.deep(ovmod.plan_roll, sess, w.get("prior"), w["overlay"], w.get("same_file"), d["overlay"],
                            d["prior_client"], d["current_client"])

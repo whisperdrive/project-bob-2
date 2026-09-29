@@ -27,6 +27,9 @@ from xlruntime import XLError, to_date
 
 WALK_LIMIT = 30000
 CLOSE = 1e-6
+# a client row the discounting's timing depends on, not an amount: its label says it's a flag or a period marker
+TIMING = re.compile(r"\bflags?\b|\bperiod (start|end|number|no\.?|counter)\b|\b(start|end) of (the )?period\b|\btiming\b|"
+                    r"\bcounter\b|\bswitch\b|\bindicator\b|\bdates?\b", re.I)
 
 
 def _close(a, b) -> bool:
@@ -346,9 +349,27 @@ class Facts:
                     queue.append(a)
         out = []
         for g, cells in sorted(hits.items(), key=lambda kv: -len(kv[1])):
+            kind, why = self.row_kind(g[1], g[2], self.label(cells[0]))
             out.append({"row": _a1k(cells[0]).rsplit("!", 1)[0] + f"!r{g[2]}", "label": self.label(cells[0]),
-                        "cells": len(cells), "how": "read by the overlay's cash-flow calculation"})
+                        "cells": len(cells), "how": "read by the overlay's cash-flow calculation", "kind": kind,
+                        "kind_why": why})
         return out[:40]
+
+    def row_kind(self, s, r, label) -> tuple[str, str]:
+        """("amount" | "timing", why): whether a client row the cash flows read carries amounts, or the timing
+        the discounting depends on (period flags, period dates). By the whole row in last year's model, not the
+        cells read: a single integer in the date range is an amount (a fee of 45,000), dates are several, rising."""
+        if TIMING.search(label or ""):
+            return "timing", "its label says it's a flag or a date"
+        wb = self.sess.prior or self.sess.ov
+        vals = wb.sheet(s)
+        nums = [v for c in sorted(wb.timeline(s)) if (v := _num(vals.get((r, c)))) is not None]
+        nz = [v for v in nums if v]
+        if nz and all(v in (0.0, 1.0) for v in nums):
+            return "timing", "its values are 0/1 flags"
+        if len(nz) >= 2 and all(v.is_integer() and 30000 <= v <= 80000 for v in nz) and all(b > a for a, b in zip(nz, nz[1:])):
+            return "timing", "its values are dates"
+        return "amount", ""
 
     def run(self, cell: str) -> dict:
         self.sess.configure("workbook")
@@ -430,6 +451,12 @@ def text(fx: dict) -> str:
             L.append(f"     {p['cell']} {p['label']} = {n(p['value'])}" + (f"   [{p['words']}]" if p.get("words") else "")
                      + (" with " + "; ".join(f"{w['label'] or w['cell']} {n(w['value'])}" for w in p["with"]) if p.get("with") else ""))
         L.append("   cash flows come from (last year's client model):")
-        for o in c["origins"] or [{"row": "-", "label": "none found (the cash flows are the overlay's own)", "cells": 0, "how": ""}]:
+        amounts = [o for o in c["origins"] if o.get("kind", "amount") == "amount"]
+        for o in amounts or [{"row": "-", "label": "none found (the cash flows are the overlay's own)", "cells": 0, "how": ""}]:
             L.append(f"     {o['row']} {o['label']} ({o['cells']} cells; {o['how']})")
+        timing = [o for o in c["origins"] if o.get("kind") == "timing"]
+        if timing:
+            L.append("   timing the discounting depends on (last year's client model):")
+            for o in timing:
+                L.append(f"     {o['row']} {o['label']} ({o['cells']} cells; {o['kind_why']})")
     return "\n".join(L)

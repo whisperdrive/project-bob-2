@@ -11,6 +11,7 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
   standing in   a row this year's model doesn't have: last year's value stands in and is counted, not zero
   blank         a row found this year but blank there: the same, and the gate stays shut
   actuals       an actuals sheet with last year's history and no forecast doesn't win the row
+  per figure    each figure is held back on its own discounting's rows; flags and dates are timing, not asked for
 
     uv run python tests/check_rollforward.py
 """
@@ -66,7 +67,19 @@ def main() -> None:
     assert low["cashflow"]["first_period"] == "2026-06-30" and low["cashflow"]["last_period"] == "2043-06-30"
     ins = {x["cell"]: x for x in low["factors"]["inputs"]}
     assert ins["Inputs!C5"]["what"] == "a rate" and ins["Inputs!C4"]["date"] == "2025-06-30", ins
-    assert [o["row"] for o in low["origins"]] == ["CF!r11"], low["origins"]
+    # the rows the cash flows come from: the distributions (amounts, to find this year), and the forecast flag
+    # they're multiplied by (timing: the discounting depends on it, this year's figures don't wait for it)
+    assert [o["row"] for o in low["origins"] if o["kind"] == "amount"] == ["CF!r11"], low["origins"]
+    assert [(o["row"], o["kind_why"]) for o in low["origins"] if o["kind"] == "timing"] == \
+        [("CF!r2", "its label says it's a flag or a date")], low["origins"]
+    fo = dcffacts.Facts(sess, summary)
+    assert fo.row_kind("CF", 3, "Period ending") == ("timing", "its values are dates")  # rising dates, no telling label
+
+    class OneFee:  # a single number in the date range is an amount (a charge of 45,000), not a date
+        def sheet(self, s): return {(9, 5): 45000.0}
+        def timeline(self, s): return {5: 45838.0, 6: 46203.0}
+    fo.sess = type("S", (), {"prior": OneFee(), "ov": None})()
+    assert fo.row_kind("X", 9, "Access charge")[0] == "amount"
     words = [p["words"] for p in low["path"]]
     assert any("INDEX" in (x or "") for x in words) and any("AVERAGE" in (x or "") for x in words), words
     print("facts: ok")
@@ -123,6 +136,14 @@ def main() -> None:
     assert (r["months"], cf, val) == (6, 0, 0), (r, cf, val)
     r, cf, val = ov.deep(plan, "2025-06-30", "2025-06-30", "2026-06-30")  # a year: FY2026 has ended
     assert (r["months"], cf, val) == (12, 12, 12), (r, cf, val)
+    # this year's model dated on last year's valuation date: no roll from the dates. It says so and is flagged;
+    # the months come from the timelines, the new date is last year's moved by them, and the feed runs the same
+    r, cf, val = ov.deep(plan, "2025-09-30", "2025-06-30", "2025-09-30")
+    assert r["date_check"] and not r["months_assumed"] and r["months_basis"].startswith(
+        "check: this year's model's date (2025-09-30) isn't after last year's valuation date (2025-09-30)"), r
+    assert "isn't known" not in r["months_basis"] and (r["months"], r["current_valuation_date"]) == (12, "2026-09-30"), r
+    assert ov._feed({**summary, "roll": {**summary["roll"], **r}}, "current", None, None)[2] == r["months"]
+    assert ov._feed({**summary, "roll": {**summary["roll"], **r}}, "current", "2026-03-31", None)[2] == 6  # a date chosen
     summary["roll"].update(ov.deep(plan, "2025-09-30", "2025-06-30", "2025-12-31")[0])
     starts_check(out)
 
@@ -138,6 +159,7 @@ def main() -> None:
     gate = lambda: ov.summary_table(sess, summary, FACTS)["this_year_gaps"]
     g = ov.deep(gate)
     assert g["basis"] == "dcf" and g["dcf_rows"] == 1 and g["reliable"], g
+    assert [x["row"] for x in g["timing"]] == ["CF!r2"] and g["timing"][0]["found"] == "CF!r2", g["timing"]
     real = fnd.locate
     fnd.locate = lambda s_, r_: None if (s_, r_) == ("CF", 11) else real(s_, r_)
     try:
@@ -169,6 +191,23 @@ def main() -> None:
         fnd.locate = real
     assert ov.deep(gate)["reliable"]
     print(f"blank: ok (a row found but blank this year stands in with last year's values ({got3:.3f}, not 0) and shuts the gate)")
+    # ---- each figure on its own rows: a figure with no discounting under it isn't held back by another's
+    summary["outputs"].append({"fact_id": 7, "cell": "Bridge!C6", "label": "Less: distribution payable",
+                               "value": -rp.DIST_PAYABLE, "scale": 1.0, "sign": -1, "report": "12.5"})
+    facts2 = FACTS + [{"id": 7, "category": "conclusion", "key": "distribution_payable", "label": "Distribution payable",
+                       "value_text": "12.5", "value": 12.5, "unit": "A$m"}]
+    fnd.locate = lambda s_, r_: None if (s_, r_) == ("CF", 11) else real(s_, r_)
+    try:
+        g = ov.deep(lambda: ov.summary_table(sess, summary, facts2)["this_year_gaps"])
+        bc = g["by_cell"]
+        assert bc["Report!C5"]["basis"] == "dcf" and not bc["Report!C5"]["reliable"] and bc["Report!C5"]["missing"] == ["CF!r11"], bc
+        assert bc["Bridge!C6"]["basis"] == "share" and bc["Bridge!C6"]["reliable"] and not g["reliable"], bc
+        b = ov.deep(ov.value_bridge, sess, summary, facts2)
+        assert [x["cell"] for x in b["bridges"]] == ["Bridge!C6"] and [x["cell"] for x in b["withheld"]] == ["Report!C5"], b
+    finally:
+        fnd.locate = real
+        summary["outputs"].pop()
+    print("per figure: ok (the figure whose DCF row is missing is held back; one with no discounting under it isn't)")
     ov.deep(sess.configure, "workbook")
     roles_check(res, db)
     rebuilt_check(out)

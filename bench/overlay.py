@@ -595,26 +595,33 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
 
 def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: bool,
                 dates: tuple = (None, None, None)) -> tuple[int, str, str | None]:
-    """How far to roll forward: (months, how that was worked out, the new valuation date).
+    """How far to roll forward: (months, how that was worked out, the new valuation date). The new date is always
+    last year's valuation date moved by the months, where that date is known, so the plan and the feed agree.
     dates: (last year's valuation date: the overlay's, from the report; last year's client model's; this year's
     client model's).
     1. From last year's valuation date to this year's client model's, when both are known and this year's is
        later: the new valuation date is this year's model's. (Not the move between the two client models: the
        overlay can sit on a copy of a client model of another date.)
-    2. Else, without last year's valuation date, the move between the two client models' dates.
+    2. Else, only when last year's valuation date isn't known, the move between the two client models' dates.
     3. Else the client sheets' timelines: how far each sheet's first period moved, the most common move across
        sheets, if it is forward.
-    4. Else 12 months, flagged so the page asks for a check."""
+    4. Else 12 months, flagged so the page asks for a check.
+    Where this year's model's date isn't after last year's valuation date (a roll to the same date is no roll: the
+    date found is likely the model's own, not this year's valuation date), the basis says so and starts with
+    "check:"."""
     ov_vd, prior_vd, current_vd = (list(dates) + [None, None, None])[:3]
     if ov_vd and current_vd and current_vd[:10] > ov_vd[:10]:
         return (months_between(ov_vd[:10], current_vd[:10]),
                 f"from last year's valuation date ({ov_vd[:10]}) to this year's client model's ({current_vd[:10]})",
                 current_vd[:10])
-    if prior_vd and current_vd and current_vd[:10] > prior_vd[:10]:
+    if not ov_vd and prior_vd and current_vd and current_vd[:10] > prior_vd[:10]:
         m = months_between(prior_vd[:10], current_vd[:10])
         return m, (f"from the valuation dates in the two client models ({prior_vd[:10]} to {current_vd[:10]}); last "
                    "year's own valuation date isn't known"), current_vd[:10]
-    new = lambda m: to_date(add_months(serial(date.fromisoformat(ov_vd[:10])), m)).isoformat() if ov_vd else None
+    check = (f"check: this year's model's date ({current_vd[:10]}) isn't after last year's valuation date ({ov_vd[:10]}), "
+             "so the roll-forward can't run from it; " if ov_vd and current_vd else "")
+    base = ov_vd or prior_vd
+    new = lambda m: to_date(add_months(serial(date.fromisoformat(base[:10])), m)).isoformat() if base else None
     src = sess.prior or sess.ov
     sheets = sess.client_sheets or ((prior or {}).get("sheets") if same_file else None)
     moves = Counter()
@@ -625,10 +632,14 @@ def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: boo
     forward = [(n, m) for m, n in moves.items() if m > 0]
     if forward:
         n, m = max(forward)
-        return m, f"from the client sheets' timelines (the first period moved {m} months on {n} of {sum(moves.values())} sheet(s))", new(m)
-    return 12, ("assumed: the valuation dates aren't known and the timelines don't show a forward move"
+        return m, (check + f"from the client sheets' timelines (the first period moved {m} months on {n} of "
+                   f"{sum(moves.values())} sheet(s))"), new(m)
+    return 12, (check + "assumed: the valuation dates don't give a roll and the timelines don't show a forward move"
                 + (f" (moves seen: {', '.join(f'{m:+d}' for m in sorted(moves))} months)" if moves else "")
                 + "; check the roll-forward"), new(12)
+
+
+ROLL_PLAN = 2  # the rules' version: a roll planned by older rules is planned again when a session loads
 
 
 def plan_roll(sess: Session, prior: dict | None, overlay: dict, same_file: bool, ov_vd: str | None,
@@ -638,7 +649,8 @@ def plan_roll(sess: Session, prior: dict | None, overlay: dict, same_file: bool,
     sess.base_vd = serial(date.fromisoformat(ov_vd[:10])) if ov_vd else None
     sess._pshift.clear()
     return {"prior_valuation_date": ov_vd, "months": months, "months_basis": basis,
-            "months_assumed": basis.startswith("assumed"), "current_valuation_date": new_vd,
+            "months_assumed": "assumed:" in basis, "date_check": basis.startswith("check:"),
+            "current_valuation_date": new_vd, "plan": ROLL_PLAN,
             "dates": {"overlay": ov_vd, "prior_client": prior_vd, "current_client": current_vd}}
 
 
@@ -648,10 +660,11 @@ def _feed(summary: dict, mode: str, valuation_date: str | None, months: int | No
     if mode != "current":
         return {}, None, 0
     roll = summary.get("roll") or {}
+    chosen = valuation_date is not None  # a date chosen on the page, rather than the plan's
     valuation_date = valuation_date or roll.get("current_valuation_date")
     pvd = roll.get("prior_valuation_date")
-    if months is None:  # a date chosen on the page moves the periods as far as it moves from last year's
-        months = months_between(pvd[:10], valuation_date[:10]) if pvd and valuation_date else roll.get("months", 12)
+    if months is None:  # the plan's months; a date chosen on the page moves the periods as far as it moves from last year's
+        months = months_between(pvd[:10], valuation_date[:10]) if chosen and pvd else roll.get("months", 12)
     vd_cell = roll.get("valuation_date_cell")
     defaults = {parse_a1(vd_cell): serial(date.fromisoformat(valuation_date[:10]))} if valuation_date and vd_cell else {}
     return defaults, {"months": months, "valuation_date": valuation_date, "valuation_date_cell": vd_cell}, months
@@ -716,27 +729,34 @@ def _range_cells(db, cell: str, texts: list, scale: float, sign: int, sheets: li
     return out
 
 
-def dcf_origins(sess: Session, summary: dict, cells: list[str]) -> list[tuple]:
-    """The client rows the discountings under these figures take their cash flows from (dcffacts.py): the rows
-    this year's model must have for the figures to be this year's. Cached on the session."""
+def dcf_origins(sess: Session, summary: dict, cells: list[str]) -> dict:
+    """For each figure, the client rows the discountings under it take their cash flows from (dcffacts.py):
+    {cell: {"amounts": [(sheet, row)], "timing": [(sheet, row, why)]}}. The amounts are the rows this year's model
+    must have for the figure to be this year's; the timing rows (period flags and dates) are what the discounting's
+    timing depends on, listed but not asked for. Cached on the session. (Facts.run resets the feed: call it before
+    reading a feed whose unmatched values are wanted.)"""
     import dcffacts
     cache = sess.__dict__.setdefault("_origins", {})
-    out = set()
+    out = {}
     for cell in cells:
         if cell not in cache:
-            rows = []
+            amounts, timing = set(), set()
             try:
                 fx = dcffacts.Facts(sess, summary).run(cell)
                 for c in fx["discountings"]:
                     for o in c["origins"]:
                         m = re.match(r"^(?:\[\d+\])?(.+)!r(\d+)$", o["row"])
-                        if m:
-                            rows.append((m[1], int(m[2])))
+                        if not m:
+                            continue
+                        if o.get("kind") == "timing":
+                            timing.add((m[1], int(m[2]), o.get("kind_why") or ""))
+                        else:
+                            amounts.add((m[1], int(m[2])))
             except Exception:
                 pass
-            cache[cell] = rows
-        out |= set(cache[cell])
-    return sorted(out)
+            cache[cell] = {"amounts": sorted(amounts), "timing": sorted(timing)}
+        out[cell] = cache[cell]
+    return out
 
 
 def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
@@ -785,8 +805,10 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             rows.append({"kind": "approach", "key": f.get("key"), "label": f.get("label") or f.get("key"),
                          "report": f.get("value_text"), "page": f.get("page")})
     keys = sorted(keys)
-    origins = dcf_origins(sess, summary, [r["cell"] for r in rows if r["kind"] == "conclusion" and r.get("cell")]) \
-        if w.get("current") and sess.rowmap else []
+    by_fig = dcf_origins(sess, summary, [r["cell"] for r in rows if r["kind"] == "conclusion" and r.get("cell")]) \
+        if w.get("current") and sess.rowmap else {}
+    origins = sorted({k for x in by_fig.values() for k in x["amounts"]})
+    timing = sorted({k for x in by_fig.values() for k in x["timing"]} - {(s_, r_, "") for s_, r_ in origins})
 
     def read(feed, with_changes, vd=None, mo=None):
         defaults, roll, mo = _feed(summary, feed, vd, mo)
@@ -826,6 +848,21 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
                 return f"found at {blank_at[k][0]}!r{blank_at[k][1]}, but blank there in most of its periods"
             return "found, but most of its periods aren't in this year's model"
 
+        # each figure on its own basis: the rows its own discountings' cash flows come from, where it has any;
+        # else the share of client values found (a figure whose discounting isn't recognised can't lean on
+        # another figure's rows). A row found but blank this year holds every figure back.
+        by_cell = {}
+        for row in rows:
+            if row["kind"] != "conclusion" or not row.get("cell"):
+                continue
+            mine = (by_fig.get(row["cell"]) or {}).get("amounts") or []
+            gone = [k for k in mine if k in missing]
+            by_cell[row["cell"]] = {"basis": "dcf" if mine else "share", "dcf_rows": len(mine),
+                                    "missing": [f"{s_}!r{r_}" for s_, r_ in gone],
+                                    "reliable": (not gone if mine else share >= 0.5) and not blank_rows}
+            for part in ("low_cell", "high_cell"):
+                if row.get(part):
+                    by_cell[row[part]] = by_cell[row["cell"]]
         gaps = {"values": len(sess.unmatched), "stood_in": len(sess.stood_in), "reads": reads,
                 "found_share": round(share, 3), "family": family, "basis": "dcf" if origins else "share",
                 "dcf_rows": len(origins),
@@ -834,7 +871,12 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
                 "blank_rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""),
                                 "found": f"{blank_at[(s_, r_)][0]}!r{blank_at[(s_, r_)][1]}",
                                 "blank": blank_by_row[(s_, r_)], "of": read_by_row.get((s_, r_), 0)} for s_, r_ in blank_rows],
-                "reliable": (not missing if origins else share >= 0.5) and not blank_rows,
+                "timing": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "why": why,
+                            "found": (lambda h: f"{h[0]}!r{h[1]}" if h else None)(sess.rowmap.locate(s_, r_))}
+                           for s_, r_, why in timing],
+                "by_cell": by_cell,
+                "reliable": all(x["reliable"] for x in by_cell.values()) if by_cell
+                else (not missing if origins else share >= 0.5) and not blank_rows,
                 "rebuilt": family is not None and family < 0.5,
                 "rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "values": n,
                           "why": sess.unmatched[next(k for k in sess.unmatched if k[:2] == (s_, r_))]}
@@ -938,7 +980,9 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
         return {"bridges": [], "why": "assign this year's client model (Roles) and rebuild in Python"}
     table = summary_table(sess, summary, facts, changes, valuation_date, months, method)
     gaps = table.get("this_year_gaps") or {}
-    if gaps and not gaps.get("reliable", True):
+    held = {c for c, x in (gaps.get("by_cell") or {}).items() if not x["reliable"]}
+    figures = [r["cell"] for r in table["rows"] if r["kind"] == "conclusion" and r.get("cell") and r.get("values")]
+    if gaps and not gaps.get("reliable", True) and (not gaps.get("by_cell") or all(c in held for c in figures)):
         what = (f"{len(gaps['dcf_missing'])} of the {gaps['dcf_rows']} rows the DCF's cash flows come from weren't found in "
                 "this year's model" if gaps.get("basis") == "dcf" else
                 f"only {gaps['found_share']:.0%} of the client values the report's figures read were found in this year's model")
@@ -949,7 +993,9 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
     db = rodb.connect(path)
     base_feed = table["feeds"]["rebuilt"]
     vd1 = (table.get("roll") or {}).get("valuation_date")
-    rows = [r for r in table["rows"] if r["kind"] == "conclusion" and r.get("cell") and r.get("values")]
+    rows = [r for r in table["rows"] if r["kind"] == "conclusion" and r.get("cell") and r.get("values")
+            and r["cell"] not in held]
+    withheld = [{"label": r["label"], "cell": r["cell"]} for r in table["rows"] if r.get("cell") in held]
     traced, need = {}, set()
     for r in rows:
         try:
@@ -1024,7 +1070,7 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
                + ". Rebuild in Python lists the formulas and names it couldn't compute.") if errors else \
               "no conclusion of the report is matched to a cell in the overlay (check the Map)"
     return {"bridges": out, "valuation_date": vd1, "feeds": table["feeds"], "why": why, "errors": errors,
-            "this_year_gaps": gaps}
+            "this_year_gaps": gaps, "withheld": withheld}
 
 
 # ---- the DCF on the live module ----------------------------------------------------------------------------

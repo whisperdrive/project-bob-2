@@ -1439,7 +1439,9 @@ function needs() {
       E.overlay.not_compiled?.length && `${E.overlay.not_compiled.length} formula(s) not compiled`].filter(Boolean).join("; ");
     add(`The Python overlay differs from Excel in ${(V.cells - V.matched).toLocaleString()} formula cell(s)${why ? `: ${why}` : ""}${E.doctor_status ? "" : ". The doctor finds where and why"}`, "doctor");
   }
-  if (E.overlay_status === "done" && E.overlay?.roll?.months_assumed) add(`Check the roll-forward: ${E.overlay.roll.months} months was assumed`, "python");
+  const rp = (OVR.eid === E.id ? OVR.sum : null)?.roll_plan || E.overlay?.roll;
+  if (E.overlay_status === "done" && rp?.date_check) add(`Check this year's model's valuation date on Files: ${rp.dates?.current_client || "it"} isn't after last year's valuation date (${rp.prior_valuation_date})`, "files");
+  else if (E.overlay_status === "done" && rp?.months_assumed) add(`Check the roll-forward: ${rp.months} months was assumed`, "python");
   const sumErr = ((OVR.eid === E.id ? OVR.sum : null)?.table?.rows || []).filter(r => r.kind === "conclusion" && Object.values(r.values || {}).some(v => typeof v === "string" && v.startsWith("#"))).length;
   if (E.overlay_status === "done" && sumErr && !(V && V.matched < V.cells) && !E.doctor_status) add(`Run the doctor: ${sumErr} figure(s) come out as errors on this year's model`, "doctor");
   if (E.doctor_status === "error") add("Run the doctor again: it failed", "doctor");
@@ -1471,10 +1473,10 @@ function viewOverview() {
   let top = "";
   if (!t) top = `<div class="card"><p class="muted" style="margin:0">${E.overlay_status === "done" ? "Recomputing the headline…" : "The headline value appears once the files are read, the roles confirmed and the Python overlay built. The list below says what's next."}</p></div>`;
   else if (r) {
-    const v = r.values, ly = v.rebuilt, ty = v.this_year, ch = typeof ty === "number" && typeof ly === "number" ? ty - ly : null;
+    const v = r.values, ly = v.rebuilt, ty = v.this_year, ch = typeof ty === "number" && typeof ly === "number" && !unreliable(t, r) ? ty - ly : null;
     top = `<div class="heads">
       <div class="head"><div class="k">${esc(r.label)} · last year (report)</div><div class="v">${esc(r.report || sumNum(r, ly))}</div><div class="s">${r.tie ? (r.tie.ok ? "✓ rebuilt exactly from last year's files" : `✗ rebuilt as ${sumNum(r, ly)}`) : ""}</div></div>
-      <div class="head"><div class="k">This year, rolled forward</div><div class="v">${typeof ty === "number" && !unreliable(t) ? sumMoney(r, ty) : "–"}</div><div class="s">${unreliable(t) ? `needs rows: ${gapReasons(t.this_year_gaps).map(r => r.short).join("; ")}` : t.roll?.valuation_date ? `valuation date ${esc(t.roll.valuation_date)}` : "assign this year's model to roll forward"}</div></div>
+      <div class="head"><div class="k">This year, rolled forward</div><div class="v">${typeof ty === "number" && !unreliable(t, r) ? sumMoney(r, ty) : "–"}</div><div class="s">${unreliable(t, r) ? `needs rows: ${gapReasons(t.this_year_gaps).map(r => r.short).join("; ")}` : t.roll?.valuation_date ? `valuation date ${esc(t.roll.valuation_date)}` : "assign this year's model to roll forward"}</div></div>
       <div class="head"><div class="k">Change</div><div class="v">${ch == null ? "–" : (ch > 0 ? "+" : "") + sumMoney(r, ch)}</div><div class="s">${ch == null || !ly ? "" : `${(100 * ch / Math.abs(ly)).toFixed(1)}%`}${br ? ` · ${br.steps.filter(x => !x.total).length} steps in the bridge` : ""}</div></div></div>`;
   }
   const bridge = br ? `<div class="card"><div class="row" style="justify-content:space-between"><h2>How it moved</h2><button class="btn small" data-go="bridge">Value bridge</button></div><div id="ovrBridge"></div></div>` : "";
@@ -1533,7 +1535,8 @@ function viewBridge() {
   if (!d) return head + `<div class="card"><p class="muted" style="margin:0">${BR.loading ? "Recomputing the bridge…" : "Loading…"}</p></div>`;
   if (!d.bridges?.length) return head + `<div class="card"><p style="margin:0">${esc(d.why || "No conclusion of the report is matched to the overlay, so there's nothing to bridge.")}</p></div>`;
   const scen = Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length;
-  return head + (scen ? `<div class="callout info small">Includes your scenario from the Summary page. <a href="#" id="brToSum">Change it there</a>.</div>` : "") + d.bridges.map((b, i) => {
+  const held = d.withheld?.length ? `<div class="callout warn small">Not bridged: ${esc(d.withheld.map(w => w.label).join(", "))}. This year's ${d.withheld.length === 1 ? "figure needs" : "figures need"} rows picked first (the Summary lists them).</div>` : "";
+  return head + held + (scen ? `<div class="callout info small">Includes your scenario from the Summary page. <a href="#" id="brToSum">Change it there</a>.</div>` : "") + d.bridges.map((b, i) => {
     let run = 0;
     const rows = b.steps.map(x => { run = x.total ? x.value : run + x.value; return `<tr class="${x.total ? "tot" : ""}"><td>${esc(x.label)}</td><td class="num">${x.total ? "" : (x.value > 0 ? "+" : "") + sumNum(b, x.value)}</td><td class="num"><b>${sumNum(b, run)}</b></td></tr>`; }).join("");
     return `<div class="card"><h2>${esc(b.label)}</h2><p class="sub">${b.report ? `Last year's report: ${esc(b.report)}. ` : ""}${d.valuation_date ? `This year's valuation date: ${esc(d.valuation_date)}.` : ""}</p>
@@ -1692,7 +1695,11 @@ const sumNum = (row, v) => {  // a conclusion as the report prints it: its units
   const x = (row.sign || 1) * v / (row.scale || 1), m = String(row.report || "").match(/\d[\d,]*(?:\.(\d+))?/), dp = m && m[1] ? m[1].length : 0;
   return x.toLocaleString(undefined, {minimumFractionDigits: dp, maximumFractionDigits: dp});
 };
-const unreliable = t => { const g = t?.this_year_gaps; return !!g && g.reliable === false && !SUM.showAnyway; };
+const unreliable = (t, row) => {  // this year's figure held back: its own gate where the figure has one, else the table's
+  const g = t?.this_year_gaps; if (!g || SUM.showAnyway) return false;
+  const c = row?.cell && g.by_cell?.[row.cell];
+  return c ? c.reliable === false : g.reliable === false;
+};
 function gapReasons(g) {  // why this year's figures aren't shown: [{short, long}]
   const out = [];
   if (g.basis === "dcf" && g.dcf_missing?.length) out.push({short: `${g.dcf_missing.length} of the DCF's cash-flow rows not found`,
@@ -1709,7 +1716,11 @@ function gapNote(t) {
   const P = SUM.rowPick;
   const list = need.length ? `<ul class="why small" style="margin-top:6px">${need.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label)}: ${esc(x.why)}
       ${P?.row === x.row ? rowPicker(P, "sum") : `<button class="btn small ghost" data-sumpick="${esc(x.row)}">Pick this year's row</button>`}</li>`).join("")}</ul>` : "";
-  if (g && g.reliable === false) return `<div class="callout bad small" style="margin-top:10px"><b>This year's figures aren't shown: ${esc(gapReasons(g).map(r => r.long).join("; and "))}.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. ${need.length ? `Pick this year's row for each below (<a href="#" data-go="python" data-tab="valuation">The facts</a> shows where the DCF's cash flows come from); the figures show here once they're found.` : `Pick the rows the figures' cash flows come from in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; the figures show here once enough is found.`}${g.stood_in ? ` Meanwhile last year's values stand in for ${g.stood_in.toLocaleString()} client value(s).` : ""} <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>${list}
+  const held = g?.by_cell ? t.rows.filter(r => r.kind === "conclusion" && g.by_cell[r.cell]?.reliable === false) : [];
+  const shown = g?.by_cell ? t.rows.filter(r => r.kind === "conclusion" && g.by_cell[r.cell]?.reliable === true) : [];
+  const what = held.length && shown.length ? `This year's ${held.map(r => r.label).join(", ")} ${held.length === 1 ? "isn't" : "aren't"} shown` : "This year's figures aren't shown";
+  const timing = g?.timing?.length ? `<details class="work" data-k="gap-timing" style="margin-top:6px"><summary>Timing the discounting depends on (${g.timing.length} row(s), not asked for)</summary><div class="in"><ul class="why small">${g.timing.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label)} (${esc(x.why)}): ${x.found ? `this year <span class="mono">${esc(x.found)}</span>` : "not found; last year's stands in"}</li>`).join("")}</ul></div></details>` : "";
+  if (g && g.reliable === false) return `<div class="callout bad small" style="margin-top:10px"><b>${esc(what)}: ${esc(gapReasons(g).map(r => r.long).join("; and "))}.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. ${need.length ? `Pick this year's row for each below (<a href="#" data-go="python" data-tab="valuation">The facts</a> shows where the DCF's cash flows come from); the figures show here once they're found.` : `Pick the rows the figures' cash flows come from in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; the figures show here once enough is found.`}${g.stood_in ? ` Meanwhile last year's values stand in for ${g.stood_in.toLocaleString()} client value(s).` : ""} <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>${list}${timing}
     <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
   if (!g || !g.values) return g?.rebuilt ? `<div class="callout warn small" style="margin-top:10px">The two client models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised. Every value the figures read was found, but check the rows in The facts.</div>` : "";
   return `<div class="callout warn small" style="margin-top:10px"><b>${g.values.toLocaleString()} client value(s) on ${g.rows.length}${g.rows.length >= 30 ? "+" : ""} line item(s) weren't found in this year's model</b>${g.stood_in ? `; last year's values stand in for ${g.stood_in.toLocaleString()} of them` : ""}, so "This year" is last year's model with this year's numbers where they were found. The rows the report's figures' cash flows come from, what was found for each and how, are in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>, with a picker for the right row; the rest are listed here. <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
@@ -1718,6 +1729,7 @@ function rollDates() {
   const r = SUM.data?.roll_plan || E.overlay?.roll, c = r?.confirmed || {};
   if (!r?.dates) return "";
   const d = r.dates, chk = k => c[k] ? "" : ` <span class="pill warn" title="Read from the file, not checked: check it in Files">not checked</span>`;
+  if (r.date_check) return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(r.current_valuation_date || "?")}, ${r.months} month(s): this year's model is dated ${esc(d.current_client || "?")}${chk("current_client")}, which isn't after last year's, so the months come from the timelines.</span>`;
   return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(r.current_valuation_date || "?")} (this year's model${chk("current_client")}), ${r.months} month(s); annual periods move only when a year-end has passed.</span>`;
 }
 function summaryCard(d) {
@@ -1731,7 +1743,7 @@ function summaryCard(d) {
     const v = r.values?.[col], lo = r.low?.[col], hi = r.high?.[col];
     const delta = col === "scenario" && typeof v === "number" && typeof r.values?.[base] === "number" && Math.abs(v - r.values[base]) > 1e-9
       ? `<div class="delta ${v > r.values[base] ? "" : "muted"}">${v > r.values[base] ? "+" : ""}${sumNum(r, v - r.values[base])} vs ${col === base ? "base" : "this year"}</div>` : "";
-    if ((col === "this_year" || col === "scenario") && unreliable(t)) return `<td class="num"><span class="small muted" title="Too little of this year's model was found for these figures">needs rows</span></td>`;
+    if ((col === "this_year" || col === "scenario") && unreliable(t, r)) return `<td class="num"><span class="small muted" title="Too little of this year's model was found for these figures">needs rows</span></td>`;
     return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "rebuilt" ? tick(r) : ""}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}` : `<span class="muted small">not in the overlay</span>`}</td>`;
   };
   const lev = (r, col) => {
@@ -1753,7 +1765,7 @@ function summaryCard(d) {
       <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
       <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>
       ${Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length ? `<button class="btn small ghost" id="sumReset">Reset</button>` : ""}</div></div>
-  ${errNote}${gapNote(t)}${t.roll?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${t.roll.months} months is ${esc(t.roll.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""}
+  ${errNote}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check ? `<div class="callout warn small" style="margin-top:10px">This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date. The roll-forward of ${rp.months} months comes ${esc(rp.months_basis.replace(/^check: [^;]*; /, ""))}. Correct the date on <a href="#" data-go="files">Files</a>.</div>` : rp?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${rp.months} months is ${esc(rp.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""; })()}
   <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
     <tr class="sec"><td colspan="${cols.length + 2}">Conclusions</td></tr>
     ${conc.map(r => `<tr><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
@@ -2009,7 +2021,7 @@ function liveCard(O) {
   const nChanges = Object.keys(OV.changes).length;
   return `<div class="row" style="justify-content:space-between"><div><h2>Run it live</h2><p class="sub">Change a lever or any input; results update as you type.</p></div>
     <div class="row" role="radiogroup" aria-label="Feed">${modes.map(([m, t, why]) => `<button class="btn small ${OV.mode === m ? "primary" : ""}" data-mode="${m}" title="${esc(why)}" ${avail[m] ? "" : "disabled"} role="radio" aria-checked="${OV.mode === m}">${esc(t)}</button>`).join("")}</div></div>
-  ${OV.mode === "current" && roll.months_basis ? `<div class="callout ${roll.months_assumed ? "warn" : "info"} small" style="margin-bottom:8px">Roll-forward of ${roll.months} months: ${esc(roll.months_basis)}.</div>` : ""}
+  ${OV.mode === "current" && roll.months_basis ? `<div class="callout ${roll.months_assumed || roll.date_check ? "warn" : "info"} small" style="margin-bottom:8px">Roll-forward of ${roll.months} months: ${esc(roll.months_basis)}.</div>` : ""}
   ${OV.mode === "current" ? `<div class="row small" style="margin-bottom:10px;gap:14px"><label>New valuation date <input type="date" id="ovVd" value="${esc(OV.vd || roll.current_valuation_date || "")}"></label>
     <label>Roll forward by <input type="text" id="ovMonths" value="${esc(OV.months ?? roll.months ?? 12)}" style="width:52px"> months</label>
     <span class="muted">Overlay periods move on by the roll; client values come from the same line item in the period with the rolled date${roll.valuation_date_cell ? `; valuation date cell ${esc(roll.valuation_date_cell)}` : "; no valuation-date lever found, so set it below"}.</span></div>` : ""}
@@ -2257,7 +2269,7 @@ function factsCard() {
   const cores = f.discountings.map((c, i) => {
     const cf = c.cashflow, fa = c.factors;
     const ins = (fa.inputs || []).map(x => `<li><b>${esc(x.label || x.cell)}</b> <span class="mono small muted">${esc(x.cell)}</span>: ${esc(x.what)}${x.date ? ` <b>${esc(x.date)}</b>` : x.value != null && x.what === "a rate" ? ` <b>${vPct(x.value)}</b>` : x.value != null ? ` <b>${num(x.value)}</b>` : ""} <span class="small muted">(${esc(x.source)})</span></li>`).join("");
-    const origins = (c.origins || []).map(o => {
+    const originRow = o => {
       const t = o.this_year, open = FX.picker?.row === o.row;
       const now = !d.current ? `<span class="muted small">no current model assigned</span>` : !t ? "–" : t.found
         ? `<span class="mono">${esc(t.found)}</span> ${esc(t.found_label || "")} ${t.picked ? `<span class="pill info">your pick</span>` : ""}<div class="small muted">${esc((t.evidence || []).slice(0, 3).join(" · "))}</div>`
@@ -2265,7 +2277,10 @@ function factsCard() {
       const vals = t?.side_by_side?.length ? `<div class="small muted">${t.side_by_side.map(x => `${esc(x.period)}: ${num(x.last_year)} → ${num(x.this_year)}`).join(" · ")}</div>` : "";
       return `<tr><td><span class="mono">${esc(o.row)}</span> ${esc(o.label)}<div class="small muted">${o.cells} cell(s), ${esc(o.how)}</div></td><td>${now}${vals}</td>
         <td>${d.current ? `<button class="btn small ghost" data-fxpick="${esc(o.row)}">${t?.found ? "Change" : "Pick"}</button>` : ""}</td></tr>${open ? `<tr><td colspan="3">${rowPicker({...FX.picker, t}, "fx")}</td></tr>` : ""}`;
-    }).join("");
+    };
+    // the rows carrying amounts are the ones this year's figures need; period flags and dates are the timing
+    const origins = (c.origins || []).filter(o => o.kind !== "timing").map(originRow).join("");
+    const timing = (c.origins || []).filter(o => o.kind === "timing");
     return `<div class="vt-core" style="margin-top:12px"><div><b>${i + 1}. ${esc(c.what)}</b> <span class="mono small muted">${esc(c.cell)}</span> <span class="vt-val">${num(c.pv)}</span>
         ${c.ties ? `<span class="pill ok" title="Cash flows times factors, added up here, give the cell's value">✓ recomputed exactly</span>` : c.ties === false ? `<span class="pill bad">recomputed ${num(c.pv_recomputed)}</span>` : ""}</div>
       <div class="small" style="margin-top:6px"><b>Cash flows:</b> ${esc(cf.label || "")} <span class="mono">${esc(cf.row)}</span> (${esc(cf.where === "client" ? "the client model" : "the overlay")}), ${cf.periods} periods${cf.first_period ? ` ${esc(cf.first_period)} to ${esc(cf.last_period)}` : ""}, ${num(cf.undiscounted)} undiscounted.</div>
@@ -2273,7 +2288,8 @@ function factsCard() {
       ${c.terminal ? `<div class="small" style="margin-top:4px"><b>Terminal value:</b> ${esc(c.terminal.label || c.terminal.cell)} ${num(c.terminal.value)}: ${esc(c.terminal.from.label || c.terminal.from.cell)} ${num(c.terminal.from.value)} grown at ${vPct(c.terminal.growth.value)} (<span class="mono">${esc(c.terminal.growth.cell)}</span>) over a rate of ${vPct(c.terminal.rate.value)}</div>` : ""}
       <details class="work" data-k="fx-path-${i}" style="margin-top:8px"><summary>Up to the figure: ${c.path.length} step(s)</summary><div class="in"><ol class="small" style="margin:0;padding-left:18px">${c.path.map(p => `<li><b>${esc(p.label || p.cell)}</b> <span class="mono muted">${esc(p.cell)}</span> <span class="vt-val">${num(p.value)}</span>${p.words ? `<div class="muted">${esc(p.words)}</div>` : ""}</li>`).join("")}</ol></div></details>
       <div class="small" style="margin-top:10px"><b>Where the cash flows come from, and this year's model</b>${d.current_file ? ` <span class="muted">(${esc(d.current_file)})</span>` : ""}</div>
-      ${origins ? `<div class="scroll"><table style="margin-top:4px"><thead><tr><th>Last year's client model</th><th>This year's model</th><th></th></tr></thead><tbody>${origins}</tbody></table></div>` : `<p class="small muted" style="margin:4px 0 0">The cash flows are the overlay's own: nothing is read from the client model.</p>`}</div>`;
+      ${origins ? `<div class="scroll"><table style="margin-top:4px"><thead><tr><th>Last year's client model</th><th>This year's model</th><th></th></tr></thead><tbody>${origins}</tbody></table></div>` : `<p class="small muted" style="margin:4px 0 0">${timing.length ? "No amounts are read from the client model, only the timing below." : "The cash flows are the overlay's own: nothing is read from the client model."}</p>`}
+      ${timing.length ? `<details class="work" data-k="fx-timing-${i}" style="margin-top:8px"><summary>Timing the discounting depends on: ${timing.length} row(s) of period flags or dates (this year's figures don't wait for them)</summary><div class="in"><div class="scroll"><table><thead><tr><th>Last year's client model</th><th>This year's model</th><th></th></tr></thead><tbody>${timing.map(o => originRow({...o, how: o.kind_why || o.how})).join("")}</tbody></table></div></div></details>` : ""}</div>`;
   }).join("");
   return `<div class="card" id="fxCard"><div class="row" style="justify-content:space-between;align-items:flex-end"><div style="flex:1 1 360px">${head}
     <p class="sub" style="margin:0">From the figure, every cell the Python overlay reads is followed (lookups and scenario switches as Excel took them, across sheets) down to the discounting, which is recognised by its numbers: cash flows times factors that add up to it exactly. Last year ties, so these are the facts to roll forward; then the client rows the cash flows come from are found in this year's model, however it changed.</p></div>${pick}</div>
