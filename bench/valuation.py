@@ -10,12 +10,15 @@ SUMPRODUCT(cash-flow row, discount-factor row). For each one:
   - dcf.compute() redoes it in Python and checks it against the workbook's value
 Low / high values change the discount rate only; the saved cash flows and bridge stay as they are.
 """
+import hashlib
+import json
 import math
 import os
 import re
 import sqlite3
 import threading
 from datetime import date
+from pathlib import Path
 
 import dcf
 import rodb
@@ -322,12 +325,36 @@ def _public(v):
     return {k: v[k] for k in ("cell", "label", "value", "pv_cell")}
 
 
+_SOURCE: list = []
+
+
+def _source() -> str:
+    """The code a catalogue comes from: a change to it makes saved catalogues stale."""
+    if not _SOURCE:
+        h = hashlib.sha256()
+        for f in ("valuation.py", "dcf.py"):
+            h.update((Path(__file__).resolve().parent / f).read_bytes())
+        _SOURCE.append(h.hexdigest()[:16])
+    return _SOURCE[0]
+
+
 def catalogue(db_path: str) -> list[dict]:
-    """find() + build() for every DCF in a workbook, cached per model.db."""
+    """find() + build() for every DCF in a workbook, cached per model.db: in memory, and saved beside it
+    (catalogue.json, for that model.db's modification time and this code), so a restarted server doesn't redo it
+    (on a large workbook it takes minutes)."""
     key = (db_path, os.path.getmtime(db_path))
     with _LOCK:
         if key in _CACHE:
             return _CACHE[key]
+    saved = Path(db_path).parent / "catalogue.json"
+    try:
+        d = json.loads(saved.read_text(encoding="utf-8"))
+        if d.get("mtime") == key[1] and d.get("source") == _source():
+            with _LOCK:
+                _CACHE[key] = d["items"]
+            return d["items"]
+    except (OSError, ValueError, KeyError, AttributeError):
+        pass
     db = rodb.connect(db_path)
     out = []
     for v in find(db):
@@ -341,6 +368,12 @@ def catalogue(db_path: str) -> list[dict]:
     out.sort(key=lambda b: (not b.get("ok"), not b.get("matches"), _rank(b["label"]), b["cell"]))
     with _LOCK:
         _CACHE[key] = out
+    try:
+        tmp = saved.with_name(f".catalogue.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps({"mtime": key[1], "source": _source(), "items": out}), encoding="utf-8")
+        os.replace(tmp, saved)
+    except (OSError, TypeError, ValueError):
+        pass
     return out
 
 

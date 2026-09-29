@@ -251,16 +251,33 @@ def suggest(reports: list[dict], workbooks: list[dict], facts: list[dict]) -> di
         client_share = sum(prof["sheets"][s]["formulas"] for s in cl) / total
         mode = "client model" if not ov else ("overlay inside the client model" if cl and client_share >= 0.2
                                               else "standalone overlay")
+        facts_on = sum(len(prof["sheets"][s]["facts"]) for s in ov)
         score = sum(len(prof["sheets"][s]["facts"]) * 2 + len(prof["sheets"][s]["anchors"]) for s in ov) \
-            + (sp["points"] if mode == "standalone overlay" else 0) + 2 * len(seed) + (4 if sig["markers"] else 0)
+            + 2 * len(seed) + (4 if sig["markers"] else 0)
         info[wb["id"]] = {"mode": mode, "overlay": ov, "client": cl if mode != "standalone overlay" else [],
-                          "score": score, "timeline_start": prof["timeline_start"], "client_share": round(client_share, 2),
+                          "score": score, "points": sp["points"] if mode == "standalone overlay" else 0,
+                          "facts_on": facts_on, "timeline_start": prof["timeline_start"],
+                          "client_share": round(client_share, 2),
                           "why": {s: prof["sheets"][s]["why"] for s in ov}, "structure": sp["why"],
                           "family": sp["family"]}
         profs[wb["id"]] = prof
+    # A standalone overlay's structure points (valuation words, charts, fewest sheets) count only when no other
+    # workbook has the report's figures on its overlay sheets: a large client model has the words and the charts
+    # too, and report figures are the stronger evidence.
+    figures_elsewhere = lambda i: any(j != i and x["mode"] != "standalone overlay" and x["facts_on"] for j, x in info.items())
+    for i, x in info.items():
+        if x["points"] and not figures_elsewhere(i):
+            x["score"] += x["points"]
     by_id = {wb["id"]: wb for wb in workbooks}
     ov_id = max((i for i in info if info[i]["overlay"]), key=lambda i: info[i]["score"], default=None)
     names = {w["id"]: w["filename"] for w in workbooks}
+    # one overlay per engagement: another workbook typed a standalone overlay only by its structure (unlike the
+    # others, with valuation words and charts, as a rebuilt client model is) is a client model
+    for i, x in info.items():
+        if ov_id is not None and i != ov_id and x["mode"] == "standalone overlay":
+            x.update(mode="client model", overlay=[], why={},
+                     client=[s for s, v in profs[i]["sheets"].items() if v["rows"]])
+            x["structure"] = x["structure"] + [f"typed as a client model: the engagement's overlay is {names[ov_id]}"]
     when = {w["id"]: _when(w, info[w["id"]]["timeline_start"]) for w in workbooks}
     prior_id = None
     if ov_id is not None:
@@ -325,7 +342,8 @@ def suggest(reports: list[dict], workbooks: list[dict], facts: list[dict]) -> di
         roles["current_model"] = {"kind": "workbook", "id": c["id"], "sheets": None, "why": why + info[c["id"]]["structure"][:1]}
     checks = _checks(roles, info, st, when, names, facts)
     pairs = [{"a": a, "b": b, **{k: v for k, v in c.items()}} for (a, b), c in st["pairs"].items()]
-    return {"roles": roles, "workbooks": {i: {k: v for k, v in x.items() if k != "score"} for i, x in info.items()},
+    return {"roles": roles, "workbooks": {i: {k: v for k, v in x.items() if k not in ("score", "points", "facts_on")}
+                                          for i, x in info.items()},
             "likeness": {"pairs": pairs, "profiles": {i: likeness.public(sg) for i, sg in st["sigs"].items()}},
             "dates": {i: {k: v for k, v in w.items() if k != "key"} for i, w in when.items()}, "checks": checks,
             "evidence": f"structure and {len(facts)} report fact(s)" if facts else "structure only"}

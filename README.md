@@ -219,7 +219,13 @@ person before the next relies on it:
    - One unlike the others, with valuation vocabulary (valuation range, WACC, gearing, time-weighted average,
      beta, terminal value, ...), charts, external links or the adviser's name, is a standalone overlay. The
      adviser's name is searched in the text, sheet names and file properties when it's set as
-     `VALUATION_DESK_OVERLAY_MARKERS` in `.env`, so it stays out of the repo.
+     `VALUATION_DESK_OVERLAY_MARKERS` in `.env`, so it stays out of the repo. That look counts for less than
+     the report's figures: its points are added only when no other workbook has the report's figures on its
+     overlay sheets. An engagement has one overlay, so any other workbook that looks standalone only by its
+     structure (a client model rebuilt from the ground up, with valuation words and charts of its own) is typed
+     a client model.
+   Finding every DCF in a large workbook takes minutes (`valuation.catalogue`): it's saved beside the
+   workbook's model.db, for that model.db and that version of the code, so a restarted server reads it back.
 
    Which version is earlier is decided by the identified valuation date, then the date in the file name
    ("20250523 …", "Jun 25", "FY26", "BP25"), then the timeline's first period. When the overlay sits in a copy of a

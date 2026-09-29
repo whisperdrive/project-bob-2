@@ -212,6 +212,7 @@ def main() -> None:
     roles_check(res, db)
     rebuilt_check(out)
     actuals_check(out)
+    catalogue_check(out)
     print("rollforward: all checks passed")
 
 
@@ -282,6 +283,52 @@ def rebuilt_check(out: Path) -> None:
     assert ex["found"] == ("Model", 7), ex  # renamed as well as moved: its history finds it
     assert f.explain("Hub", 7)["found"] is None, "no row taken by its place on an unrelated sheet"
     print("rebuilt: ok (a same-named sheet with other contents isn't the same sheet; moved rows found by label and history)")
+
+
+def catalogue_check(out: Path) -> None:
+    """Every DCF in a workbook (valuation.catalogue), saved beside its model.db: a restarted server reads it back
+    instead of redoing it (minutes on a large model), and redoes it when the model.db changes."""
+    import os
+    import xlsxwriter
+    import valuation
+    wb = xlsxwriter.Workbook(out / "sumproduct_dcf.xlsx")
+    ws, dt = wb.add_worksheet("DCF"), wb.add_format({"num_format": "dd-mmm-yy"})
+    vd, rate = date(2025, 6, 30), 0.08
+    ws.write(0, 1, "Valuation date"), ws.write_datetime(0, 2, vd, dt)
+    ws.write(1, 1, "Discount rate"), ws.write(1, 2, rate)
+    ws.write(2, 1, "Period ending"), ws.write(4, 1, "Free cash flow"), ws.write(5, 1, "Discount factor")
+    ws.write(7, 1, "Enterprise value")
+    total = 0.0
+    for k in range(6):
+        end, c = date(2026 + k, 6, 30), rp.COL(3 + k)
+        f = 1 / (1 + rate) ** ((end - vd).days / 365)
+        ws.write_datetime(2, 3 + k, end, dt)
+        ws.write_number(4, 3 + k, 50.0 + 5 * k)
+        ws.write_formula(f"{c}6", f"=1/(1+$C$2)^(({c}3-$C$1)/365)", None, f)
+        total += (50.0 + 5 * k) * f
+    ws.write_formula("C8", "=SUMPRODUCT(D5:I5,D6:I6)", None, total)
+    wb.close()
+    path = build_map.main(str(out / "sumproduct_dcf.xlsx"), str(out / "sumproduct_dcf_db"))["db"]
+    side = Path(path).parent / "catalogue.json"
+    valuation._CACHE.clear()
+    if side.exists():
+        side.unlink()
+    first = valuation.catalogue(path)
+    assert side.exists() and first, "saved beside the model.db"
+    valuation._CACHE.clear()
+    real, valuation.find = valuation.find, lambda db: (_ for _ in ()).throw(AssertionError("recomputed"))
+    try:
+        assert valuation.catalogue(path) == first  # read back, not recomputed
+        valuation._CACHE.clear()
+        os.utime(path, (os.path.getatime(path), os.path.getmtime(path) + 5))  # the model.db changed
+        try:
+            valuation.catalogue(path)
+            raise RuntimeError("a changed model.db must be catalogued again")
+        except AssertionError:
+            pass
+    finally:
+        valuation.find = real
+    print("catalogue: ok (saved beside the model.db, read back after a restart, redone when the model.db changes)")
 
 
 def actuals_check(out: Path) -> None:
@@ -356,6 +403,7 @@ def roles_check(res: dict, db: dict) -> None:
         for k in range(6):
             ws.write_number(4 + i, 4 + k, 50.0 * (i + 1) + k)
     wb.close()
+    orig3 = {k: wbs[2][k] for k in ("filename", "db_path", "source_path")}
     wbs[2] = {**wbs[2], "filename": path.name, "db_path": build_map.main(str(path), str(out / "named_alike_db"))["db"],
               "source_path": str(path)}
     od = n["debt_open"][2025]
@@ -377,8 +425,27 @@ def roles_check(res: dict, db: dict) -> None:
     got = roles.suggest([{"id": 9, "filename": "report.pdf", "n_facts": 5}], wbs3, facts2)
     r = {k: (v["id"], v.get("sheets")) for k, v in got["roles"].items()}
     assert r["prior_overlay"] == (2, ["Inputs", "Val", "Bridge", "Summary"]), r["prior_overlay"]
+    # this year's model rebuilt (unlike last year's) and, like any big model, full of valuation words and charts:
+    # the structure alone would call it a standalone overlay. The engagement has one overlay, the one with the
+    # report's figures, so this year's model stays this year's model
+    real = roles.structure
+
+    def rebuilt(workbooks):
+        st = real(workbooks)
+        for j, sh in st["shape"].items():
+            sh["family"] = [x for x in sh["family"] if 3 not in (j, x)]
+        st["shape"][3].update(family=[], extra={}, points=9, standalone=True)
+        return st
+    roles.structure = rebuilt
+    try:
+        got = roles.suggest([{"id": 9, "filename": "report.pdf", "n_facts": 4}], wbs[:2] + [{**wbs[2], **orig3}], facts)
+    finally:
+        roles.structure = real
+    r = {k: v["id"] for k, v in got["roles"].items()}
+    assert r["prior_overlay"] == 2 and r["prior_model"] == 1 and r["current_model"] == 3, r
+    assert got["workbooks"][3]["mode"] == "client model" and "typed as a client model" in got["workbooks"][3]["structure"][-1]
     print("roles: ok (a report figure on a client sheet doesn't make it the overlay; different dates don't stop the "
-          "client's own file being last year's model)")
+          "client's own file being last year's model; a rebuilt model that looks like valuation work stays a model)")
 
 
 if __name__ == "__main__":
