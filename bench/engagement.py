@@ -177,6 +177,7 @@ def workbooks(eid: int) -> list[dict]:
         if rec:
             w = {k: rec.get(k) for k in ("id", "filename", "size", "uploaded_at", "status", "step", "pct", "error",
                                          "sheets", "line_items", "target_name", "project_name", "valuation_date",
+                                         "identity_confirmed",
                                          "db_path", "source_path", "identity", "processed_at", "started_at",
                                          "build_secs")}
             w["sheet_names"] = _sheet_names(w) if w["status"] == "done" and w["db_path"] else []
@@ -301,6 +302,18 @@ def add_upload(eid: int, tmp: Path, filename: str, sha: str) -> dict:
     _touch(eid)
     _jobs.put(("doc", did))
     return {"status": "queued", "kind": "document", "id": did, "filename": filename}
+
+
+def confirm_date(eid: int, fid: int, valuation_date: str) -> dict:
+    """A person's check of a workbook's valuation date (the roll-forward runs from last year's to this year's)."""
+    w = next((w for w in workbooks(eid) if w["id"] == fid), None)
+    if not w:
+        raise ValueError("that workbook isn't in this engagement")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", valuation_date or ""):
+        raise ValueError("give the date as YYYY-MM-DD")
+    library.set_identity(fid, w.get("target_name"), w.get("project_name"), valuation_date)
+    _touch(eid)
+    return get(eid)
 
 
 def remove_workbook(eid: int, fid: int) -> None:
@@ -1117,9 +1130,46 @@ def _overlay(eid: int) -> None:
     summary["reference_approved"] = all(f["approved"] for f in reference(eid)) and bool(reference(eid))
     ovmod.deep(_load_holds, eid, sess)
     _load_rowpicks(eid, sess)
+    _sync_roll(eid, sess, summary)
     _SESSIONS[eid] = (sess, summary)
     _set("engagements", eid, overlay_json=json.dumps(summary, default=str), overlay_status="done", overlay_step="Done",
          updated_at=time.time())
+
+
+def _dates(eid: int) -> dict:
+    """The valuation dates the roll-forward uses, as the files and the report give them now: last year's (the
+    report's, else the overlay file's), last year's and this year's client models', and which are confirmed."""
+    vd = next((f for f in reference(eid) if f["key"] == "valuation_date" and f.get("value")), None)
+    out, confirmed = {}, {}
+    for role, key in (("prior_overlay", "overlay"), ("prior_model", "prior_client"), ("current_model", "current_client")):
+        w = _role_wb(eid, role)
+        rec = library.get(w["id"]) if w else None
+        out[key] = (rec or {}).get("valuation_date")
+        confirmed[key] = bool((rec or {}).get("identity_confirmed"))
+    if vd:
+        v = int(vd["value"])
+        out["overlay"] = f"{v // 10000:04d}-{v // 100 % 100:02d}-{v % 100:02d}"
+        confirmed["overlay"] = bool(vd.get("approved"))
+    return {"dates": out, "confirmed": confirmed}
+
+
+def _sync_roll(eid: int, sess, summary: dict) -> None:
+    """The roll-forward from the dates as they are now (a file's valuation date can be corrected after the build),
+    and last year's valuation date set on the session."""
+    import overlay as ovmod
+    roll = summary.get("roll")
+    if not roll or not summary["wiring"].get("current"):
+        return
+    now = _dates(eid)
+    d = now["dates"]
+    if d != roll.get("dates"):
+        w = summary["wiring"]
+        fresh = ovmod.deep(ovmod.plan_roll, sess, w.get("prior"), w["overlay"], w.get("same_file"), d["overlay"],
+                           d["prior_client"], d["current_client"])
+        roll.update(fresh)
+    elif roll.get("prior_valuation_date"):
+        sess.base_vd = ovmod.serial(ovmod.date.fromisoformat(roll["prior_valuation_date"][:10]))
+    roll["confirmed"] = now["confirmed"]
 
 
 def overlay_session(eid: int):
@@ -1137,6 +1187,7 @@ def overlay_session(eid: int):
                          w["client_link"], w.get("client_sheets") or ((w["prior"] or {}).get("sheets") if w["same_file"] else None))
     ovmod.deep(_load_holds, eid, sess)
     _load_rowpicks(eid, sess)
+    _sync_roll(eid, sess, summary)
     _SESSIONS[eid] = (sess, summary)
     return _SESSIONS[eid]
 
@@ -1164,6 +1215,7 @@ def _live(eid: int, mode: str, changes: dict | None) -> tuple:
 def overlay_run(eid: int, mode: str, changes: dict, valuation_date: str | None, months: int | None) -> dict:
     import overlay as ovmod
     sess, summary, clean = _live(eid, mode, changes)
+    _sync_roll(eid, sess, summary)
     return ovmod.deep(ovmod.scenario, sess, summary, mode, clean, valuation_date, months)
 
 
@@ -1251,9 +1303,11 @@ def summary_view(eid: int, changes: dict | None = None, valuation_date: str | No
         out["why"] = "rebuild in Python first: the summary is recomputed from the Python overlay"
         return out
     sess, summary = overlay_session(eid)
+    _sync_roll(eid, sess, summary)
     clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
     out["table"] = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid), clean, valuation_date, months, method)
     out["identity"] = {f["key"]: f.get("value_text") for f in reference(eid) if f.get("category") == "identity"}
+    out["roll_plan"] = summary.get("roll")  # as the dates are now (_sync_roll), with which are checked
     return out
 
 
@@ -1268,6 +1322,7 @@ def bridge_view(eid: int, changes: dict | None = None, valuation_date: str | Non
     if rows[0]["overlay_status"] != "done":
         return {"bridges": [], "why": "build the Python overlay first: the bridge is recomputed from it"}
     sess, summary = overlay_session(eid)
+    _sync_roll(eid, sess, summary)
     clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
     return ovmod.deep(ovmod.value_bridge, sess, summary, reference(eid), clean, valuation_date, months, method)
 

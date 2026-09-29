@@ -103,12 +103,100 @@ def main() -> None:
         got2, stood2 = ov.deep(this_year)
     finally:
         fnd.locate = real
-    # 18 periods rolled on a year: 17 are in last year's forecast; the last (FY2044) is past it and stays unmatched
-    assert len(stood2) == 17 and all(k[:2] == ("CF", 11) for k in stood2), len(stood2)
+    # 18 periods rolled on a year: 17 from last year's forecast for the same years; the last (FY2044) is past it,
+    # so last year's own cell (the period it read) stands in: never a blank read as zero
+    assert len(stood2) == 18 and all(k[:2] == ("CF", 11) for k in stood2), len(stood2)
     assert got2 > 0 and abs(got2 - expect) > 1e-3, got2  # last year's forecast, not zero
     print(f"standing in: ok (with the distributions missing: {got2:.3f}, from last year's forecast, not 0)")
+    # ---- the roll: from last year's valuation date to this year's model's; periods move by whole periods
+    def plan(ov_vd, prior_vd, cur_vd):
+        r = ov.plan_roll(sess, w["prior"], w["overlay"], False, ov_vd, prior_vd, cur_vd)
+        sess.shift = r["months"]
+        return r, sess.period_shift(sess.prior, "CF"), sess.period_shift(sess.ov, "Val")
+    r, cf, val = ov.deep(plan, "2025-09-30", "2025-06-30", "2025-12-31")  # the overlay dated after its client copy
+    assert (r["months"], r["current_valuation_date"], cf, val) == (3, "2025-12-31", 0, 0), (r, cf, val)
+    r, cf, val = ov.deep(plan, "2025-06-30", "2025-06-30", "2025-12-31")  # half a year: no year-end passed
+    assert (r["months"], cf, val) == (6, 0, 0), (r, cf, val)
+    r, cf, val = ov.deep(plan, "2025-06-30", "2025-06-30", "2026-06-30")  # a year: FY2026 has ended
+    assert (r["months"], cf, val) == (12, 12, 12), (r, cf, val)
+    summary["roll"].update(ov.deep(plan, "2025-09-30", "2025-06-30", "2025-12-31")[0])
+
+    def three_months():
+        defaults, _, months = ov._feed(summary, "current", None, None)
+        sess.configure("current", defaults, months)
+        sess.values([("Report", 5, 3)])
+        return len(sess.client_reads), dict(sess.unmatched)
+    reads, missed = ov.deep(three_months)
+    assert reads and not missed, list(missed.items())[:3]
+    print(f"roll: ok (Sep-25 overlay, Dec-25 model: 3 months, annual periods stay; {reads} client values read, none missed)")
     ov.deep(sess.configure, "workbook")
+    roles_check(res, db)
+    rebuilt_check(out)
     print("rollforward: all checks passed")
+
+
+def rebuilt_check(out: Path) -> None:
+    """A model rebuilt rather than revised: a sheet keeps its name but holds other line items, and last year's
+    rows moved to other sheets. The same-named sheet isn't taken for the same sheet (no row found by its place
+    there), and a moved row is found by its label and its history anywhere in the model."""
+    import xlsxwriter
+    import rowfind
+    years = [date(2024 + k, 6, 30) for k in range(8)]
+
+    def book(path, sheets):
+        wb = xlsxwriter.Workbook(path)
+        dt = wb.add_format({"num_format": "dd-mmm-yy"})
+        for name, rows in sheets.items():
+            ws = wb.add_worksheet(name)
+            ws.write(2, 1, "Period ending")
+            for k, d in enumerate(years):
+                ws.write_datetime(2, 3 + k, d, dt)
+            for i, (label, vals) in enumerate(rows):
+                ws.write(4 + i, 1, label)
+                for k, v in enumerate(vals):
+                    ws.write_number(4 + i, 3 + k, v)
+        wb.close()
+        return build_map.main(str(path), str(out / (path.stem + "_db")))["db"]
+    rev = [100.0 * 1.03 ** k for k in range(8)]
+    fees = [7.0 + k for k in range(8)]
+    prior = book(out / "rebuilt_prior.xlsx", {"Hub": [("Revenue", rev), ("Fees", fees)] + [(f"Driver {i}", [float(i)] * 8) for i in range(6)]})
+    later = [v * (1.05 if k >= 2 else 1.0) for k, v in enumerate(rev)]  # history the same, forecast revised
+    current = book(out / "rebuilt_current.xlsx", {"Hub": [(f"Scenario switch {i}", [1.0] * 8) for i in range(8)],
+                                                  "Model": [("Opex", [30.0] * 8), ("Revenue", later), ("Fee income", fees)]})
+    a, b = ov.Workbook(prior), ov.Workbook(current)
+    f = rowfind.RowFinder(ov.RowMap(a, b), a, b)
+    assert f.sheet_for("Hub") is None, "a sheet sharing no labels isn't the same sheet because of its name"
+    ex = f.explain("Hub", 5)
+    assert ex["found"] == ("Model", 6) and {"label", "history"} <= {n for n, _ in ex["evidence"]}, ex
+    ex = f.explain("Hub", 6)
+    assert ex["found"] == ("Model", 7), ex  # renamed as well as moved: its history finds it
+    assert f.explain("Hub", 7)["found"] is None, "no row taken by its place on an unrelated sheet"
+    print("rebuilt: ok (a same-named sheet with other contents isn't the same sheet; moved rows found by label and history)")
+
+
+def roles_check(res: dict, db: dict) -> None:
+    """Who's who, as the rules suggest it, where a report figure also sits on a client sheet (the net debt the
+    client's model shows on its summary) and the client's model is dated before the overlay built on it."""
+    import roles
+    n = res["prior"]["numbers"]
+    nd = n["net_debt"][2025]
+    facts = FACTS + [{"id": 3, "category": "conclusion", "key": "equity_value", "label": "Fair value of equity (ex-div)",
+                      "value_text": f"{res['figures']['ex_div']:.1f}", "value": round(res["figures"]["ex_div"], 1), "unit": "A$m"},
+                     {"id": 4, "category": "assumption", "key": "net_debt", "label": "Net debt at valuation date",
+                      "value_text": f"{nd:.1f}", "value": round(nd, 1), "unit": "A$m"}]
+    wbs = [{"id": 1, "filename": res["paths"]["prior"].name, "db_path": db["prior"], "source_path": str(res["paths"]["prior"]),
+            "valuation_date": "2025-06-30", "uploaded_at": 1},
+           {"id": 2, "filename": res["paths"]["overlay"].name, "db_path": db["overlay"], "source_path": str(res["paths"]["overlay"]),
+            "valuation_date": "2025-09-30", "uploaded_at": 2},
+           {"id": 3, "filename": res["paths"]["current"].name, "db_path": db["current"], "source_path": str(res["paths"]["current"]),
+            "valuation_date": "2026-06-30", "uploaded_at": 3}]
+    got = roles.suggest([{"id": 9, "filename": "report.pdf", "n_facts": 4}], wbs, facts)
+    r = {k: (v["id"], v.get("sheets")) for k, v in got["roles"].items()}
+    print("  roles:", r)
+    assert r["prior_overlay"] == (2, ["Inputs", "Val", "Bridge", "Report"]), r["prior_overlay"]
+    assert r["prior_model"][0] == 1 and r["current_model"][0] == 3, r
+    print("roles: ok (a report figure on a client sheet doesn't make it the overlay; different dates don't stop the "
+          "client's own file being last year's model)")
 
 
 if __name__ == "__main__":

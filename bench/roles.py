@@ -166,23 +166,33 @@ def split(prof: dict, seed: dict[str, list[str]] | None = None, shared: set[str]
         if s in sh:
             sh[s]["why"].append("not in the other version of the model" + (": " + "; ".join(reasons) if reasons else ""))
             overlay.add(s)
+    shared = shared or set()
     for s, v in sh.items():
         if v["facts"]:
             v["why"].append("holds " + "; ".join(v["facts"][:3]))
         if v["anchors"]:
             v["why"].append(f"DCF reproduced in Python: {', '.join(a['cell'] for a in v['anchors'][:2])}")
-        if v["facts"] or (v["anchors"] and s not in (shared or set())):
+        if (v["facts"] or v["anchors"]) and s not in shared:
             overlay.add(s)
-        elif v["anchors"]:
-            v["why"].append("its DCF is in the other version of the model too, so it's the client's own")
+        elif v["facts"] or v["anchors"]:
+            # a report figure can match the client's own inputs (a cost of equity on its assumptions sheet): a
+            # sheet the other version of the model has too is the client's, whatever it holds
+            v["why"].append("the other version of the model has this sheet too, so it's the client's own")
+    seeds = set(overlay)
     grew = True
-    while grew:  # sheets built on the valuation (summaries, outputs) belong to it too
+    while grew:  # sheets built on the valuation (summaries, outputs) belong to it too, but not the client's own
         grew = False
         for s, v in sh.items():
-            if s not in overlay and v["reads"] & overlay and v["formulas"]:
+            if s not in overlay and s not in shared and v["reads"] & overlay and v["formulas"]:
                 v["why"].append("reads " + ", ".join(sorted(v["reads"] & overlay)))
                 overlay.add(s)
                 grew = True
+    total = sum(v["formulas"] for v in sh.values()) or 1
+    if len(overlay) > len(seeds) and sum(sh[s]["formulas"] for s in overlay) > 0.6 * total:
+        # the spread took in most of the workbook: a hub the whole model reads was taken for the valuation
+        for s in overlay - seeds:
+            sh[s]["why"].append("left out: following what reads the valuation took in most of the workbook")
+        overlay = seeds
     for s in overlay:
         if sh[s]["ext_rows"]:
             sh[s]["why"].append(f"{sh[s]['ext_rows']} line items read other workbooks (external links)")
@@ -244,13 +254,18 @@ def suggest(reports: list[dict], workbooks: list[dict], facts: list[dict]) -> di
             why.append("its file name says so")
         roles["prior_overlay"] = {"kind": "workbook", "id": ov_id, "sheets": o["overlay"], "why": why}
         host = st["shape"][ov_id].get("host")
-        if o["mode"] == "overlay inside the client model" and host is not None and info[host]["mode"] == "client model" \
-                and _same_period(when[host], when[ov_id]):
-            # the overlay was added to a copy of a client model that's here too: that file is the client's own
+        if o["mode"] == "overlay inside the client model" and host is not None and info[host]["mode"] == "client model":
+            # the overlay was added to a copy of a client model that's here too: that file is the client's own. Its
+            # valuation date can differ (an adviser builds on the model the client sent, then values at a later
+            # date), so the date explains, it doesn't decide
             prior_id = host
+            dates = ([f"the client's model is dated {when[host]['valuation_date']}, the overlay "
+                      f"{when[ov_id]['valuation_date']}: the valuation was built on it later"]
+                     if when[host]["valuation_date"] and when[ov_id]["valuation_date"]
+                     and when[host]["valuation_date"] != when[ov_id]["valuation_date"] else [])
             roles["prior_model"] = {"kind": "workbook", "id": host, "sheets": None, "why": [
                 f"the client's model as sent: {names[ov_id]} is a copy of it ({st['shape'][ov_id]['host_share']}% of "
-                f"its line items) with the overlay added ({', '.join(o['overlay'])})", *_date_why(when[host])]}
+                f"its line items) with the overlay added ({', '.join(o['overlay'])})", *_date_why(when[host]), *dates]}
         elif o["mode"] == "overlay inside the client model":
             prior_id = ov_id
             roles["prior_model"] = {"kind": "workbook", "id": ov_id, "sheets": o["client"],

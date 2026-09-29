@@ -128,6 +128,16 @@ async def unlink_workbook(eid: int, fid: int):
     return {"ok": True}
 
 
+class DateCheck(BaseModel):
+    valuation_date: str
+
+
+@app.post("/api/engagements/{eid}/workbooks/{fid}/date")
+async def confirm_date(eid: int, fid: int, body: DateCheck):
+    """Your check of a workbook's valuation date: the roll-forward runs between last year's and this year's."""
+    return await _run(engagement.confirm_date, eid, fid, body.valuation_date)
+
+
 @app.post("/api/engagements/{eid}/workbooks/{fid}/retry")
 async def retry_workbook(eid: int, fid: int):
     await _run(lambda: library.retry(fid) and True)

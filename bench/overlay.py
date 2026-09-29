@@ -255,6 +255,9 @@ class Session:
             base = self.prior or self.ov
             self.rowmap = rowfind.RowFinder(RowMap(base, self.current), base, self.current)
         self.stood_in = {}  # (sheet, row, col) -> last year's value, used where this year's model has no match
+        self.client_reads = set()  # (sheet, row, col) of last year's model read on the current feed
+        self.base_vd = None  # last year's valuation date (serial): the roll's start
+        self._pshift = {}
         self.mode = None
         self.holds = {}  # (sheet, row, col) -> value: cells held at Excel's value on every feed (the doctor's fixes)
         self.configure("workbook")
@@ -266,6 +269,7 @@ class Session:
         self.mode, self.shift = mode, shift_months
         self.unmatched = {}
         self.stood_in = {}
+        self.client_reads = set()
         B.overrides.clear()
         B.overrides.update(self.holds)
         B.reset()
@@ -299,8 +303,9 @@ class Session:
         in (its forecast for the same period), recorded in unmatched and stood_in: never a blank, which would
         read as zero."""
         cur = self.current
+        self.client_reads.add((s, r, c))
         tl_p = prior.timeline(s)
-        want = add_months(tl_p[c], self.shift) if c in tl_p else None
+        want = add_months(tl_p[c], self.period_shift(prior, s)) if c in tl_p else None
         hit = self.rowmap.locate(s, r)
         if hit is None:
             self.unmatched[(s, r, c)] = self.rowmap.why(s, r, prior.labels())
@@ -316,23 +321,54 @@ class Session:
 
     def _stand_in(self, prior: Workbook, s, r, c, want):
         """Last year's value for a client cell this year's model doesn't have: last year's forecast for the same
-        period, or the same cell where the row has no timeline."""
-        c0 = prior.column_of(s, want) if want is not None else c
-        v = prior.value(s, r, c0) if c0 is not None else None
+        period; where last year's model doesn't reach that period, its own cell (the period it read last year);
+        the same cell where the row has no timeline. Blank only where last year's cell was blank too."""
+        c0 = prior.column_of(s, want) if want is not None else None
+        v = prior.value(s, r, c0 if c0 is not None else c)
         if v is not None:
             self.stood_in[(s, r, c)] = v
         return v
 
+    def period_shift(self, wb: Workbook, s: str) -> int:
+        """How far a sheet's periods move when rolling forward, in months: the whole periods that ended between
+        last year's valuation date and the new one. The valuation date can move three months while an annual
+        sheet's periods stay put (FY2026 is still FY2026) and a quarterly sheet's move one quarter; moving an
+        annual sheet by three months would land on dates it doesn't have."""
+        if not self.shift:
+            return 0
+        key = (wb.path, s, self.shift)
+        if key not in self._pshift:
+            tl = sorted(set(wb.timeline(s).values()))
+            if len(tl) < 2:
+                out = 0
+            else:
+                gaps = sorted(b - a for a, b in zip(tl, tl[1:]))
+                plen = max(1, round(gaps[len(gaps) // 2] / 30.44))
+                if self.base_vd is not None:
+                    new = add_months(self.base_vd, self.shift)
+                    out = plen * sum(1 for d in tl if self.base_vd < d <= new)
+                else:
+                    out = plen * (max(0, self.shift) // plen)
+            self._pshift[key] = out
+        return self._pshift[key]
+
     def rolled_timeline(self, months: int) -> dict:
-        """The overlay's own period dates moved on: constants in each overlay sheet's timeline row."""
+        """The overlay's own period dates moved on: constants in each overlay sheet's timeline row, by whole
+        periods (period_shift), not by the valuation date's move."""
         out = {}
-        for s in self.sheets:
-            hr = self.ov.header_row(s)
-            if not hr:
-                continue
-            for (r, c), v in self.ov.sheet(s).items():
-                if r == hr and (s, r, c) in self.B.inputs and isinstance(v, float) and 3000 < v < 120000:
-                    out[(s, r, c)] = add_months(v, months)
+        keep = self.shift
+        self.shift = months
+        try:
+            for s in self.sheets:
+                hr = self.ov.header_row(s)
+                step = self.period_shift(self.ov, s)
+                if not hr or not step:
+                    continue
+                for (r, c), v in self.ov.sheet(s).items():
+                    if r == hr and (s, r, c) in self.B.inputs and isinstance(v, float) and 3000 < v < 120000:
+                        out[(s, r, c)] = add_months(v, step)
+        finally:
+            self.shift = keep
         return out
 
     # evaluation
@@ -528,14 +564,10 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
     sess.configure("workbook")
     roll = None
     if current:
-        months, basis = roll_months(sess, prior, overlay, same_file,
-                                    ((prior or {}).get("valuation_date") or prior_val_date, current.get("valuation_date")))
         vd_lever = next((l for l in levers if l["key"] == "valuation_date"), None)
-        roll = {"prior_valuation_date": prior_val_date, "months": months, "months_basis": basis,
-                "months_assumed": basis.startswith("assumed"),
-                "valuation_date_cell": vd_lever["cell"] if vd_lever else None,
-                "current_valuation_date": to_date(add_months(serial(date.fromisoformat(prior_val_date[:10])), months)).isoformat()
-                if prior_val_date else None}
+        roll = plan_roll(sess, prior, overlay, same_file, prior_val_date, (prior or {}).get("valuation_date"),
+                         current.get("valuation_date"))
+        roll["valuation_date_cell"] = vd_lever["cell"] if vd_lever else None
     summary = {"module": str(module), "stats": {k: v for k, v in stats.items() if k != "not_compiled"},
                "not_compiled": stats["not_compiled"][:50], "validation": val, "levers": levers, "outputs": outputs,
                "feeds": feeds, "sensitivities": points, "roll": roll, "sheets": sheets,
@@ -547,19 +579,27 @@ def build(out_dir: Path, overlay: dict, prior: dict | None, current: dict | None
 
 
 def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: bool,
-                dates: tuple[str | None, str | None] = (None, None)) -> tuple[int, str]:
-    """How far to roll forward, and how that was worked out: (months, basis).
-    1. The valuation dates identified in last year's and this year's client models (Files), when both are known
-       and this year's is later.
-    2. Else the client sheets' timelines: how far each sheet's first period moved, the most common move across
-       sheets, if it is forward. (A model that keeps more history this year starts earlier, so this is a
-       fallback, never the first choice.)
-    3. Else 12 months, flagged so the page asks for a check."""
-    prior_vd, current_vd = dates
-    if prior_vd and current_vd:
+                dates: tuple = (None, None, None)) -> tuple[int, str, str | None]:
+    """How far to roll forward: (months, how that was worked out, the new valuation date).
+    dates: (last year's valuation date: the overlay's, from the report; last year's client model's; this year's
+    client model's).
+    1. From last year's valuation date to this year's client model's, when both are known and this year's is
+       later: the new valuation date is this year's model's. (Not the move between the two client models: the
+       overlay can sit on a copy of a client model of another date.)
+    2. Else, without last year's valuation date, the move between the two client models' dates.
+    3. Else the client sheets' timelines: how far each sheet's first period moved, the most common move across
+       sheets, if it is forward.
+    4. Else 12 months, flagged so the page asks for a check."""
+    ov_vd, prior_vd, current_vd = (list(dates) + [None, None, None])[:3]
+    if ov_vd and current_vd and current_vd[:10] > ov_vd[:10]:
+        return (months_between(ov_vd[:10], current_vd[:10]),
+                f"from last year's valuation date ({ov_vd[:10]}) to this year's client model's ({current_vd[:10]})",
+                current_vd[:10])
+    if prior_vd and current_vd and current_vd[:10] > prior_vd[:10]:
         m = months_between(prior_vd[:10], current_vd[:10])
-        if m > 0:
-            return m, f"from the valuation dates in the two client models ({prior_vd[:10]} to {current_vd[:10]})"
+        return m, (f"from the valuation dates in the two client models ({prior_vd[:10]} to {current_vd[:10]}); last "
+                   "year's own valuation date isn't known"), current_vd[:10]
+    new = lambda m: to_date(add_months(serial(date.fromisoformat(ov_vd[:10])), m)).isoformat() if ov_vd else None
     src = sess.prior or sess.ov
     sheets = sess.client_sheets or ((prior or {}).get("sheets") if same_file else None)
     moves = Counter()
@@ -570,10 +610,21 @@ def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: boo
     forward = [(n, m) for m, n in moves.items() if m > 0]
     if forward:
         n, m = max(forward)
-        return m, f"from the client sheets' timelines (the first period moved {m} months on {n} of {sum(moves.values())} sheet(s))"
-    return 12, ("assumed: the two client models' valuation dates aren't both known and their timelines don't show a "
-                "forward move" + (f" (moves seen: {', '.join(f'{m:+d}' for m in sorted(moves))} months)" if moves else "")
-                + "; check the roll-forward months")
+        return m, f"from the client sheets' timelines (the first period moved {m} months on {n} of {sum(moves.values())} sheet(s))", new(m)
+    return 12, ("assumed: the valuation dates aren't known and the timelines don't show a forward move"
+                + (f" (moves seen: {', '.join(f'{m:+d}' for m in sorted(moves))} months)" if moves else "")
+                + "; check the roll-forward"), new(12)
+
+
+def plan_roll(sess: Session, prior: dict | None, overlay: dict, same_file: bool, ov_vd: str | None,
+              prior_vd: str | None, current_vd: str | None) -> dict:
+    """The roll-forward's settings (roll_months), and last year's valuation date set on the session."""
+    months, basis, new_vd = roll_months(sess, prior, overlay, same_file, (ov_vd, prior_vd, current_vd))
+    sess.base_vd = serial(date.fromisoformat(ov_vd[:10])) if ov_vd else None
+    sess._pshift.clear()
+    return {"prior_valuation_date": ov_vd, "months": months, "months_basis": basis,
+            "months_assumed": basis.startswith("assumed"), "current_valuation_date": new_vd,
+            "dates": {"overlay": ov_vd, "prior_client": prior_vd, "current_client": current_vd}}
 
 
 def _feed(summary: dict, mode: str, valuation_date: str | None, months: int | None) -> tuple[dict, dict | None, int]:
@@ -582,8 +633,10 @@ def _feed(summary: dict, mode: str, valuation_date: str | None, months: int | No
     if mode != "current":
         return {}, None, 0
     roll = summary.get("roll") or {}
-    months = months if months is not None else roll.get("months", 12)
     valuation_date = valuation_date or roll.get("current_valuation_date")
+    pvd = roll.get("prior_valuation_date")
+    if months is None:  # a date chosen on the page moves the periods as far as it moves from last year's
+        months = months_between(pvd[:10], valuation_date[:10]) if pvd and valuation_date else roll.get("months", 12)
     vd_cell = roll.get("valuation_date_cell")
     defaults = {parse_a1(vd_cell): serial(date.fromisoformat(valuation_date[:10]))} if valuation_date and vd_cell else {}
     return defaults, {"months": months, "valuation_date": valuation_date, "valuation_date_cell": vd_cell}, months
@@ -710,7 +763,13 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         # client values this year's model has no match for: last year's stand in; the rows, for the page
         by_row = Counter((s_, r_) for (s_, r_, _c) in sess.unmatched)
         labels = (sess.prior or sess.ov).labels()
-        gaps = {"values": len(sess.unmatched), "stood_in": len(sess.stood_in),
+        reads = len(sess.client_reads)
+        share = 1 - len(sess.unmatched) / reads if reads else 1.0
+        family = sess.rowmap.family() if sess.rowmap else None
+        gaps = {"values": len(sess.unmatched), "stood_in": len(sess.stood_in), "reads": reads,
+                "found_share": round(share, 3), "family": family,
+                # under half of what the figures read found this year: the column isn't this year's figure
+                "reliable": share >= 0.5, "rebuilt": family is not None and family < 0.5,
                 "rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "values": n,
                           "why": sess.unmatched[next(k for k in sess.unmatched if k[:2] == (s_, r_))]}
                          for (s_, r_), n in by_row.most_common(30)]}
@@ -812,6 +871,12 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
     if not w.get("current"):
         return {"bridges": [], "why": "assign this year's client model (Roles) and rebuild in Python"}
     table = summary_table(sess, summary, facts, changes, valuation_date, months, method)
+    gaps = table.get("this_year_gaps") or {}
+    if gaps and not gaps.get("reliable", True):
+        return {"bridges": [], "this_year_gaps": gaps,
+                "why": f"only {gaps['found_share']:.0%} of the client values the report's figures read were found in this "
+                       "year's model, so there's no this-year value to bridge to yet: find or pick the rows the figures' "
+                       "cash flows come from (Rebuild in Python → Valuation (DCF) → The facts)"}
     path = w["overlay"]["db_path"]
     db = rodb.connect(path)
     base_feed = table["feeds"]["rebuilt"]
@@ -890,7 +955,8 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
         why = ("the report's conclusions come out as Excel errors in the Python overlay: " + "; ".join(errors[:4])
                + ". Rebuild in Python lists the formulas and names it couldn't compute.") if errors else \
               "no conclusion of the report is matched to a cell in the overlay (check the Map)"
-    return {"bridges": out, "valuation_date": vd1, "feeds": table["feeds"], "why": why, "errors": errors}
+    return {"bridges": out, "valuation_date": vd1, "feeds": table["feeds"], "why": why, "errors": errors,
+            "this_year_gaps": gaps}
 
 
 # ---- the DCF on the live module ----------------------------------------------------------------------------

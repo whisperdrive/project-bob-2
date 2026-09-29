@@ -577,6 +577,8 @@ function pipeline() {
   const roles = {id: "roles", name: "Roles"}, nConf = Object.values(r).filter(x => x.confirmed).length;
   if (E.roles_pending) Object.assign(roles, {state: "running", line: "suggesting", live: "Comparing the workbooks (how alike they are, what each contains) and the report's figures to suggest who's who."});
   else if (nConf === 4) Object.assign(roles, {state: "done", line: "confirmed"});
+  else if (E.roles_suggested?.second_opinion?.differs?.length && E.roles_suggested.second_opinion.confidence === "high")
+    Object.assign(roles, {state: "you", line: "the reviewer disagrees", live: `The rules and the reviewer model (${E.roles_suggested.second_opinion.model}) assign the files differently, and the reviewer is confident: check both on the Roles page before confirming.`, todo: {text: "Check the roles: the reviewer disagrees", go: "roles"}});
   else if (Object.keys(r).length) Object.assign(roles, {state: "you", line: `${Object.keys(r).length - nConf} to confirm`, todo: {text: "Confirm who's who", go: "roles"}});
   else Object.assign(roles, {state: "idle", line: "after the models are read"});
   st.push(roles);
@@ -702,7 +704,7 @@ function viewFiles() {
     <div class="card"><h2>Models</h2><p class="sub">Shared with Model Desk: a workbook uploaded in either app is processed once.</p>
     ${wbs.length ? `<div class="scroll"><table><thead><tr><th>File</th><th>Sheets</th><th>Target · valuation date</th><th>Status</th><th></th></tr></thead><tbody>
     ${wbs.map(w => `<tr><td><b>${esc(w.filename)}</b><div class="small muted">${size(w.size || 0)}${w.line_items ? ` · ${w.line_items.toLocaleString()} line items` : ""}</div></td>
-      <td class="num">${w.sheets ?? ""}</td><td class="small">${esc(w.target_name || "")}${w.valuation_date ? `<div class="muted">${esc(w.valuation_date)}</div>` : ""}</td>
+      <td class="num">${w.sheets ?? ""}</td><td class="small">${esc(w.target_name || "")}${w.status === "done" ? `<div class="row" style="gap:4px;margin-top:2px"><input type="date" class="in" data-vdwb="${w.id}" value="${esc(w.valuation_date || "")}" aria-label="Valuation date of ${esc(w.filename)}" style="padding:2px 4px;font-size:12px">${w.identity_confirmed ? `<span class="pill ok" title="Checked by you">✓</span>` : `<span class="pill warn" title="Read from the file: the roll-forward uses it, so check it">check</span>`}</div>` : w.valuation_date ? `<div class="muted">${esc(w.valuation_date)}</div>` : ""}</td>
       <td>${statusCell(w.status, w.step, w.pct, w.error, w.started_at, w.started_at && w.processed_at > w.started_at ? w.processed_at - w.started_at : w.build_secs, null)}</td>
       <td class="nowrap">${w.status === "error" ? `<button class="btn small" data-retrywb="${w.id}">Retry</button>` : ""}${w.status === "done" ? `<button class="btn small ghost" data-rebuildwb="${w.id}" title="Process it again from scratch">Rebuild</button>` : ""}${!busy(w.status) ? `<button class="btn small ghost" data-rmwb="${w.id}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No models yet.</p>`}</div>
   </div>
@@ -710,6 +712,11 @@ function viewFiles() {
 }
 const bind = {
   files() {
+    document.querySelectorAll("[data-vdwb]").forEach(inp => inp.onchange = () => act(async () => {
+      if (!inp.value) return;
+      E = {...E, ...await api(`/api/engagements/${E.id}/workbooks/${inp.dataset.vdwb}/date`, {method: "POST", body: {valuation_date: inp.value}})};
+      SUM.data = null; OVR.sum = null; BR.data = null; toast("Valuation date checked: the roll-forward uses it now");
+    }));
     const drop = $("#drop");
     drop.onclick = () => $("#picker").click();
     drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#picker").click(); } };
@@ -1428,6 +1435,13 @@ function needs() {
   if (E.overlay_status === "done" && sumErr && !(V && V.matched < V.cells) && !E.doctor_status) add(`Run the doctor: ${sumErr} figure(s) come out as errors on this year's model`, "doctor");
   if (E.doctor_status === "error") add("Run the doctor again: it failed", "doctor");
   const sum = OVR.eid === E.id ? OVR.sum : null;
+  const g = sum?.table?.this_year_gaps;
+  if (g && g.reliable === false) out.push({text: `Only ${Math.round(g.found_share * 100)}% of this year's client values were found${g.rebuilt ? " (this year's model looks rebuilt)" : ""}: pick the rows the DCF's cash flows come from`, go: "python", tab: "valuation"});
+  for (const w of E.workbooks) if (w.status === "done" && !w.identity_confirmed && [E.roles.prior_model?.id, E.roles.current_model?.id].includes(w.id) && E.overlay_status === "done")
+    add(`Check the valuation date of ${shortName(w.filename)} (${w.valuation_date || "none found"}): the roll-forward runs from it`, "files");
+  const so = E.roles_suggested?.second_opinion;
+  if (so?.differs?.length && so.confidence === "high" && Object.values(E.roles).filter(x => x.confirmed).length < 4)
+    add(`The reviewer model would assign the roles differently (high confidence): ${so.differs.map(k => k.replace("_", " ")).join(", ")}`, "roles");
   for (const row of sum?.table?.rows || []) if (row.kind === "conclusion" && row.tie && !row.tie.ok)
     add(`${row.label} doesn't tie: rebuilt ${sumNum(row, row.values?.rebuilt)} vs the report's ${row.report}`, "summary");
   for (const c of sum?.charts?.charts || []) if (c.picks && c.matches === false) add(`The report's chart “${c.caption || c.read?.title || c.id}” doesn't match its rebuild`, "summary");
@@ -1451,13 +1465,13 @@ function viewOverview() {
     const v = r.values, ly = v.rebuilt, ty = v.this_year, ch = typeof ty === "number" && typeof ly === "number" ? ty - ly : null;
     top = `<div class="heads">
       <div class="head"><div class="k">${esc(r.label)} · last year (report)</div><div class="v">${esc(r.report || sumNum(r, ly))}</div><div class="s">${r.tie ? (r.tie.ok ? "✓ rebuilt exactly from last year's files" : `✗ rebuilt as ${sumNum(r, ly)}`) : ""}</div></div>
-      <div class="head"><div class="k">This year, rolled forward</div><div class="v">${typeof ty === "number" ? sumMoney(r, ty) : "–"}</div><div class="s">${t.roll?.valuation_date ? `valuation date ${esc(t.roll.valuation_date)}` : "assign this year's model to roll forward"}</div></div>
+      <div class="head"><div class="k">This year, rolled forward</div><div class="v">${typeof ty === "number" && !unreliable(t) ? sumMoney(r, ty) : "–"}</div><div class="s">${unreliable(t) ? `needs rows: ${Math.round(t.this_year_gaps.found_share * 100)}% of its client values found` : t.roll?.valuation_date ? `valuation date ${esc(t.roll.valuation_date)}` : "assign this year's model to roll forward"}</div></div>
       <div class="head"><div class="k">Change</div><div class="v">${ch == null ? "–" : (ch > 0 ? "+" : "") + sumMoney(r, ch)}</div><div class="s">${ch == null || !ly ? "" : `${(100 * ch / Math.abs(ly)).toFixed(1)}%`}${br ? ` · ${br.steps.filter(x => !x.total).length} steps in the bridge` : ""}</div></div></div>`;
   }
   const bridge = br ? `<div class="card"><div class="row" style="justify-content:space-between"><h2>How it moved</h2><button class="btn small" data-go="bridge">Value bridge</button></div><div id="ovrBridge"></div></div>` : "";
   const n = needs(), conf = confidence();
   return head + top + `<div class="grid2">${bridge || ""}<div class="stack">
-    <div class="card"><h2>Needs you${n.length ? ` (${n.length})` : ""}</h2>${n.length ? `<ul class="needs">${n.map(x => `<li><button data-go="${x.go}"><span>${esc(x.text)}</span><span class="where">${esc(NAV.find(s => s.id === x.go)?.name || "")} →</span></button></li>`).join("")}</ul>` : `<p class="muted" style="margin:0">Nothing. The agents have what they need.</p>`}</div>
+    <div class="card"><h2>Needs you${n.length ? ` (${n.length})` : ""}</h2>${n.length ? `<ul class="needs">${n.map(x => `<li><button data-go="${x.go}"${x.tab ? ` data-tab="${x.tab}"` : ""}><span>${esc(x.text)}</span><span class="where">${esc(NAV.find(s => s.id === x.go)?.name || "")} →</span></button></li>`).join("")}</ul>` : `<p class="muted" style="margin:0">Nothing. The agents have what they need.</p>`}</div>
     <div class="card"><h2>How sure we are</h2><ul class="conf">${conf.map(([st, txt]) => `<li class="${st}">${esc(txt)}</li>`).join("")}</ul></div></div></div>`;
 }
 function confidence() {
@@ -1487,7 +1501,7 @@ async function loadOverview() {
 }
 const overviewStamp = () => [E.overlay_status, E.charts_status, E.facts.length, Object.values(E.roles).filter(x => x.confirmed).length].join("|");
 function bindOverview() {
-  document.querySelectorAll("#main [data-go]").forEach(b => b.onclick = () => go(b.dataset.go));
+  document.querySelectorAll("#main [data-go]").forEach(b => b.onclick = () => { if (b.dataset.tab) OV.tab = b.dataset.tab; go(b.dataset.go); });
   if (E.overlay_status === "done" && (!OVR.sum || OVR.stamp !== overviewStamp()) && !OVR.loading) { loadOverview(); return; }
   const t = OVR.sum?.table, r = mainRow(t?.rows), br = (OVR.br?.bridges || []).find(b => r && b.cell === r.cell);
   if (br && $("#ovrBridge")) { $("#ovrBridge").append(chartCard(bridgeSpec(br, `${br.label}: last year to this year`))); mountCharts($("#ovrBridge")); }
@@ -1668,10 +1682,19 @@ const sumNum = (row, v) => {  // a conclusion as the report prints it: its units
   const x = (row.sign || 1) * v / (row.scale || 1), m = String(row.report || "").match(/\d[\d,]*(?:\.(\d+))?/), dp = m && m[1] ? m[1].length : 0;
   return x.toLocaleString(undefined, {minimumFractionDigits: dp, maximumFractionDigits: dp});
 };
+const unreliable = t => { const g = t?.this_year_gaps; return !!g && g.reliable === false && !SUM.showAnyway; };
 function gapNote(t) {
   const g = t.this_year_gaps;
-  if (!g || !g.values) return "";
+  if (g && g.reliable === false) return `<div class="callout bad small" style="margin-top:10px"><b>This year's figures aren't shown: only ${Math.round(g.found_share * 100)}% of the ${g.reads.toLocaleString()} client values they read were found in this year's model.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. Find or pick the rows the figures' cash flows come from in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; they show here once enough is found. <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>
+    <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
+  if (!g || !g.values) return g?.rebuilt ? `<div class="callout warn small" style="margin-top:10px">The two client models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised. Every value the figures read was found, but check the rows in The facts.</div>` : "";
   return `<div class="callout warn small" style="margin-top:10px"><b>${g.values.toLocaleString()} client value(s) on ${g.rows.length}${g.rows.length >= 30 ? "+" : ""} line item(s) weren't found in this year's model</b>${g.stood_in ? `; last year's values stand in for ${g.stood_in.toLocaleString()} of them` : ""}, so "This year" is last year's model with this year's numbers where they were found. The rows the report's figures' cash flows come from, what was found for each and how, are in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>, with a picker for the right row; the rest are listed here. <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
+}
+function rollDates() {
+  const r = SUM.data?.roll_plan || E.overlay?.roll, c = r?.confirmed || {};
+  if (!r?.dates) return "";
+  const d = r.dates, chk = k => c[k] ? "" : ` <span class="pill warn" title="Read from the file, not checked: check it in Files">not checked</span>`;
+  return ` <span class="small">Valuation date ${esc(d.overlay || "?")} (last year's${chk("overlay")}) to ${esc(r.current_valuation_date || "?")} (this year's model${chk("current_client")}), ${r.months} month(s); annual periods move only when a year-end has passed.</span>`;
 }
 function summaryCard(d) {
   const t = d.table;
@@ -1684,6 +1707,7 @@ function summaryCard(d) {
     const v = r.values?.[col], lo = r.low?.[col], hi = r.high?.[col];
     const delta = col === "scenario" && typeof v === "number" && typeof r.values?.[base] === "number" && Math.abs(v - r.values[base]) > 1e-9
       ? `<div class="delta ${v > r.values[base] ? "" : "muted"}">${v > r.values[base] ? "+" : ""}${sumNum(r, v - r.values[base])} vs ${col === base ? "base" : "this year"}</div>` : "";
+    if ((col === "this_year" || col === "scenario") && unreliable(t)) return `<td class="num"><span class="small muted" title="Too little of this year's model was found for these figures">needs rows</span></td>`;
     return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "rebuilt" ? tick(r) : ""}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}` : `<span class="muted small">not in the overlay</span>`}</td>`;
   };
   const lev = (r, col) => {
@@ -1700,7 +1724,7 @@ function summaryCard(d) {
   const V = E.overlay?.validation, gap = V && V.matched < V.cells ? V.cells - V.matched : 0;
   const errNote = errs.length ? `<div class="callout bad small" style="margin-top:10px"><b>${errs.length} figure(s) come out as Excel errors</b> (${esc([...new Set(errs.flatMap(r => cols.map(c => r.values?.[c]).filter(isErr)))].join(", "))}) in the Python overlay${gap ? `, which differs from Excel in ${gap.toLocaleString()} formula cell(s)` : ""}. <a href="#" data-go="doctor">The doctor</a> follows them back to the cells where they start, says why, and checks the files and rows being read.</div>` : "";
   return `<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-end"><div><h2>Valuation summary</h2>
-    <p class="sub" style="margin:0">Rows from last year's report. ${t.feeds.rebuilt === "prior" ? "The rebuild feeds the overlay from last year's client model;" : "The rebuild uses the values saved in the overlay;"} this year feeds it from this year's client model, rolled forward${t.roll?.valuation_date ? ` to ${esc(t.roll.valuation_date)}` : ""}.</p></div>
+    <p class="sub" style="margin:0">Rows from last year's report. ${t.feeds.rebuilt === "prior" ? "The rebuild feeds the overlay from last year's client model;" : "The rebuild uses the values saved in the overlay;"} this year feeds it from this year's client model, rolled forward${t.roll?.valuation_date ? ` to ${esc(t.roll.valuation_date)}` : ""}.${rollDates()}</p></div>
     <div class="row small" style="gap:10px;align-items:flex-end">${t.feeds.scenario === "current" ? `<label class="muted">Valuation date<br><input type="date" id="sumVd" value="${esc(SUM.vd || vdDefault)}"></label>` : ""}
       <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
       <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>
@@ -1821,6 +1845,7 @@ function bindSummary() {
   $("#sumTiming")?.addEventListener("change", e => { if (e.target.value) SUM.method.timing = e.target.value; else delete SUM.method.timing; loadSummary(); });
   $("#sumDc")?.addEventListener("change", e => { if (e.target.value) SUM.method.day_count = e.target.value; else delete SUM.method.day_count; loadSummary(); });
   $("#sumReset")?.addEventListener("click", () => { SUM.changes = {}; SUM.vd = null; SUM.method = {}; loadSummary(); });
+  $("#sumShowAnyway")?.addEventListener("click", e => { e.preventDefault(); SUM.showAnyway = !SUM.showAnyway; redrawSummary(); });
   document.querySelectorAll("#main a[data-go]").forEach(a => a.onclick = e => { e.preventDefault(); if (a.dataset.tab) OV.tab = a.dataset.tab; go(a.dataset.go); });
   $("#sumCharts")?.addEventListener("click", () => act(async () => { await api(`/api/engagements/${E.id}/charts`, {method: "POST"}); SUM.chartsSeen = "queued"; }));
   (d.charts?.charts || []).forEach((c, i) => {

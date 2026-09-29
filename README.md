@@ -224,8 +224,9 @@ person before the next relies on it:
    Which version is earlier is decided by the identified valuation date, then the date in the file name
    ("20250523 …", "Jun 25", "FY26", "BP25"), then the timeline's first period. When the overlay sits in a copy of a
    client model that is also uploaded as its own file (v2.1 = v2.0 plus an overlay sheet), the client's own file
-   is the prior client model. The overlay's copy of the client sheets is then fed from it, so feeding the prior
-   model checks the copy matches the file. Each suggestion lists plain checks (✓ / ✗ / ?) and gets a second
+   is the prior client model, whatever its date: an adviser builds on the model the client sent and values at a
+   later date, so the dates are given as reasons, not required to match. The overlay's copy of the client sheets
+   is then fed from it, so feeding the prior model checks the copy matches the file. Each suggestion lists plain checks (✓ / ✗ / ?) and gets a second
    opinion from the reviewer model on the same evidence. The model can disagree, with reasons, and its assignment
    can be taken with one click; nothing is assigned until the person confirms. Only one suggestion runs at a
    time, and a workbook's external-link tables are built while it's processed, so suggestions don't write to a
@@ -233,7 +234,11 @@ person before the next relies on it:
 
    The report's facts then add the stronger evidence: an overlay sheet holds the report's conclusions or
    valuation-only assumptions (label and value must both agree), or a DCF that `valuation.py` reproduces, or reads
-   such a sheet. A DCF that another version of the model also has is the client's own, not the overlay. The prior
+   such a sheet. A sheet that another version of the model also has is the client's own, not the overlay, even
+   when a report figure matches a cell on it (a cost of equity on the client's assumptions sheet) or its DCF is
+   reproduced; and following what reads the valuation stops at such sheets and at 60% of the workbook's
+   formulas (past that, a hub the whole model reads was taken for the valuation). When the reviewer model
+   disagrees with confidence, the status panel and the needs-you list say so. The prior
    client model is the file the overlay's external links point to. `bench/extlinks.py` reads `xl/externalLinks`
    and checks the link's cached values against the file. Prior vs current is decided by timeline start, within
    the versions of one model. The suggestion redoes itself whenever the files or the report facts change, until
@@ -261,24 +266,33 @@ person before the next relies on it:
    The page runs the module live. Levers are the report's assumptions located in the overlay, and any other input
    can be found by search and changed. Results update as you type. There are three feeds: the workbook as saved, the
    prior client model, or the current client model **rolled forward**. Rolling forward moves the overlay's period
-   dates on by the roll and sets the valuation-date lever to the new date. The roll comes from the valuation dates
-   identified in the two client models; failing that, from how far the client sheets' timelines moved (the most
-   common forward move across sheets, since a model that keeps more history this year starts earlier); failing
-   that, 12 months, flagged for a check. The page says which. Client values come from the same line item in the
-   period with the rolled date, found however this year's model changed (`bench/rowfind.py`). Each of last year's
-   rows is looked for several ways, and the one the evidence supports best is taken:
-   - **label**: the same label on the same sheet (its n-th occurrence, else the nearest), or on the sheet a renamed
-     sheet became (the one sharing most of its labels);
+   dates on and sets the valuation-date lever to the new date. The valuation date moves from last year's (the
+   report's) to this year's client model's, not by the gap between the two client models (the overlay can sit
+   on a copy of a model of another date); without last year's, by the gap between the client models; failing
+   those, by how far the client sheets' timelines moved; failing that, 12 months, flagged for a check. The dates
+   are read from the files each time (a date corrected in Files moves the roll without a rebuild) and can be
+   checked on the Files page; the Summary shows them and which are checked. Periods move separately from the
+   valuation date, sheet by sheet, by the whole periods that ended in between: from September to December an
+   annual sheet's FY2026 is still FY2026 while a quarterly sheet moves one quarter (moving an annual sheet by
+   three months would land on dates it doesn't have). Client values come from the same line item in the period,
+   found however this year's model changed (`bench/rowfind.py`). Each of last year's rows is looked for several
+   ways, and the one the evidence supports best is taken:
+   - **label**: the same label on the same sheet (its n-th occurrence, else the nearest), provided the sheet of
+     that name shares at least 35% of its labels (a rebuilt model can reuse a name for something else); on the
+     sheet a renamed sheet became (one sharing half its labels); else a label found once anywhere in the model;
    - **history**: the same values in the periods both models have as history, on any sheet (actual years don't
      change between versions), with later years close;
-   - **words**: a label on the same sheet sharing most of its words, the values close;
+   - **words**: a label sharing most of its words, the values close, on the corresponding sheet or anywhere;
    - **neighbours**: the same rows around it in the dependency graph (it reads rows labelled as its inputs were,
      and is read by rows labelled as its users were);
    - **banner**: a summary cell in a sheet's first ten rows that read the row last year, found again by its label.
    The same label in place with last year's history comes first; a label whose history contradicts it gives way
    to the row that has last year's numbers. A person's pick wins over all of them. Where nothing is found, last
-   year's value for the same period stands in, never a blank (which would read as zero), and the Summary says
-   how many values stood in, on which line items. The Map uses the same finding. Each output shows its Python function and the client values it
+   year's value stands in (its forecast for the same period, else the cell it read), never a blank (which would
+   read as zero), and the Summary says how many values stood in, on which line items. When under half of the
+   client values the figures read are found, the Summary doesn't show this year's figures (they'd be last
+   year's numbers under this year's name): it says so, how alike the two models are, and points to the rows to
+   pick; the bridge waits too. The Map uses the same finding. Each output shows its Python function and the client values it
    reads. The module is saved as `out/overlays/e<id>/overlay.py`; open it from the page, or run it from a terminal:
    `uv run python bench/overlay.py <id> --mode current --set Val_Inputs!C5=0.075`.
 

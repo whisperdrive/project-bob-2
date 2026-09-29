@@ -22,6 +22,8 @@ from collections import defaultdict
 
 BANNER_ROWS = 10
 EXACT = 1e-9
+SAME_SHEET = 0.35     # a sheet of the same name is the same sheet only if it shares this much of its labels
+RENAMED_SHEET = 0.5   # a sheet of another name is a renamed one if it shares this much
 
 
 def _norm(label: str) -> str:
@@ -56,7 +58,11 @@ class RowFinder:
             if lab:
                 by_label[_norm(lab)].append((s, r))
         dates = {s: {v: c for c, v in cur.timeline(s).items()} for s in sheets}
-        self._idx = {"sheets": set(sheets), "labels": labels, "by_label": by_label, "dates": dates,
+        by_word = defaultdict(list)
+        for k, lab in labels.items():
+            for w in _words(lab):
+                by_word[w].append(k)
+        self._idx = {"sheets": set(sheets), "labels": labels, "by_label": by_label, "dates": dates, "by_word": by_word,
                      "edges": (self._edges(self.prior), self._edges(cur)), "values": {}}
         return self._idx
 
@@ -75,24 +81,26 @@ class RowFinder:
         return reads, read_by
 
     def sheet_for(self, s: str) -> str | None:
-        """The sheet in this year's model that last year's sheet s is: the same name, else (renamed) the sheet
-        sharing most of its line-item labels."""
+        """The sheet in this year's model that last year's sheet s is: the same name if it shares at least
+        SAME_SHEET of its line-item labels (a rebuilt model can reuse a name for something else), else the sheet of
+        another name sharing RENAMED_SHEET of them (renamed); None when no sheet does."""
         idx = self._index()
-        if "sheet_map" not in idx:
-            idx["sheet_map"] = {}
+        idx.setdefault("sheet_map", {})
         if s in idx["sheet_map"]:
             return idx["sheet_map"][s]
-        if s in idx["sheets"]:
+        mine = {_norm(l) for (sh, _), l in self.prior.labels().items() if sh == s and l}
+        labels_of = lambda sh: {_norm(l) for (x, _), l in idx["labels"].items() if x == sh and l}
+        if s in idx["sheets"] and (not mine or _jaccard(mine, labels_of(s)) >= SAME_SHEET):
             idx["sheet_map"][s] = s
             return s
-        mine = {_norm(l) for (sh, _), l in self.prior.labels().items() if sh == s and l}
         best, share = None, 0.0
         for sh in idx["sheets"]:
-            theirs = {_norm(l) for (x, _), l in idx["labels"].items() if x == sh and l}
-            j = _jaccard(mine, theirs)
-            if j > share and not self._has_prior_sheet(sh):
+            if sh == s or self._has_prior_sheet(sh):
+                continue
+            j = _jaccard(mine, labels_of(sh))
+            if j > share:
                 best, share = sh, j
-        idx["sheet_map"][s] = best if share >= 0.5 else None
+        idx["sheet_map"][s] = best if share >= RENAMED_SHEET else None
         return idx["sheet_map"][s]
 
     def _has_prior_sheet(self, sheet: str) -> bool:
@@ -122,20 +130,25 @@ class RowFinder:
     # ---- the strategies ----------------------------------------------------------------------------------------
     def _by_label(self, s, r) -> list[tuple]:
         idx = self._index()
-        if s in idx["sheets"]:
-            r2, how = self.rowmap.match(s, r)
-            return [((s, r2), 1.0 if how.startswith("same label") else 0.4, how)] if r2 else []
-        lab = _norm(self.prior.labels().get((s, r), ""))
         to = self.sheet_for(s)
-        if to and lab:  # the sheet was renamed: the label on the sheet it became, its occurrence counted as before
+        if to == s:
+            r2, how = self.rowmap.match(s, r)
+            if r2:
+                return [((s, r2), 1.0 if how.startswith("same label") else 0.4, how)]
+        lab = _norm(self.prior.labels().get((s, r), ""))
+        if to and to != s and lab:  # the sheet was renamed: the label on the sheet it became, occurrence as before
             n = sum(1 for (sh, rr), l in self.prior.labels().items() if sh == s and rr <= r and _norm(l) == lab)
             there = sorted(rr for (sh, rr) in idx["by_label"].get(lab, []) if sh == to)
             if there:
                 r2 = there[min(n, len(there)) - 1]
                 return [((to, r2), 0.9, f"same label on sheet {to} (last year's {s}, renamed)")]
         hits = idx["by_label"].get(lab, []) if lab else []
+        where = f"sheet {s} isn't in this year's model" if s not in idx["sheets"] else \
+            f"this year's {s} isn't last year's (they share few labels)" if not to else f"not on {to}"
         if len(hits) == 1:
-            return [(hits[0], 0.8, f"the only row labelled '{self.prior.labels().get((s, r))}' (sheet {s} isn't in this year's model)")]
+            return [(hits[0], 0.8, f"the only row labelled '{self.prior.labels().get((s, r))}' ({where})")]
+        if 1 < len(hits) <= 5:
+            return [(k, 0.5, f"one of {len(hits)} rows labelled '{self.prior.labels().get((s, r))}' ({where})") for k in hits]
         return []
 
     def _history(self, mine: dict, k: tuple) -> tuple | None:
@@ -176,18 +189,23 @@ class RowFinder:
         return out
 
     def _by_words(self, s, r) -> list[tuple]:
-        """A label on the same sheet sharing most of its words, with the forecast staying close."""
+        """A label sharing most of its words, with the forecast staying close: on the sheet last year's sheet is
+        this year, or anywhere when no sheet corresponds (then with more words in common)."""
         idx = self._index()
         mine_words = _words(self.prior.labels().get((s, r), ""))
-        if s not in idx["sheets"] or not mine_words:
+        if not mine_words:
             return []
+        to = self.sheet_for(s)
+        floor = 0.4 if to else 0.5
         mine = self._series(self.prior, s, r)
+        cands = {k for w in mine_words for k in idx["by_word"].get(w, ())}
         out = []
-        for (s2, r2), lab in idx["labels"].items():
-            if s2 != s:
+        for (s2, r2) in sorted(cands):
+            if to and s2 != to:
                 continue
+            lab = idx["labels"].get((s2, r2), "")
             sim = _jaccard(mine_words, _words(lab))
-            if sim < 0.4 or _norm(lab) == _norm(self.prior.labels().get((s, r), "")):
+            if sim < floor or _norm(lab) == _norm(self.prior.labels().get((s, r), "")):
                 continue
             theirs = self._series(self.current, s2, r2)
             both = [w for w in mine if w in theirs and mine[w]]
@@ -306,6 +324,16 @@ class RowFinder:
                 res["alternatives"] = [a for a in res["alternatives"] if a["row"] != f"{k[0]}!r{k[1]}"]
         self._cache[key] = res
         return res
+
+    def family(self) -> float:
+        """How alike the two models are: the share of line-item labels they have in common (a new version of a
+        model shares most; a model rebuilt from the ground up, few)."""
+        idx = self._index()
+        if "family" not in idx:
+            mine = {_norm(l) for l in self.prior.labels().values() if l}
+            theirs = {_norm(l) for l in idx["labels"].values() if l}
+            idx["family"] = round(_jaccard(mine, theirs), 3)
+        return idx["family"]
 
     def locate(self, s: str, r: int) -> tuple | None:
         return self.explain(s, r)["found"]
