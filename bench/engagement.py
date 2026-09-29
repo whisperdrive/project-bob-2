@@ -1139,7 +1139,10 @@ def _overlay(eid: int) -> None:
     _set("engagements", eid, overlay_json=json.dumps(summary, default=str), overlay_status="done", overlay_step="Done",
          updated_at=time.time())
     if summary["wiring"].get("current"):  # the row agents take it from here, without anyone starting them
-        start_rows(eid)
+        try:
+            start_rows(eid)
+        except ValueError:  # the build itself succeeded
+            pass
 
 
 def _this_year_file(eid: int) -> Path:
