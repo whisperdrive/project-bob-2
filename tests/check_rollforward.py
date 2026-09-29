@@ -245,6 +245,50 @@ def main() -> None:
     finally:
         ov.deep(fnd.pick, "CF", 11, None)
     print("weak: ok (a row found weakly holds the figures until it's kept, picked, or its last year's values kept on purpose)")
+    # ---- timing: the forecast flag found only weakly is worked out from the period dates (1 for periods ending
+    # after the valuation date), giving the figure the row found gives; with no such relation it's a row to find
+    # (on the roll this year's model is built for: June 2025 to June 2026, where FY2026 is this year's actual)
+    rule = ov.timing_rule(sess.prior, "CF", 2, sess.base_vd)
+    assert rule and rule["kind"] == "after", rule
+    assert ov.timing_rule(sess.prior, "CF", 3, sess.base_vd)["kind"] in ("timeline", "end")
+    assert ov.timing_rule(sess.prior, "CF", 11, sess.base_vd) is None  # an amount follows from no date
+    saved_roll = dict(summary["roll"])
+    summary["roll"].update(ov.deep(plan, "2025-06-30", "2025-06-30", "2026-06-30")[0])
+    found_val, _ = ov.deep(this_year)
+    fnd.confident = lambda s_, r_: sure(s_, r_) and (s_, r_) != ("CF", 2)
+    real_rule = ov.timing_rule
+    try:
+        g = ov.deep(gate)
+        t2 = next(x for x in g["timing"] if x["row"] == "CF!r2")
+        assert t2["derived"] and not t2["open"] and g["reliable"], g
+        derived_val, _ = ov.deep(this_year)
+        assert sess.derived_used and abs(derived_val - found_val) < 1e-9, (derived_val, found_val)
+        ov.timing_rule = lambda *a: None
+        g = ov.deep(gate)
+        assert not g["reliable"] and next(x for x in g["timing"] if x["row"] == "CF!r2")["open"], g
+    finally:
+        ov.timing_rule = real_rule
+        fnd.confident = sure
+        summary["roll"].clear()
+        summary["roll"].update(saved_roll)
+        ov.deep(plan, "2025-09-30", "2025-06-30", "2025-12-31")
+    assert ov.deep(gate)["reliable"] and not sess.derived
+    print(f"timing rows: ok (a flag found weakly is worked out from the period dates: {derived_val:.3f}, as with the row)")
+    # ---- the zero-roll check: this year's model at last year's valuation date gives about last year's figure;
+    # a wrong row, found confidently, doesn't
+    zero_of = lambda: next(r for r in ov.summary_table(sess, summary, FACTS)["rows"] if r.get("cell") == "Report!C5")
+    zr = ov.deep(zero_of)["zero_roll"]
+    assert zr["ok"] and 0.9 < zr["ratio"] < 1.1 and zr["valuation_date"] == "2025-09-30", zr
+    fnd.locate = lambda s_, r_: ("CF", 13) if (s_, r_) == ("CF", 11) else real(s_, r_)  # the reserve top-up row
+    try:
+        t = ov.deep(lambda: ov.summary_table(sess, summary, FACTS))
+        g, row = t["this_year_gaps"], next(r for r in t["rows"] if r.get("cell") == "Report!C5")
+        assert not row["zero_roll"]["ok"] and row["zero_roll"]["ratio"] < 0.75 and not g["reliable"], row["zero_roll"]
+        assert [x["cell"] for x in g["zero_roll_off"]] == ["Report!C5"] and not g["by_cell"]["Report!C5"]["reliable"]
+    finally:
+        fnd.locate = real
+    print(f"zero roll: ok (at last year's date this year's model gives {zr['ratio']:.3f}x last year's; a wrong row "
+          f"gives {row['zero_roll']['ratio']:.3f}x and holds the figure)")
     ov.deep(sess.configure, "workbook")
     roles_check(res, db)
     rebuilt_check(out)

@@ -330,6 +330,7 @@ details.work[open] summary::before { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .composer .mic.on { animation: none; } }
 .dict-note { min-height: 18px; margin-top: 6px; }
 .dict-note.bad { color: var(--bad); }
+.bad-text { color: var(--bad); }
 /* the call log dialog */
 dialog#callsDlg { border: 1px solid var(--rule-strong); border-radius: 8px; background: var(--ground); color: var(--ink); padding: 0; width: min(1100px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
 dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
@@ -1708,6 +1709,11 @@ function gapReasons(g) {  // why this year's figures aren't shown: [{short, long
     long: `${g.dcf_missing.length} of the ${g.dcf_rows} rows the DCF's cash flows come from weren't found in this year's model`});
   if (g.weak_rows?.length) out.push({short: `${g.weak_rows.length} row(s) matched weakly or not found`,
     long: `${g.weak_rows.length} row(s) the figures read were matched only weakly this year (confidence under 0.5: often a pasted copy or a lookalike) or not found, and nobody has checked them`});
+  const tOpen = (g.timing || []).filter(x => x.open);
+  if (tOpen.length) out.push({short: `${tOpen.length} timing row(s) not found well`,
+    long: `${tOpen.length} row(s) of the timing the discounting depends on weren't found well and don't follow from the period dates`});
+  if (g.zero_roll_off?.length) out.push({short: `${g.zero_roll_off.length} figure(s) off at last year's date`,
+    long: `on this year's model at last year's valuation date, ${g.zero_roll_off.map(x => `${x.label} comes to ${typeof x.value === "number" ? vN(x.value) : x.value}${x.ratio != null ? ` (${x.ratio.toFixed(2)}× last year's)` : ""}`).join("; ")}: the rows found don't carry last year's numbers`});
   if (g.blank_rows?.length) out.push({short: `${g.blank_rows.length} row(s) found but blank this year`,
     long: `${g.blank_rows.length} row(s) the figures read were found in this year's model but are blank there in most periods (usually the wrong row: an actuals sheet has last year's history and nothing after it)`});
   if (g.basis !== "dcf" && g.found_share < 0.5) out.push({short: `${Math.round(g.found_share * 100)}% of its client values found`,
@@ -1717,14 +1723,15 @@ function gapReasons(g) {  // why this year's figures aren't shown: [{short, long
 function gapNote(t) {
   const g = t.this_year_gaps;
   const need = g ? [...(g.dcf_missing || []), ...(g.blank_rows || []).map(x => ({...x, why: `found at ${x.found}, but blank there in ${x.blank} of the ${x.of} periods read`})),
-    ...(g.weak_rows || []).map(x => ({...x, why: x.found ? `matched to ${x.found}, confidence ${x.confidence.toFixed(2)} (${x.how}): keep it if it's right` : "not found this year"}))] : [];
+    ...(g.weak_rows || []).map(x => ({...x, why: x.found ? `matched to ${x.found}, confidence ${x.confidence.toFixed(2)} (${x.how}): keep it if it's right` : "not found this year"})),
+    ...(g.timing || []).filter(x => x.open).map(x => ({...x, why: `timing the discounting depends on (${x.why}): ${x.found ? `matched weakly to ${x.found}` : "not found"}, and it doesn't follow from the period dates`}))] : [];
   const P = SUM.rowPick;
   const list = need.length ? `<ul class="why small" style="margin-top:6px">${need.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label)}: ${esc(x.why)}
       ${P?.row === x.row ? rowPicker(P, "sum") : `<button class="btn small ghost" data-sumpick="${esc(x.row)}">Pick this year's row</button>`}</li>`).join("")}</ul>` : "";
   const held = g?.by_cell ? t.rows.filter(r => r.kind === "conclusion" && g.by_cell[r.cell]?.reliable === false) : [];
   const shown = g?.by_cell ? t.rows.filter(r => r.kind === "conclusion" && g.by_cell[r.cell]?.reliable === true) : [];
   const what = held.length && shown.length ? `This year's ${held.map(r => r.label).join(", ")} ${held.length === 1 ? "isn't" : "aren't"} shown` : "This year's figures aren't shown";
-  const timing = g?.timing?.length ? `<details class="work" data-k="gap-timing" style="margin-top:6px"><summary>Timing the discounting depends on (${g.timing.length} row(s), not asked for)</summary><div class="in"><ul class="why small">${g.timing.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label)} (${esc(x.why)}): ${x.found ? `this year <span class="mono">${esc(x.found)}</span>` : "not found; last year's stands in"}</li>`).join("")}</ul></div></details>` : "";
+  const timing = g?.timing?.length ? `<details class="work" data-k="gap-timing" style="margin-top:6px"><summary>Timing the discounting depends on (${g.timing.length} row(s): found, or worked out from the period dates)</summary><div class="in"><ul class="why small">${g.timing.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label)} (${esc(x.why)}): ${x.derived ? `worked out: ${esc(x.derived)}` : x.found ? `this year <span class="mono">${esc(x.found)}</span>` : "not found"}${x.open ? ` <span class="pill bad">open</span>` : ""}</li>`).join("")}</ul></div></details>` : "";
   if (g && g.reliable === false) return `<div class="callout bad small" style="margin-top:10px"><b>${esc(what)}: ${esc(gapReasons(g).map(r => r.long).join("; and "))}.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. ${need.length ? `Check each row below: pick this year's row, keep the one found, or keep last year's values on purpose (<a href="#" data-go="python" data-tab="valuation">The facts</a> shows where the DCF's cash flows come from); the figures show here once they're all settled.` : `Pick the rows the figures' cash flows come from in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; the figures show here once enough is found.`}${g.stood_in ? ` Meanwhile last year's values stand in for ${g.stood_in.toLocaleString()} client value(s).` : ""} <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>${list}${timing}
     <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
   if (!g || !g.values) return g?.rebuilt ? `<div class="callout warn small" style="margin-top:10px">The two client models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised. Every value the figures read was found, but check the rows in The facts.</div>` : "";
@@ -1749,8 +1756,10 @@ function summaryCard(d) {
     const v = r.values?.[col], lo = r.low?.[col], hi = r.high?.[col];
     const delta = col === "scenario" && typeof v === "number" && typeof r.values?.[base] === "number" && Math.abs(v - r.values[base]) > 1e-9
       ? `<div class="delta ${v > r.values[base] ? "" : "muted"}">${v > r.values[base] ? "+" : ""}${sumNum(r, v - r.values[base])} vs ${col === base ? "base" : "this year"}</div>` : "";
-    if ((col === "this_year" || col === "scenario") && unreliable(t, r)) return `<td class="num"><span class="small muted" title="Too little of this year's model was found for these figures">needs rows</span></td>`;
-    return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "rebuilt" ? tick(r) : ""}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}` : `<span class="muted small">not in the overlay</span>`}</td>`;
+    const z = col === "this_year" && r.zero_roll;  // this year's model at last year's date, against last year's
+    const zero = z && z.value != null ? `<div class="small ${z.ok ? "muted" : "bad-text"}" title="This year's model at last year's valuation date (${esc(z.valuation_date || "")}), rolled by nothing: about last year's figure if the rows found carry the same numbers">at last year's date ${sumNum(r, z.value)}${z.ratio != null ? ` (${z.ratio.toFixed(2)}×)` : ""}</div>` : "";
+    if ((col === "this_year" || col === "scenario") && unreliable(t, r)) return `<td class="num"><span class="small muted" title="Too little of this year's model was found for these figures">needs rows</span>${zero}</td>`;
+    return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "rebuilt" ? tick(r) : ""}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}${zero}` : `<span class="muted small">not in the overlay</span>`}</td>`;
   };
   const lev = (r, col) => {
     const l = r.lever; if (!l) return `<td class="num muted small">${col === "scenario" ? "" : "–"}</td>`;
@@ -1899,7 +1908,7 @@ function bindSummary() {
   $("#sumThisVdClear")?.addEventListener("click", () => setThisVd(null));
   document.querySelectorAll("[data-sumpick]").forEach(b => b.onclick = async () => {
     const row = b.dataset.sumpick, g = SUM.data?.table?.this_year_gaps;
-    const x = [...(g?.dcf_missing || []), ...(g?.blank_rows || []), ...(g?.weak_rows || [])].find(y => y.row === row);
+    const x = [...(g?.dcf_missing || []), ...(g?.blank_rows || []), ...(g?.weak_rows || []), ...(g?.timing || [])].find(y => y.row === row);
     SUM.rowPick = {row, label: x?.label, t: null, q: (x?.label || "").split(/\s+/).slice(0, 3).join(" "), results: null, loading: true, auto: true};
     redrawSummary();
     try { if (SUM.rowPick?.row === row) SUM.rowPick.t = await api(`/api/engagements/${E.id}/overlay/row?row=${encodeURIComponent(row)}`); }

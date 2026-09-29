@@ -314,8 +314,14 @@ person before the next relies on it:
    found or mostly stands in, or, with no discounting recognised under it, while under half of the client
    values the figures read are found; all are while a row the figures read is found but blank this year in more
    than a fifth of its periods, or found with a confidence under 0.5 (or not at all) and not yet checked by a
-   person (the same label in the same place counts as found well). Rows of period flags and dates (by their labels, 0/1 values or rising dates)
-   are the timing the discounting depends on: listed apart, not asked for. The page says why, how alike the two
+   person (the same label in the same place counts as found well). Rows of period flags and dates found no
+   better are worked out from the rolled period dates where one relation held for every period last year
+   (the period's date, end or start, its year, 1 after the valuation date or up to it, a constant), and
+   count like any other row where none did. Last, the **zero-roll check**: this year's model at last year's
+   valuation date, rolled by nothing, should give about last year's figure (0.75 to 1.33 times it:
+   forecasts are revised, not replaced). A figure outside that is held whatever the other tests say (the rows
+   found don't carry last year's numbers), and every figure shows its value at last year's date. Rows of period flags and dates (by their labels, 0/1 values or rising dates)
+   are the timing the discounting depends on: listed apart. The page says why, how alike the two
    models are, and lists each row it needs with a button to pick this year's row; the bridge leaves out the
    figures held back. The Map uses the same finding. Each output shows its Python function and the client values it
    reads. The module is saved as `out/overlays/e<id>/overlay.py`; open it from the page, or run it from a terminal:

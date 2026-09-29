@@ -256,6 +256,8 @@ class Session:
             self.rowmap = rowfind.RowFinder(RowMap(base, self.current), base, self.current)
         self.stood_in = {}  # (sheet, row, col) -> last year's value, used where this year's model has no match
         self.blank = {}  # (sheet, row, col) -> this year's cell found for it, blank where last year's had a value
+        self.derived = {}  # (sheet, row) -> timing rule: a period flag or date row worked out from the period dates
+        self.derived_used = {}  # (sheet, row, col) -> the rule, where a value was worked out on the current feed
         self.client_reads = set()  # (sheet, row, col) of last year's model read on the current feed
         self.base_vd = None  # last year's valuation date (serial): the roll's start
         self._pshift = {}
@@ -271,6 +273,7 @@ class Session:
         self.unmatched = {}
         self.stood_in = {}
         self.blank = {}
+        self.derived_used = {}
         self.client_reads = set()
         B.overrides.clear()
         B.overrides.update(self.holds)
@@ -309,6 +312,11 @@ class Session:
         self.client_reads.add((s, r, c))
         tl_p = prior.timeline(s)
         want = add_months(tl_p[c], self.period_shift(prior, s)) if c in tl_p else None
+        rule = self.derived.get((s, r))
+        if rule and want is not None:  # timing worked out from the rolled period date, not hunted for
+            self.derived_used[(s, r, c)] = rule["text"]
+            new_vd = add_months(self.base_vd, self.shift) if self.base_vd is not None else None
+            return timing_value(rule, want, new_vd)
         hit = self.rowmap.locate(s, r)
         if hit is None:
             self.unmatched[(s, r, c)] = self.rowmap.why(s, r, prior.labels())
@@ -649,6 +657,7 @@ def roll_months(sess: Session, prior: dict | None, overlay: dict, same_file: boo
                 + "; check the roll-forward"), new(12)
 
 
+ZERO_ROLL = (0.75, 1.33)  # this year's model at last year's date, against last year's figure: about the same
 ROLL_PLAN = 3  # the rules' version: a roll planned by older rules is planned again when a session loads
 ROLL_MAX = 24  # months: a move beyond it from the timelines isn't a roll-forward
 ROLL_SHEETS = 5  # sheets: fewer can't show how far the timelines moved
@@ -741,6 +750,67 @@ def _range_cells(db, cell: str, texts: list, scale: float, sign: int, sheets: li
     return out
 
 
+def timing_rule(wb: Workbook, s: str, r: int, vd: float | None) -> dict | None:
+    """How a timing row (period flags, period dates) follows from its sheet's period dates, if one relation holds
+    for every period last year: the period's date as the header shows it, its end, its start, the year it ends
+    in (plus a constant), 1 after the valuation date (or up to it) and 0 otherwise, or one constant. Then this
+    year's value is worked out from the rolled period date instead of hunting for a row: the period grid is a
+    property of the model."""
+    tl = wb.timeline(s)
+    vals = wb.sheet(s)
+    pts = [(tl[c], vals.get((r, c))) for c in sorted(tl)]
+    pts = [(t, float(v)) for t, v in pts if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if len(pts) < 2:
+        return None
+    dates = sorted(set(tl.values()))
+    gaps = sorted(b - a for a, b in zip(dates, dates[1:]))
+    plen = max(1, round(gaps[len(gaps) // 2] / 30.44)) if gaps else 12
+    starts = all(to_date(d).day == 1 for d in dates)
+    base = {"plen": plen, "starts": starts}
+    tries = [("timeline", "the period's date"), ("end", "the period's end"), ("start", "the period's start")]
+    for kind, text in tries:
+        rule = {**base, "kind": kind, "text": f"{text}, from the period dates"}
+        if all(abs(timing_value(rule, t, vd) - v) < 0.5 for t, v in pts):
+            return rule
+    off = {v - to_date(_period_end(base, t)).year for t, v in pts}
+    if len(off) == 1:
+        o = off.pop()
+        if abs(o) <= 1:
+            return {**base, "kind": "year", "offset": o, "text": "the year the period ends in, from the period dates"}
+    if vd is not None and {v for _, v in pts} <= {0.0, 1.0}:
+        for kind, text in (("after", "1 for periods ending after the valuation date"),
+                           ("upto", "1 for periods ending by the valuation date")):
+            rule = {**base, "kind": kind, "text": f"{text}, from the period dates"}
+            if all(timing_value(rule, t, vd) == v for t, v in pts):
+                return rule
+    if len({v for _, v in pts}) == 1:
+        return {**base, "kind": "const", "value": pts[0][1], "text": f"the same in every period ({pts[0][1]:g})"}
+    return None
+
+
+def _period_end(rule: dict, t: float) -> float:
+    return add_months(t, rule["plen"]) - 1 if rule["starts"] else t
+
+
+def timing_value(rule: dict, t: float, vd: float | None) -> float:
+    """A timing rule's value for the period whose header date is t, with valuation date vd."""
+    end = _period_end(rule, t)
+    k = rule["kind"]
+    if k == "timeline":
+        return t
+    if k == "end":
+        return end
+    if k == "start":
+        return t if rule["starts"] else add_months(t, -rule["plen"]) + 1
+    if k == "year":
+        return float(to_date(end).year + rule["offset"])
+    if k == "after":
+        return 1.0 if vd is not None and end > vd else 0.0
+    if k == "upto":
+        return 1.0 if vd is not None and end <= vd else 0.0
+    return rule["value"]
+
+
 def dcf_origins(sess: Session, summary: dict, cells: list[str]) -> dict:
     """For each figure, the client rows the discountings under it take their cash flows from (dcffacts.py):
     {cell: {"amounts": [(sheet, row)], "timing": [(sheet, row, why)]}}. The amounts are the rows this year's model
@@ -821,6 +891,16 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         if w.get("current") and sess.rowmap else {}
     origins = sorted({k for x in by_fig.values() for k in x["amounts"]})
     timing = sorted({k for x in by_fig.values() for k in x["timing"]} - {(s_, r_, "") for s_, r_ in origins})
+    # a timing row (period flags, period dates) not found well this year is worked out from the period dates,
+    # where one relation held for every period last year; else it's a row like any other
+    sess.derived = {}
+    if w.get("current") and sess.rowmap:
+        src = sess.prior or sess.ov
+        for s_, r_, _w in timing:
+            if not sess.rowmap.confident(s_, r_):
+                rule = timing_rule(src, s_, r_, sess.base_vd)
+                if rule:
+                    sess.derived[(s_, r_)] = rule
 
     def read(feed, with_changes, vd=None, mo=None):
         defaults, roll, mo = _feed(summary, feed, vd, mo)
@@ -859,6 +939,9 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         timing_rows = {(s_, r_) for s_, r_, _w in timing}
         weak_rows = [k for k in sorted(read_by_row) if k not in missing and k not in blank_rows
                      and k not in timing_rows and not sess.rowmap.confident(*k)]
+        # the timing the discounting depends on counts too: found well, or worked out from the period dates
+        timing_open = [k for k in sorted(timing_rows) if k in read_by_row and k not in sess.derived
+                       and not sess.rowmap.confident(*k)]
 
         def why_missing(k):
             if sess.rowmap.locate(*k) is None:
@@ -881,7 +964,7 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             by_cell[row["cell"]] = {"basis": "dcf" if mine else "share", "dcf_rows": len(mine),
                                     "missing": [f"{s_}!r{r_}" for s_, r_ in gone],
                                     "reliable": (not gone if mine else share >= 0.5) and not blank_rows and not weak_rows
-                                    and not date_hold}
+                                    and not timing_open and not date_hold}
             for part in ("low_cell", "high_cell"):
                 if row.get(part):
                     by_cell[row[part]] = by_cell[row["cell"]]
@@ -898,15 +981,41 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
                     (lambda ex: f"{ex['found'][0]}!r{ex['found'][1]}" if ex["found"] else None)(sess.rowmap.explain(s_, r_)),
                     sess.rowmap.explain(s_, r_)["confidence"], sess.rowmap.explain(s_, r_)["how"]))) for s_, r_ in weak_rows],
                 "timing": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "why": why,
-                            "found": (lambda h: f"{h[0]}!r{h[1]}" if h else None)(sess.rowmap.locate(s_, r_))}
+                            "found": (lambda h: f"{h[0]}!r{h[1]}" if h else None)(sess.rowmap.locate(s_, r_)),
+                            "derived": (sess.derived.get((s_, r_)) or {}).get("text"),
+                            "open": (s_, r_) in timing_open}
                            for s_, r_, why in timing],
                 "by_cell": by_cell, "date_check": date_hold,
                 "reliable": all(x["reliable"] for x in by_cell.values()) if by_cell
-                else (not missing if origins else share >= 0.5) and not blank_rows and not weak_rows and not date_hold,
+                else (not missing if origins else share >= 0.5) and not blank_rows and not weak_rows and not timing_open
+                and not date_hold,
                 "rebuilt": family is not None and family < 0.5,
                 "rows": [{"row": f"{s_}!r{r_}", "label": labels.get((s_, r_), ""), "values": n,
                           "why": sess.unmatched[next(k for k in sess.unmatched if k[:2] == (s_, r_))]}
                          for (s_, r_), n in by_row.most_common(30)]}
+    if this_feed and gaps is not None:
+        # the zero-roll check: this year's model at last year's valuation date, rolled by nothing, should give
+        # about last year's figures (forecasts are revised, not replaced). Far off, the rows found don't carry
+        # the same numbers, whatever the other tests say; rows standing in pass it trivially
+        pvd = (summary.get("roll") or {}).get("prior_valuation_date")
+        zero = cols["this_year"] if date_hold else (read(this_feed, False, pvd, 0)[0] if pvd else None)
+        for row in rows:
+            if row["kind"] != "conclusion" or not row.get("cell") or zero is None:
+                continue
+            k = parse_a1(row["cell"])
+            z, last = zero.get(k), cols["rebuilt"].get(k)
+            ratio = z / last if isinstance(z, float) and isinstance(last, float) and last else None
+            ok = ratio is not None and ZERO_ROLL[0] <= ratio <= ZERO_ROLL[1]
+            row["zero_roll"] = {"value": _show(z), "ratio": None if ratio is None else round(ratio, 4), "ok": ok,
+                                "valuation_date": pvd}
+            c = gaps["by_cell"].get(row["cell"])
+            if c is not None:
+                c["zero_roll"] = row["zero_roll"]
+                c["reliable"] = c["reliable"] and ok
+        gaps["zero_roll_off"] = [{"cell": r["cell"], "label": r["label"], **r["zero_roll"]} for r in rows
+                                 if r.get("zero_roll") and not r["zero_roll"]["ok"]]
+        if gaps["by_cell"]:
+            gaps["reliable"] = all(x["reliable"] for x in gaps["by_cell"].values())
     cols["scenario"], sc_roll, sc_defaults, sc_months = read(sc_feed, True, valuation_date, months)
     val = lambda col, cell: _show(cols[col].get(parse_a1(cell))) if cell else None
     for row in rows:
