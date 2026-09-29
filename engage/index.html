@@ -1682,7 +1682,8 @@ function confidence() {
   const conc = (t?.rows || []).filter(r => r.kind === "conclusion" && r.tie);
   out.push(conc.length ? [conc.every(r => r.tie.ok) ? "" : "no", `Last year's overlay, as saved: ${conc.filter(r => r.tie.ok).length} of ${conc.length} conclusions tie to the report`] : ["wait", "Last year not rebuilt yet"]);
   const moved = conc.filter(r => r.feed_moves).length;
-  if (conc.length) out.push([moved ? "no" : "", moved ? `Rebuilt on last year's client model: ${moved} of ${conc.length} move from as saved (the file isn't the overlay's version)` : "Rebuilt on last year's client model: the same as saved"]);
+  if (conc.length && t?.feeds?.rebuilt === "prior")  // fed from a client file of its own (not the overlay's own sheets)
+    out.push([moved ? "no" : "", moved ? `Rebuilt on last year's client model: ${moved} of ${conc.length} move from as saved (the file isn't the overlay's version)` : "Rebuilt on last year's client model: the same as saved"]);
   const v = O?.validation;
   if (v) out.push([v.matched === v.cells ? "" : "no", `Python equals Excel in ${v.matched.toLocaleString()} of ${v.cells.toLocaleString()} formula cells`]);
   const ch = (OVR.sum?.charts?.charts || []).filter(c => c.picks);
