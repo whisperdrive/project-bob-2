@@ -1447,7 +1447,7 @@ def _load_rowpicks(eid: int, sess) -> None:
 
 
 def _row_ref(text: str) -> tuple[str, int]:
-    m = re.match(r"^(.+)!r(\d+)$", text or "")
+    m = re.match(r"^(?:\[\d+\])?(.+)!r(\d+)$", text or "")  # [1]Sheet!r9: a row of the linked client model
     if not m:
         raise ValueError(f"not a row: {text!r} (Sheet!rN)")
     return m[1], int(m[2])
@@ -1491,7 +1491,7 @@ def overlay_facts(eid: int, start: str | None = None) -> dict:
             seen = {}
             for c in fx["discountings"]:
                 for o in c["origins"]:
-                    if o["row"] not in seen and not o["row"].startswith("["):
+                    if o["row"] not in seen:
                         seen[o["row"]] = row_found(sess, *_row_ref(o["row"]))
                     o["this_year"] = seen.get(o["row"])
         ovmod.deep(found)

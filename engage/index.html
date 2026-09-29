@@ -1671,7 +1671,7 @@ const sumNum = (row, v) => {  // a conclusion as the report prints it: its units
 function gapNote(t) {
   const g = t.this_year_gaps;
   if (!g || !g.values) return "";
-  return `<div class="callout warn small" style="margin-top:10px"><b>${g.values.toLocaleString()} client value(s) on ${g.rows.length}${g.rows.length >= 30 ? "+" : ""} line item(s) weren't found in this year's model</b>${g.stood_in ? `; last year's values stand in for ${g.stood_in.toLocaleString()} of them` : ""}, so "This year" is last year's model with this year's numbers where they were found. The rows the report's figures depend on, what was found for them and how, are in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>, where you can pick the right row. <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
+  return `<div class="callout warn small" style="margin-top:10px"><b>${g.values.toLocaleString()} client value(s) on ${g.rows.length}${g.rows.length >= 30 ? "+" : ""} line item(s) weren't found in this year's model</b>${g.stood_in ? `; last year's values stand in for ${g.stood_in.toLocaleString()} of them` : ""}, so "This year" is last year's model with this year's numbers where they were found. The rows the report's figures' cash flows come from, what was found for each and how, are in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>, with a picker for the right row; the rest are listed here. <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
 }
 function summaryCard(d) {
   const t = d.table;
@@ -2216,7 +2216,15 @@ function factsCard() {
     <p class="sub" style="margin:0">From the figure, every cell the Python overlay reads is followed (lookups and scenario switches as Excel took them, across sheets) down to the discounting, which is recognised by its numbers: cash flows times factors that add up to it exactly. Last year ties, so these are the facts to roll forward; then the client rows the cash flows come from are found in this year's model, however it changed.</p></div>${pick}</div>
     <div class="row" style="margin-top:10px"><b>${esc(f.label || f.cell)}</b> <span class="mono small muted">${esc(f.cell)}</span> <span class="vt-val">${num(f.value)}</span>${f.python_equals_excel ? `<span class="pill ok">✓ Python = Excel</span>` : `<span class="pill bad">Excel ${num(f.excel)}</span>`}
       <span class="small muted">${f.discountings.length} discounting(s) under it · ${f.cells_followed.toLocaleString()} cells followed</span><button class="btn small ghost" id="fxCopy" style="margin-left:auto">Copy the facts</button></div>
-    ${f.discountings.length ? cores : `<div class="callout bad small" style="margin-top:10px">No discounting found under this figure: nothing it reads adds up cash flows times factors between 0 and 1. <b>Copy the facts</b> and send them: they show what it reads.</div>`}</div>`;
+    ${f.discountings.length ? cores : `<div class="callout bad small" style="margin-top:10px">No discounting found under this figure: nothing it reads adds up cash flows times factors between 0 and 1. <b>Copy the facts</b> and send them: they list where the walk stopped and the formulas it went through, which says where the discounting is.</div>${fxFrontier(f.frontier)}`}</div>`;
+}
+function fxFrontier(fr) {
+  if (!fr) return "";
+  const kind = {client: "the client model", input: "an input", saved: "another sheet, as saved"};
+  return `<div class="small" style="margin-top:10px"><b>Where it stopped</b>${fr.limit_reached ? " (it reached its limit of cells)" : ""}</div>
+    <ul class="why small">${fr.stopped_at.map(x => `<li>${esc(kind[x.kind] || x.kind)}: <span class="mono">${esc(x.row)}</span> ${esc(x.label)} (${x.cells} cell(s)${x.has_formulas ? ", formulas in the workbook" : ""})</li>`).join("")}</ul>
+    <div class="small" style="margin-top:6px"><b>The first formulas it went through</b></div>
+    <ul class="why small">${fr.formulas.map(x => `<li><span class="mono">${esc(x.cell)}</span> ${esc(x.label)} = ${typeof x.value === "number" ? vN(x.value) : esc(x.value ?? "")}${x.words ? ` <span class="muted">${esc(x.words)}</span>` : ""}</li>`).join("")}</ul>`;
 }
 function fxPicker(o, t) {
   const P = FX.picker;

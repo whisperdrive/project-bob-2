@@ -17,6 +17,7 @@ client-model rows they read, the rows to find in this year's model.
 """
 import json
 import re
+from collections import Counter, deque
 
 import dcf
 import dcftrace
@@ -290,9 +291,9 @@ class Facts:
     def walk(self, start) -> tuple[list[dict], dict]:
         """From the figure's cell down what it reads; a discounting found stops the walk below it (its reads are
         its cash flows and factors). -> (discountings, parent of each cell visited)."""
-        parent, seen, queue, cores = {start: None}, {start}, [start], []
+        parent, seen, queue, cores = {start: None}, {start}, deque([start]), []
         while queue and len(seen) < WALK_LIMIT:
-            k = queue.pop(0)
+            k = queue.popleft()
             if self.kind(k) != "formula":
                 continue
             core = self.detect(k)
@@ -332,9 +333,9 @@ class Facts:
             return [{"row": _a1k(cf[0]).rsplit("!", 1)[0] + f"!r{g[2]}", "label": self.label(cf[0]), "cells": len(cf),
                      "how": "the cash flows are read straight from it"}]
         hits: dict[tuple, list] = {}
-        seen, queue = set(cf), list(cf)
+        seen, queue = set(cf), deque(cf)
         while queue and len(seen) < WALK_LIMIT:
-            k = queue.pop(0)
+            k = queue.popleft()
             for a in self.reads(k):
                 if a in seen:
                     continue
@@ -360,7 +361,31 @@ class Facts:
             c["origins"] = self.origins(c.pop("_cf"))
         return {"cell": cell, "label": self.label(start), "value": _show(value), "excel": _show(saved),
                 "python_equals_excel": _close(_num(value), _num(saved)) if _num(value) is not None else value == saved,
-                "discountings": cores, "cells_followed": len(parent)}
+                "discountings": cores, "cells_followed": len(parent),
+                "frontier": None if cores else self.frontier(parent)}
+
+    def frontier(self, parent: dict) -> dict:
+        """Where the walk stopped, when it found no discounting: the cells it reached that it can't follow further
+        (the client model's, inputs, other sheets), by row, and the first formulas it went through. That says
+        where the discounting must be: in the client model's sheets (not compiled, so not followed), past the
+        walk's limit, or in a shape not recognised."""
+        leaves = Counter()
+        cells = {}
+        for k in parent:
+            kind = self.kind(k)
+            if kind != "formula":
+                g = (kind,) + k[:3]
+                leaves[g] += 1
+                cells.setdefault(g, k)
+        rows = [{"kind": g[0], "row": _a1k(cells[g]).rsplit("!", 1)[0] + f"!r{g[3]}", "label": self.label(cells[g]),
+                 "cells": n, "has_formulas": bool(self.db.execute(
+                     "SELECT 1 FROM cells WHERE sheet=? AND row=? AND formula IS NOT NULL LIMIT 1", (g[2], g[3])).fetchone())
+                 if g[1] == "" else None}
+                for g, n in sorted(leaves.items(), key=lambda kv: (kv[0][0] != "client", -kv[1]))[:30]]
+        visited = [k for k in parent if self.kind(k) == "formula"][:15]
+        return {"limit_reached": len(parent) >= WALK_LIMIT, "stopped_at": rows,
+                "formulas": [{"cell": _a1k(k), "label": self.label(k), "value": _show(self.val(k)), "words": self.words(k),
+                              "reads": len(self.reads(k))} for k in visited]}
 
 
 def facts(sess, summary: dict, cell: str) -> dict:
@@ -378,6 +403,14 @@ def text(fx: dict) -> str:
     L = [f"{fx['label'] or fx['cell']} ({fx['cell']}) = {n(fx['value'])}; Excel saved {n(fx['excel'])}"
          + ("" if fx["python_equals_excel"] else "  <-- Python differs from Excel"),
          f"{len(fx['discountings'])} discounting(s) found under it ({fx['cells_followed']:,} cells followed)"]
+    fr = fx.get("frontier")
+    if fr:
+        L.append("No discounting found. Where the walk stopped" + (" (it reached its limit of cells)" if fr["limit_reached"] else "") + ":")
+        for x in fr["stopped_at"]:
+            L.append(f"  [{x['kind']}] {x['row']} {x['label']} ({x['cells']} cells" + (", formulas in the workbook" if x.get("has_formulas") else "") + ")")
+        L.append("The first formulas it went through:")
+        for x in fr["formulas"]:
+            L.append(f"  {x['cell']} {x['label']} = {n(x['value'])} reads {x['reads']} cell(s)" + (f"   [{x['words']}]" if x.get("words") else ""))
     for i, c in enumerate(fx["discountings"], 1):
         cf, fa = c["cashflow"], c["factors"]
         L += ["", f"{i}. {c['cell']} {c['what']}: PV {n(c['pv'])}; cash flows x factors recomputed {n(c['pv_recomputed'])}"
