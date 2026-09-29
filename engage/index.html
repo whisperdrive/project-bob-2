@@ -2599,11 +2599,11 @@ function dictWhy(text, lead = "Dictation stopped: ") {
   if (/NotFoundError|device not found|no microphone/i.test(t)) return "No microphone found: plug one in or pick one in the system's sound settings.";
   if (/quota/i.test(t)) return "The free tier's 5 hours of speech for this month are used up; dictation works again on the 1st.";
   if (/429|too many|throttl/i.test(t)) return "Azure Speech is busy with another stream (the free tier takes one at a time: close Speech Studio or another desk tab), then try again.";
-  if (/401|unauthori[sz]ed|authentication/i.test(t)) return "Azure Speech refused the token: check SPEECH_KEY and SPEECH_REGION in .env.";
+  if (/401|unauthori[sz]ed|authentication/i.test(t)) return "Azure Speech refused the token: check SPEECH_KEY and SPEECH_ENDPOINT (or SPEECH_REGION) in .env.";
   if (/1006|Unable to contact server/i.test(t)) return `Couldn't connect to Azure Speech from the browser (wss://${DICT.region || "<region>"}.stt.speech.microsoft.com): this network may block it, or the service refused the token.`;
   return lead + t;
 }
-const dictUsed = u => `Dictated from this desk this month: ${Math.round(u.used_seconds / 60)} min of the ${u.free_seconds / 3600} free hours.`;
+const dictUsed = u => `Dictated from this desk this month: ${Math.round(u.used_seconds / 60)} min (a Free F0 Speech resource includes ${u.free_seconds / 60}).`;
 function dictNote(text, bad) { const n = $("#dictNote"); if (n) { n.textContent = text || ""; n.classList.toggle("bad", !!bad); } }
 function dictButton() {
   const b = $("#dictate"); if (!b) return;

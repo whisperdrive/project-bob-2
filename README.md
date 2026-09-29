@@ -339,8 +339,8 @@ person before the next relies on it:
      differs). It knows
      the report's key facts, the levers, the outputs and the feeds. Charts go through the same chart review as
      on the Model Desk. **Dictation** (`bench/dictation.py`): the microphone beside Ask streams speech to an Azure
-     Speech resource (`SPEECH_KEY` and `SPEECH_REGION` in `.env`; the Free F0 tier gives 5 audio hours a month,
-     one stream at a time). Words appear in the box as they're heard, to read and correct before asking.
+     Speech resource (`SPEECH_KEY` and `SPEECH_ENDPOINT` or `SPEECH_REGION` in `.env`; the Free F0 tier gives 5
+     audio hours a month, one stream at a time; the page streams to the region the key belongs to). Words appear in the box as they're heard, to read and correct before asking.
      Microsoft's Speech SDK is loaded in the page on first use, pinned and checksummed. The server keeps the key.
      It hands the page a short-lived token and the engagement's own words as a phrase list: the names in the
      report's facts, their labels, the outputs, levers and sheet names, then common valuation terms. Dictation

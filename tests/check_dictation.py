@@ -28,7 +28,7 @@ def phrases_check():
     class FakeEngagement:
         @staticmethod
         def _q(sql, eid):
-            summary = {"outputs": [{"label": "Enterprise value"}, {"label": "North plaza revenue"}],
+            summary = {"outputs": [{"label": "Enterprise value"}, {"label": "North plaza revenue"}, {"label": "Plaza revenue"}],
                        "levers": [{"label": "Discount rate"}]}
             return [{"name": "Plaza test (synthetic)", "overlay_json": json.dumps(summary)}]
 
@@ -47,11 +47,14 @@ def phrases_check():
         got = dictation.phrases(1)
     finally:
         del sys.modules["engagement"]
-    assert got[:2] == ["Plaza Holdings Pty Ltd", "Gordon growth method"], got[:5]
-    assert got.index("Target name") < got.index("North plaza revenue") < got.index("DCF") < got.index("Val Inputs")
+    # a name whole, then its distinctive word on its own ("Plaza's" comes out right); the legal ending isn't said
+    assert got[:4] == ["Plaza Holdings Pty Ltd", "Plaza", "Gordon growth method", "Gordon"], got[:5]
+    # labels read as ordinary words mid-sentence, unless they start with a name
+    assert got.index("target name") < got.index("north plaza revenue") < got.index("DCF") < got.index("Val Inputs")
+    assert "Plaza revenue" in got and "enterprise value" in got and "Target name" not in got
     assert got.index("Plaza test") < got.index("WACC")         # "(synthetic)" is a note, left out
-    assert len([g for g in got if g.lower() == "discount rate"]) == 1 and "7.25%" not in got
-    assert "Gordon growth" in got and len(got) <= dictation.MAX_PHRASES
+    assert got.count("discount rate") == 1 and "7.25%" not in got
+    assert "Gordon growth" in got and "roll forward" in got and "roll-forward" not in got and len(got) <= dictation.MAX_PHRASES
     print(f"engagement words: {len(got)} hints, names first, each once")
 
 
@@ -65,7 +68,7 @@ def refusal_check():
 
 
 def setup_check():
-    saved = {k: os.environ.pop(k, None) for k in ("SPEECH_KEY", "SPEECH_REGION")}
+    saved = {k: os.environ.pop(k, None) for k in ("SPEECH_KEY", "SPEECH_REGION", "SPEECH_ENDPOINT")}
     real = dictation._load_env
     dictation._load_env = lambda: None       # this machine's .env may hold a key
     try:
@@ -74,11 +77,11 @@ def setup_check():
             dictation.token()
             raise AssertionError("a token without a key")
         except ValueError as e:
-            assert "SPEECH_KEY and SPEECH_REGION" in str(e)
+            assert "SPEECH_KEY and SPEECH_ENDPOINT (or SPEECH_REGION)" in str(e)
     finally:
         dictation._load_env = real
         os.environ.update({k: v for k, v in saved.items() if v is not None})
-    print("setup: without a key the desk says which two lines .env needs")
+    print("setup: without a key the desk says which lines .env needs")
 
 
 if __name__ == "__main__":
