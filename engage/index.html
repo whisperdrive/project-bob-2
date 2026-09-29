@@ -458,6 +458,15 @@ const md = s => DOMPurify.sanitize(marked.parse(s || ""));
 const fmt = (v, d = 1) => v == null || v === "" ? "" : (typeof v === "number" ? v.toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: Math.abs(v) < 10 && d ? Math.min(d, 2) : 0}) : String(v));
 const size = b => b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1e3)) + " KB";
 const busy = s => ["queued", "processing", "running"].includes(s);
+// a queued job's place in its background lane (engagement.jobs_view): the job running ahead of it, and since when
+function inLine(kinds, id) {
+  const j = (E?.jobs || []).find(j => j.state === "queued" && kinds.includes(j.job) && j.id === id);
+  if (!j) return "";
+  const b = j.behind, more = j.ahead - (b ? 1 : 0), at = t => new Date(t * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  return b ? `In line behind ${b.label} (started ${at(b.since)})${more > 0 ? ` and ${more} more` : ""}` : more > 0 ? `In line behind ${more} other job(s)` : "";
+}
+const stepNow = (kinds, id, status, step) => (status === "queued" && inLine(kinds, id)) || step;
+const DOC_JOBS = ["doc", "resolve_tables"], FACT_JOBS = ["facts", "resolve_facts"];
 function toast(msg, ms = 3500) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.append(t); setTimeout(() => t.remove(), ms); }
 async function api(path, opts = {}) {
   const r = await fetch(path, {headers: opts.body && !(opts.body instanceof FormData) ? {"Content-Type": "application/json"} : {}, ...opts,
@@ -606,11 +615,14 @@ function pipeline() {
   const rep = {id: "reference", name: "The report"};
   const tLoop = docs.find(d => busy(d.status) && /review loop/i.test(d.step || "")), fBusy = docs.find(d => busy(d.facts_status));
   const you = f.filter(needsYou).length, flagged = docs.filter(d => d.status === "done").reduce((a, d) => a + (d.n_flagged || 0), 0);
-  if (tLoop) Object.assign(rep, {state: "running", line: "table review loop", live: `${tLoop.step}. luna corrects each flagged table, code checks it against the page, sol checks it against the image.`, flow: [TABLE_LOOP, 1], loop: true,
+  if (tLoop && tLoop.status === "processing") Object.assign(rep, {state: "running", line: "table review loop", live: `${tLoop.step}. luna corrects each flagged table, code checks it against the page, sol checks it against the image.`, flow: [TABLE_LOOP, 1], loop: true,
     timer: [tLoop.started_at, null, null]});
-  else if (fBusy) Object.assign(rep, {state: "running", line: "key facts", live: fBusy.facts_step || "Starting",
-    timer: fBusy.facts_status === "running" ? [fBusy.facts_started_at, null, fBusy.facts_secs] : null,
+  else if (fBusy && fBusy.facts_status === "running") Object.assign(rep, {state: "running", line: "key facts", live: fBusy.facts_step || "Starting",
+    timer: [fBusy.facts_started_at, null, fBusy.facts_secs],
     flow: [FACT_FLOW, stageOf(fBusy.facts_step, [[/Extracting/i, 0], [/Reviewing/i, 2], [/review loop|arbiter/i, 3], [/Writing down/i, 5]])], loop: /review loop/i.test(fBusy.facts_step || "")});
+  else if (tLoop || fBusy) Object.assign(rep, {state: "running", queued: true, line: "in line", live: tLoop
+    ? `The report: table review loop. ${inLine(DOC_JOBS, tLoop.id) || "Starting"}`
+    : `The report: ${(fBusy.facts_step || "key facts").replace(/^Waiting (for|to start)/i, m => m.toLowerCase())}. ${inLine(FACT_JOBS, fBusy.id) || "Starting"}`});
   else if (docs.some(d => ["queued", "reading"].includes(d.tables_status)) && !you) {
     const d = docs.find(d => ["queued", "reading"].includes(d.tables_status));
     Object.assign(rep, {state: "running", line: `${d.tables_left ?? ""} tables in the background`,
@@ -635,8 +647,12 @@ function pipeline() {
   const ready = nConf === 4;
   for (const [id, key, label, verb] of [["python", "overlay", "Rebuild in Python", "Build the Python overlay"], ["map", "map", "Map", "Build the map"], ["compare", "compare", "What changed", "Compare the client models"], ["summary", "charts", "Summary", "Recreate the report's charts"]]) {
     const s = E[`${key}_status`], x = {id, name: label};
-    if (busy(s)) Object.assign(x, {state: "running", line: "building", live: `${label}: ${E[`${key}_step`] || "starting"}`,
+    if (busy(s)) Object.assign(x, {state: "running", queued: s === "queued", line: s === "queued" ? "in line" : "building",
+      live: `${label}: ${stepNow([key], E.id, s, E[`${key}_step`]) || "starting"}`,
       timer: s === "running" ? [E[`${key}_started_at`], key === "overlay" ? E.overlay_pct : null, E[`${key}_secs`]] : null});
+    else if (key === "overlay" && s === "done" && busy(E.rows_status)) Object.assign(x, {state: "running", queued: E.rows_status === "queued",
+      line: "row agents", live: `Row agents (luna finds this year's rows, sol checks): ${stepNow(["rows"], E.id, E.rows_status, E.rows_step) || "starting"}`,
+      timer: E.rows_status === "running" ? [E.rows_started_at, null, E.rows_secs] : null});
     else if (s === "error") Object.assign(x, {state: "error", line: "failed", todo: {text: `Retry: ${verb.toLowerCase()}`, go: id}});
     else if (s === "done") Object.assign(x, {state: "done", line: "built"});
     else if (ready && st.every(y => y.state !== "you" && y.state !== "error")) Object.assign(x, {state: "you", line: "ready to build", todo: {text: verb, go: id}});
@@ -655,11 +671,12 @@ function renderNow() {
   const box = $("#now");
   if (!E) { box.hidden = true; nowHtml = ""; return; }
   box.hidden = false;
-  const st = pipeline(), run = st.find(s => s.state === "running" && s.live), todos = st.filter(s => s.todo);
+  const st = pipeline(), live = st.filter(s => s.state === "running" && s.live), todos = st.filter(s => s.todo);
+  const run = live.find(s => !s.queued) || live[0], waiting = live.filter(s => s !== run);
   const html = `<ol class="pipe" aria-label="Where the engagement is">${st.map((s, i) => `${i ? `<li class="link ${st[i - 1].state === "done" ? "done" : ""} ${s.state === "running" ? "flowing" : ""}" aria-hidden="true"></li>` : ""}
       <li><button class="st ${s.state}" data-go="${s.id}" title="${esc(s.name)}: ${esc(s.line || "")}"><span class="ic">${ICON[s.state] || i + 1}</span><span class="nm">${esc(s.name)}</span><span class="ln">${esc(s.line || "")}</span></button></li>`).join("")}</ol>
     <div class="now-row">
-      <div class="live">${run ? `<div class="live-head"><span class="pulse"></span><b>Now</b><span>${esc(run.live)}</span>${run.timer ? runTimer(...run.timer, false) : ""}</div>${run.flow && run.flow[1] >= 0 ? flowHtml(run.flow, run.loop) : ""}`
+      <div class="live">${run ? `<div class="live-head"><span class="pulse"></span><b>Now</b><span>${esc(run.live)}</span>${run.timer ? runTimer(...run.timer, false) : ""}</div>${run.flow && run.flow[1] >= 0 ? flowHtml(run.flow, run.loop) : ""}${waiting.length ? `<div class="small muted" style="margin-top:6px">${waiting.map(s => esc(s.live)).join("<br>")}</div>` : ""}`
         : `<div class="live-head muted"><span class="dot-idle"></span>${todos.length ? "The agents are waiting for you." : "Nothing running. Everything built so far is up to date."}</div>`}</div>
       <div class="todo">${todos.length ? `<span class="small muted">Next for you</span>${todos.map((t, i) => `<button class="btn ${i ? "small" : "primary"}" data-go="${t.todo.go}">${esc(t.todo.text)}</button>`).join("")}` : ""}</div>
     </div>`;
@@ -873,7 +890,7 @@ function tablesCard() {
   return `<div class="row" style="justify-content:space-between"><div><h2>Tables in ${esc(DOC.filename)}</h2>
     <p class="sub">${ts.length} found · ${ts.filter(t => ["verified", "approved", "edited"].includes(t.status)).length} verified or approved${ts.some(t => t.status === "resolved") ? ` · ${ts.filter(t => t.status === "resolved").length} resolved by the review loop` : ""} · ${flagged.length ? `<b style="color:var(--warn)">${flagged.length} to check</b>` : "nothing to check"}</p></div>
     <div class="row">${ts.some(t => t.status === "flagged") && !busy(E.documents.find(x => x.id === DOC.id)?.status) ? `<button class="btn small" id="loopTables" title="The extractor fixes each flagged table against the checks, code re-checks it against the page, and the reviewer checks it against the image">Run the review loop on ${ts.filter(t => t.status === "flagged").length} flagged table(s)</button>` : ""}
-    ${busy(E.documents.find(x => x.id === DOC.id)?.status) ? `<span class="pill info">${esc(E.documents.find(x => x.id === DOC.id)?.step || "Working")}</span>` : ""}</div>
+    ${busy(E.documents.find(x => x.id === DOC.id)?.status) ? `<span class="pill info">${esc((d => stepNow(DOC_JOBS, d.id, d.status, d.step))(E.documents.find(x => x.id === DOC.id)) || "Working")}</span>` : ""}</div>
     ${flagged.length ? `<div class="row small"><label><input type="radio" name="tf" value="flagged" ${state.tableFilter === "flagged" ? "checked" : ""}> To check</label><label><input type="radio" name="tf" value="all" ${state.tableFilter !== "flagged" ? "checked" : ""}> All</label></div>` : ""}</div>
   <div class="scroll"><table><thead><tr><th>Table</th><th>Page</th><th>Source</th><th>Status</th><th>Check</th></tr></thead><tbody>
   ${shown.map(t => `<tr class="click ${sel && sel.id === t.id ? "sel" : ""}" data-t="${esc(t.id)}"><td>${esc(t.title || t.id)}</td><td class="num">${t.page}</td><td class="small">${esc(t.source)}</td><td>${tableStatus(t)}</td><td class="small">${checkLine(t)}${loopLine(t)}</td></tr>`).join("")}</tbody></table></div>
@@ -935,7 +952,7 @@ function bindTables() {
   $("#loopTables")?.addEventListener("click", () => act(() => api(`/api/documents/${DOC.id}/tables/resolve`, {method: "POST"})));
   document.querySelectorAll("#tablesCard [data-t]").forEach(r => r.onclick = () => { state.table = r.dataset.t; keepOpen($("#tablesCard"), () => { $("#tablesCard").innerHTML = tablesCard(); bindTables(); }); });
   document.querySelectorAll("#tablesCard input[name=tf]").forEach(r => r.onchange = () => { state.tableFilter = r.value; $("#tablesCard").innerHTML = tablesCard(); bindTables(); });
-  const sel = () => DOC.doc.tables.find(t => t.id === state.table) || DOC.doc.tables.find(t => ["flagged", "error", "unread"].includes(t.status));
+  const sel = () => DOC.doc.tables.find(t => t.id === state.table) || DOC.doc.tables.find(t => ["flagged", "error"].includes(t.status) || (t.status === "unread" && !t.deferred));
   document.querySelectorAll("#tablesCard [data-ta]").forEach(b => b.onclick = async () => {
     const t = sel(); if (!t) return;
     if (b.dataset.ta === "edit") { state.editingTable = true; $("#tEdit").hidden = false; $("#tEditText").focus(); return; }
@@ -946,7 +963,8 @@ function bindTables() {
 }
 async function settle(tid, action, markdown) {
   try { const full = await api(`/api/documents/${DOC.id}/tables/${encodeURIComponent(tid)}`, {method: "PUT", body: {action, markdown}});
-    DOC = {...full, _stamp: docStamp(full)}; state.table = tid; toast("Table saved; facts re-checked against it."); }
+    DOC = {...full, _stamp: docStamp(full)}; state.table = tid;
+    toast(full.reopened ? `Table saved. ${full.reopened} fact(s) resting on its page go back to the review loop with the new text.` : "Table saved; the facts are checked against it again.", 6000); }
   catch (e) { toast(e.message, 6000); }
   await refresh(true);
 }
@@ -961,7 +979,7 @@ function factsCard(d) {
   const fs = E.facts.filter(f => f.document_id === d.id);
   const running = busy(d.facts_status);
   const head = `<div class="row" style="justify-content:space-between"><div><h2>Key facts</h2><p class="sub">Extracted by <b>${esc(E.model)}</b>, reviewed by <b>${esc(E.reviewer_model)}</b> (change them in the header). Approved facts are the reference for the next steps.</p></div>
-    <div class="row">${running ? `<span class="pill info">${esc(d.facts_step || "Working")}</span> ${runTimer(d.facts_started_at, null, d.facts_secs)}` : `${builtIn(d.facts_status, d.facts_secs, "last run took")}<button class="btn ${fs.length ? "" : "primary"}" id="runFacts" ${d.n_flagged ? "title='Some tables are still to check; facts quoted from them will be marked.'" : ""}>${fs.length ? "Extract again" : "Extract key facts"}</button>`}
+    <div class="row">${running ? `<span class="pill info">${esc(stepNow(FACT_JOBS, d.id, d.facts_status, d.facts_step) || "Working")}</span> ${d.facts_status === "running" ? runTimer(d.facts_started_at, null, d.facts_secs) : ""}` : `${builtIn(d.facts_status, d.facts_secs, "last run took")}<button class="btn ${fs.length ? "" : "primary"}" id="runFacts" ${d.n_flagged ? "title='Some tables are still to check; facts quoted from them will be marked.'" : ""}>${fs.length ? "Extract again" : "Extract key facts"}</button>`}
     ${!running && fs.some(needsYou) ? `<button class="btn" id="loopFacts" title="The extractor answers the reviewer's open points, code re-checks, the reviewer decides again (up to 3 rounds)">Run the review loop on the open facts</button>` : ""}
     ${fs.some(f => f.status === "pending" && agreedFact(f)) ? `<button class="btn primary" id="approvePassed" title="Facts both models agree on and that pass the checks, not yet approved (from before auto-approval, or undone)">Approve all the agents agreed (${fs.filter(f => f.status === "pending" && agreedFact(f)).length})</button>` : ""}</div></div>`;
   if (d.facts_status === "error") return head + `<div class="callout bad">${esc(d.facts_error)}</div>`;
@@ -1220,7 +1238,7 @@ function viewCompare() {
   const head = `<div class="lede"><div><h1><b>What changed</b> in the client model</h1><p>${pm && cm ? `<b>${esc(name(pm.id))}</b> → <b>${esc(name(cm.id))}</b>. ` : ""}Line items are aligned by sheet and label, so inserted rows don't shift everything. Inputs changed, results that moved, formulas rewritten and rows added or removed are listed with their cells.</p></div></div>`;
   if (!pm || !cm) return head + `<div class="card empty">Assign the prior and current client models in Roles first.</div>`;
   const run = `<div class="row"><button class="btn ${E.compare_status === "done" ? "" : "primary"}" id="runCompare" ${busy(E.compare_status) ? "disabled" : ""}>${E.compare_status === "done" ? "Compare again" : "Compare the models"}</button>
-    ${busy(E.compare_status) ? `<span class="pill info">${esc(E.compare_step || "Working")}</span> ${runTimer(E.compare_started_at, null, E.compare_secs)}` : builtIn(E.compare_status, E.compare_secs, "compared in")}${E.compare_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.compare_error)}</span>` : ""}</div>`;
+    ${busy(E.compare_status) ? `<span class="pill info">${esc(stepNow(["compare"], E.id, E.compare_status, E.compare_step) || "Working")}</span> ${runTimer(E.compare_started_at, null, E.compare_secs)}` : builtIn(E.compare_status, E.compare_secs, "compared in")}${E.compare_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.compare_error)}</span>` : ""}</div>`;
   const d = E.compare; if (!d) return head + run;
   const c = d.counts;
   const tbl = (rows, cols) => rows?.length ? `<div class="scroll"><table><thead><tr>${cols.map(x => `<th>${x[0]}</th>`).join("")}</tr></thead><tbody>${rows.slice(0, 60).map(r => `<tr>${cols.map(x => `<td class="${x[2] || ""}">${x[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>${rows.length > 60 ? `<p class="small muted">and ${rows.length - 60} more</p>` : ""}` : `<p class="muted small">None.</p>`;
@@ -1248,7 +1266,7 @@ function viewMap() {
 }
 function viewMapBody(head) {
   const run = `<div class="row"><button class="btn ${E.map_status === "done" ? "" : "primary"}" id="runMap" ${busy(E.map_status) ? "disabled" : ""}>${E.map_status === "done" ? "Rebuild the map" : "Build the map"}</button>
-    ${busy(E.map_status) ? `<span class="pill info">${esc(E.map_step || "Working")}</span> ${runTimer(E.map_started_at, null, E.map_secs)}` : builtIn(E.map_status, E.map_secs)}${E.map_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.map_error)}</span>` : ""}
+    ${busy(E.map_status) ? `<span class="pill info">${esc(stepNow(["map"], E.id, E.map_status, E.map_step) || "Working")}</span> ${runTimer(E.map_started_at, null, E.map_secs)}` : builtIn(E.map_status, E.map_secs)}${E.map_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.map_error)}</span>` : ""}
     ${!Object.values(E.roles).every(r => r.confirmed) ? `<span class="small muted">Roles aren't all confirmed yet; the map uses the current assignment.</span>` : ""}</div>`;
   const m = E.map; if (!m) return head + run;
   const f = m.files;
@@ -1618,7 +1636,7 @@ function viewDoctor() {
   if (E.overlay_status !== "done") return head + `<div class="card"><p class="muted" style="margin:0">The doctor examines the Python rebuild: build it first in <a href="#" data-go="python">Rebuild in Python</a>.</p></div>`;
   const d = DR.data, run = busy(E.doctor_status), res = d?.result;
   const bar = `<div class="card"><div class="row" style="justify-content:space-between">
-    <div>${run ? `<span class="pill info">${esc(E.doctor_step || "Waiting to start")}</span>` : res ? `<span class="small muted">Examined ${esc(new Date(res.at * 1000).toLocaleString())}${res.model ? ` · written up by ${esc(res.model)}` : ""}</span>${d.stale ? ` <span class="pill warn">Rebuilt in Python since: run it again</span>` : ""}` : `<span class="muted">Not run yet.</span>`}</div>
+    <div>${run ? `<span class="pill info">${esc(stepNow(["doctor"], E.id, E.doctor_status, E.doctor_step) || "Waiting to start")}</span>` : res ? `<span class="small muted">Examined ${esc(new Date(res.at * 1000).toLocaleString())}${res.model ? ` · written up by ${esc(res.model)}` : ""}</span>${d.stale ? ` <span class="pill warn">Rebuilt in Python since: run it again</span>` : ""}` : `<span class="muted">Not run yet.</span>`}</div>
     <div class="row">${res ? `<button class="btn small" id="drCopy" title="The diagnosis and its evidence as plain text">Copy for a message</button>` : ""}<button class="btn ${res ? "" : "primary"}" id="drRun" ${run ? "disabled" : ""}>${res ? "Run again" : "Run the doctor"}</button></div></div>
     ${E.doctor_status === "error" ? `<div class="callout bad small" style="margin-top:10px">The doctor failed: ${esc(E.doctor_error || "")}</div>` : ""}</div>`;
   if (!res) return head + bar + (d ? "" : `<div class="card"><p class="muted" style="margin:0">${DR.loading ? "Loading…" : ""}</p></div>`);
@@ -1802,7 +1820,7 @@ function gapReasons(g) {  // why this year's figures aren't shown: [{short, long
 }
 function agentsNote(d) {  // the row agents: finding this year's rows without anyone stopping the work
   const a = d.rows; if (!a || !a.status) return "";
-  if (busy(a.status)) return `<div class="callout info small" style="margin-top:10px"><span class="pulse" style="display:inline-block;margin-right:6px"></span>The row agents are finding this year's rows: ${esc(a.step || "waiting to start")}</div>`;
+  if (busy(a.status)) return `<div class="callout info small" style="margin-top:10px"><span class="pulse" style="display:inline-block;margin-right:6px"></span>The row agents are finding this year's rows: ${esc(stepNow(["rows"], E.id, a.status, a.step) || "waiting to start")}</div>`;
   if (a.status === "error") return `<div class="callout warn small" style="margin-top:10px">The row agents stopped: ${esc(a.error || "")} <button class="btn small" id="sumAgentsAgain">Run them again</button></div>`;
   const r = a.result; if (!r) return "";
   const done = (r.decisions || []).filter(x => x.decision), left = (r.decisions || []).filter(x => !x.decision);
@@ -1891,7 +1909,7 @@ function summaryCard(d) {
 function chartsCard(d) {
   const st = d.charts_status || E.charts_status, running = busy(st), all = d.charts?.charts || [];
   const head = `<div class="row" style="justify-content:space-between"><div><h2>The report's charts</h2><p class="sub" style="margin:0">Each chart in last year's report, read off the page, drawn again from the model rows that follow it, and checked against the report. The report charted last year's client model, so the rebuild should match; the same rows in this year's model give this year's chart. <b>Compare</b> sets the report's reading beside the model's numbers, series by series, and lets you pick the rows where the match is wrong.</p></div>
-    ${running ? `<span class="pill info">${esc(d.charts_step || E.charts_step || "Working")}</span>` : `<button class="btn small" id="sumCharts">${all.length || d.charts ? "Recreate them again" : "Recreate the report's charts"}</button>`}</div>`;
+    ${running ? `<span class="pill info">${esc(stepNow(["charts"], E.id, st, d.charts_step || E.charts_step) || "Working")}</span>` : `<button class="btn small" id="sumCharts">${all.length || d.charts ? "Recreate them again" : "Recreate the report's charts"}</button>`}</div>`;
   if (d.charts_error || E.charts_error) return `<div class="card">${head}<div class="callout bad small" style="margin-top:8px">${esc(d.charts_error || E.charts_error)}</div></div>`;
   if (!d.charts) return `<div class="card">${head}<p class="muted small">${running ? "Finding the charts in the report and recreating them…" : "Not recreated yet."}</p></div>`;
   const ch = all.filter(c => !c.skipped), skipped = all.filter(c => c.skipped);
@@ -2081,7 +2099,7 @@ function viewPython() {
   if (OV.eid !== E.id) Object.assign(OV, {mode: "workbook", changes: {}, vd: null, months: null, result: null, trace: null, q: "", found: [], eid: E.id, tab: "live"});
   const O = E.overlay;
   const run = `<div class="row"><button class="btn ${E.overlay_status === "done" ? "" : "primary"}" id="buildOv" ${busy(E.overlay_status) ? "disabled" : ""}>${E.overlay_status === "done" ? "Rebuild the Python overlay" : "Build the Python overlay"}</button>
-    ${busy(E.overlay_status) ? `<span class="pill info">${esc(E.overlay_step || "Working")}</span> ${runTimer(E.overlay_started_at, E.overlay_pct, E.overlay_secs)}` : builtIn(E.overlay_status, E.overlay_secs)}${E.overlay_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.overlay_error)}</span>` : ""}
+    ${busy(E.overlay_status) ? `<span class="pill info">${esc(stepNow(["overlay"], E.id, E.overlay_status, E.overlay_step) || "Working")}</span> ${runTimer(E.overlay_started_at, E.overlay_pct, E.overlay_secs)}` : builtIn(E.overlay_status, E.overlay_secs)}${E.overlay_status === "error" ? `<span class="pill bad">Failed</span> <span class="small">${esc(E.overlay_error)}</span>` : ""}
     ${O ? `<a class="btn" href="/api/engagements/${E.id}/overlay/module.py" target="_blank" rel="noopener">Open the Python module</a>` : ""}
     ${!Object.values(E.roles).every(r => r.confirmed) ? `<span class="small muted">Roles aren't all confirmed; the build uses the current assignment.</span>` : ""}</div>`;
   if (!O) return head + run + `<div class="card"><h2>What the build does</h2><ul class="why" style="color:var(--ink);font-size:14px">

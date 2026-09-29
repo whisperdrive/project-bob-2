@@ -50,7 +50,24 @@ DEFAULT_ARBITER = "gpt-6-sol"     # settles what the review loop can't (the user
 REPORT_TYPES = (".pdf", ".pptx")
 
 _lock = threading.Lock()
-_jobs: "queue.Queue[tuple[str, int]]" = queue.Queue()
+REPORT_JOBS = ("doc", "resolve_tables", "facts", "resolve_facts")
+
+
+class _Lanes:
+    """Two background lanes, each running its jobs one at a time: the report's (reading it, the key facts, both
+    review loops) and the models' (roles, compare, map, Python overlay, charts, doctor, row agents). A review loop
+    never holds up the map; the models' jobs stay one at a time because they share model.db and the Python
+    session. Model calls from both share one rate limit (ratelimit.py)."""
+
+    def __init__(self):
+        self.queues: dict[str, queue.Queue] = {"report": queue.Queue(), "models": queue.Queue()}
+        self.running: dict[str, tuple[str, int, float]] = {}  # lane -> (job, id, started)
+
+    def put(self, job: tuple[str, int]) -> None:
+        self.queues["report" if job[0] in REPORT_JOBS else "models"].put(job)
+
+
+_jobs = _Lanes()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS engagements(id INTEGER PRIMARY KEY, name TEXT, created_at REAL, updated_at REAL,
@@ -262,6 +279,7 @@ def get(eid: int) -> dict | None:
     _auto_review(out)
     _maybe_suggest(eid, out)
     out["roles_pending"] = eid in _ROLE_JOBS
+    out["jobs"] = jobs_view(eid)
     return out
 
 
@@ -403,12 +421,21 @@ def _settle_table(did: int, tid: str, action: str, markdown: str | None = None) 
     if t.get("final_markdown") is not None and t.get("text_lines"):
         t["final_check"] = docingest.check_text_layer(t["final_markdown"], t["text_lines"], t.get("title"))
     _save_doc(did, doc)
-    _recheck_facts(did, doc)
-    reopened = [f for f in _q("SELECT agent_json FROM facts WHERE document_id=? AND status='pending'", did)
-                if (json.loads(f["agent_json"] or "null") or {}).get("status") == "escalated"]
-    if reopened and _doc(did)["facts_status"] not in ("queued", "running"):
-        resolve_facts(did)  # the loop takes them again with the page as it now reads
-    return document(did)
+    changed = _recheck_facts(did, doc)
+    auto_decide(did)  # facts only a check held up, that now pass: the agents' agreement decides them
+    # facts handed to you that this table bears on (they rest on its page, or their checks now read differently)
+    # go back to the loop with the page as it now reads; the others stay with you, since the same loop on the same
+    # text would come out the same
+    pg = reportfacts.pages(doc["markdown"])
+    reopen = [f["id"] for f in _q("SELECT * FROM facts WHERE document_id=? AND status='pending'", did)
+              if (a := json.loads(f["agent_json"] or "null") or {}).get("status") == "escalated" and not a.get("held")
+              and (f["id"] in changed or t["page"] in reportfacts.fact_pages(f, pg))]
+    status = _doc(did)["facts_status"]
+    if reopen and status not in ("queued", "running"):
+        resolve_facts(did, reopen)
+    elif reopen and status == "queued" and _REOPEN.get(did) is not None:
+        _REOPEN[did] |= set(reopen)  # a loop on other reopened facts hasn't started: it takes these too
+    return {**document(did), "reopened": len(reopen)}
 
 
 _DOC_LOCK = threading.RLock()  # the background reader and a person's table decisions save into the same document
@@ -494,13 +521,18 @@ def _save_doc(did: int, doc: dict) -> None:
          n_tables=sum(t.get("status") != "figure" for t in doc["tables"]), pages=len(doc["pages"]))
 
 
-def _recheck_facts(did: int, doc: dict) -> None:
+def _recheck_facts(did: int, doc: dict) -> set[int]:
     """Table decisions change the page text facts are checked against (no model calls). An approval the agents
-    made rested on the checks passing, so if they now fail the fact goes back to a person."""
+    made rested on the checks passing, so if they now fail the fact goes back to a person. Returns the facts whose
+    checks came out differently."""
     pg = reportfacts.pages(doc["markdown"])
+    failing = lambda c: [i["text"] for i in (c or {}).get("items", []) if not i["ok"]]
+    changed = set()
     for f in _q("SELECT * FROM facts WHERE document_id=?", did):
         agent = json.loads(f["agent_json"] or "null") or {}
         chk = reportfacts.check({**f, "waivers": agent.get("waivers")}, pg)
+        if failing(chk) != failing(json.loads(f["check_json"] or "null")):
+            changed.add(f["id"])
         rv = json.loads(f["review_json"] or "null")
         if rv and rv.get("suggestion"):
             rv["suggestion"]["check"] = reportfacts.check(rv["suggestion"], pg)
@@ -520,6 +552,7 @@ def _recheck_facts(did: int, doc: dict) -> None:
                                                "correction": None})
             fields.update(status="pending", decided_by=None, agent_json=json.dumps(a))
         _set("facts", f["id"], **fields)
+    return changed
 
 
 # ---- facts --------------------------------------------------------------------------------------------------
@@ -657,11 +690,22 @@ def resolve_tables(did: int) -> None:
     _jobs.put(("resolve_tables", did))
 
 
-def resolve_facts(did: int) -> None:
-    if not [r for r in _q("SELECT agent_json FROM facts WHERE document_id=? AND status='pending'", did)
-            if (json.loads(r["agent_json"] or "null") or {}).get("status") not in ("agreed", "withdrawn")]:
+_REOPEN: dict[int, set[int]] = {}  # document -> the facts a table decision sent back to the loop (absent: all open)
+
+
+def resolve_facts(did: int, ids: list[int] | None = None) -> None:
+    """The fact review loop on the facts still open, or on just `ids`."""
+    open_ids = [r["id"] for r in _q("SELECT id, agent_json FROM facts WHERE document_id=? AND status='pending'", did)
+                if (json.loads(r["agent_json"] or "null") or {}).get("status") not in ("agreed", "withdrawn")
+                and (ids is None or r["id"] in ids)]
+    if not open_ids:
         raise ValueError("no open facts: the agents agree on every fact still waiting for a decision")
-    _set("documents", did, facts_status="queued", facts_step="Waiting for the review loop", facts_error=None)
+    if ids is None:
+        _REOPEN.pop(did, None)
+    else:
+        _REOPEN[did] = set(open_ids)
+    _set("documents", did, facts_status="queued", facts_error=None, facts_step="Waiting for the review loop"
+         + ("" if ids is None else f" on {len(open_ids)} fact(s) the table decision bears on"))
     _jobs.put(("resolve_facts", did))
 
 
@@ -707,8 +751,10 @@ def _resolve_facts_job(did: int) -> None:
     e = _q("SELECT model, reviewer_model, arbiter_model FROM engagements WHERE id=?", eid)[0]
     md = json.loads(d["doc_json"])["markdown"]
     pg = reportfacts.pages(md)
+    only = _REOPEN.pop(did, None)
     rows = [r for r in _q("SELECT * FROM facts WHERE document_id=? AND status='pending' ORDER BY n", did)
-            if (json.loads(r["agent_json"] or "null") or {}).get("status") not in ("agreed", "withdrawn")]
+            if (json.loads(r["agent_json"] or "null") or {}).get("status") not in ("agreed", "withdrawn")
+            and (only is None or r["id"] in only)]
     if not rows:
         _set("documents", did, facts_status="done", facts_step="Done")
         return
@@ -1913,13 +1959,52 @@ def _run_job(kind: str, rid: int) -> bool:
         return False
 
 
-def _worker() -> None:
+def _worker(lane: str) -> None:
+    q = _jobs.queues[lane]
     while True:
-        kind, rid = _jobs.get()
+        kind, rid = q.get()
+        _jobs.running[lane] = (kind, rid, time.time())
         try:
             _run(kind, rid)
         finally:
-            _jobs.task_done()
+            _jobs.running.pop(lane, None)
+            q.task_done()
+
+
+# what a job is, for a person waiting behind it ({file}: the report's name)
+_BEHIND = {"doc": "reading {file}", "resolve_tables": "the table review loop on {file}", "facts": "the key facts from {file}",
+           "resolve_facts": "the fact review loop on {file}", "compare": "the compare of the client models", "map": "the map",
+           "overlay": "the Python overlay", "roles": "the roles suggestion", "charts": "the report's charts",
+           "doctor": "the overlay doctor", "rows": "the row agents"}
+
+
+def _job_owner(kind: str, rid: int) -> tuple[int | None, str]:
+    """The engagement a job belongs to, and the report's name for a report job."""
+    if kind not in REPORT_JOBS:
+        return rid, ""
+    d = _q("SELECT engagement_id, filename FROM documents WHERE id=?", rid)
+    return (d[0]["engagement_id"], d[0]["filename"]) if d else (None, "")
+
+
+def jobs_view(eid: int) -> list[dict]:
+    """This engagement's background jobs as they stand: running, or queued with the job running ahead of it in its
+    lane (another engagement's included) and how many are ahead, so the page can say what a queued step waits for."""
+    out = []
+    for lane, q in _jobs.queues.items():
+        with q.mutex:
+            waiting = list(q.queue)
+        run, ahead = _jobs.running.get(lane), None
+        if run:
+            owner, file = _job_owner(run[0], run[1])
+            label = _BEHIND[run[0]].format(file=file) if owner == eid else f"{_STEP[run[0]]} for another engagement"
+            ahead = {"label": label, "since": run[2]}
+            if owner == eid:
+                out.append({"lane": lane, "job": run[0], "id": run[1], "state": "running", "since": run[2]})
+        for i, (kind, rid) in enumerate(waiting):
+            if _job_owner(kind, rid)[0] == eid:
+                out.append({"lane": lane, "job": kind, "id": rid, "state": "queued", "behind": ahead,
+                            "ahead": i + bool(run)})
+    return out
 
 
 def rebuild_document(did: int) -> dict:
@@ -1972,5 +2057,6 @@ def start_worker() -> None:
     for kind in ("compare", "map", "overlay", "charts", "doctor", "rows"):
         for r in _q(f"SELECT id FROM engagements WHERE {kind}_status IN ('queued','running')"):
             _jobs.put((kind, r["id"]))
-    threading.Thread(target=_worker, daemon=True, name="engagement-worker").start()
+    for lane in _jobs.queues:
+        threading.Thread(target=_worker, args=(lane,), daemon=True, name=f"engagement-{lane}").start()
 

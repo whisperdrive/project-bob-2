@@ -174,7 +174,10 @@ person before the next relies on it:
    the background: until one is, its text comes straight from the PDF, which facts can already quote. PPTX tables and chart data are read from the file. A table that fails goes through the
    **review loop** (below); anything the loop can't settle is "Check": the page shows the image beside the
    transcription and every round, and the person approves, takes the reviewer's read or edits it. Edits are
-   re-checked against the page.
+   re-checked against the page, and so are the facts. A fact the reviewer accepted and only a check held up is
+   approved by the agents once the check passes. Facts handed to you that rest on that table's page go back to the
+   fact review loop with the new text. Facts on other pages stay with you, since the same loop on the same text
+   would come out the same.
 2. **Report reference.** `bench/reportfacts.py` extracts the target, valuation date, conclusions (preferred value and
    range), assumptions (discount rate and basis, terminal growth or exit / RAB multiple, ...), approach and the
    sensitivity grid, each with a page and a verbatim quote. Code checks each one: the quote is on that page, the
@@ -494,6 +497,13 @@ what the agents are doing now, step by step, the review loop animated), needing 
 next thing for you to do, as a button that takes you there. Every running job shows how long it has been going
 and, where it reports progress, roughly how long is left. Other jobs estimate from how long the last run took,
 and finished jobs show how long they took.
+
+Background jobs run in two lanes, each one job at a time: the report's (reading it, the key facts, both review
+loops) and the models' (roles, compare, map, Python overlay, charts, doctor, row agents). A review loop never
+holds up the map. The models' jobs stay one at a time because they share `model.db` and the Python session. Model
+calls from both lanes share the same rate limit. A queued job is shown as in line, not running, with the job
+ahead of it and when that job started (for example "Map: in line behind the row agents (started 14:02)"). The
+row agents show under Rebuild in Python while they work.
 
 Any processed file can be rebuilt from scratch from the Files step. A workbook's build is shared: every
 engagement using it, and the Model Desk, get the new one, and live Python overlays let go of the old file first.

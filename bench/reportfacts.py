@@ -338,6 +338,11 @@ def _quote_pages(f: dict, pg: dict[int, str]) -> list[int]:
     return [n for n, t in pg.items() if q and q in _norm(t)]
 
 
+def fact_pages(f: dict, pg: dict[int, str]) -> set[int]:
+    """The pages a fact rests on: the one it gives, and those its quote is actually on."""
+    return {n for n in [f.get("page"), *_quote_pages(f, pg)] if n}
+
+
 def _fields(f: dict) -> dict:
     return {k: f.get(k) for k in _FACT}
 
@@ -489,6 +494,8 @@ def resolve(markdown: str, facts: list[dict], model: str, reviewer_model: str, o
             items.append({"id": i, "you_said": issues[i], "extractor": {"action": r["action"], "reason": r["reason"]},
                           "fact_now": _fields(cand), "automatic_checks_now": [x["text"] for x in cand["check"]["items"]]})
         cites = [c.get("page") for _, c in pending.values()] + [n for _, c in pending.values() for n in _quote_pages(c, pg)]
+        progress((k - 0.5) / rounds, f"Fact review loop, round {k}: {reviewer_model} checks {model}'s answers on "
+                                     f"{len(pending)} fact(s)")
         ver = _call(reviewer_model, VERIFY_PROMPT.format(rules=lessons.rules_text("facts"), keys=KEYS, items=json.dumps(
             items, indent=1, ensure_ascii=False), doc=cited_pages(markdown, [c for c in cites if c] or [1])),
             VERIFY_SCHEMA, "facts-verify", on_usage)
