@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Valuation Desk</title>
+<script>try { const t = localStorage.getItem("vd-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@300;400;600;700&family=Noto+Sans+Mono:wght@400;500&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
@@ -73,6 +74,11 @@ header { background: var(--bar); color: var(--bar-ink); position: sticky; top: 0
 .hbtn { background: #2e2e38; color: #fff; border: 1px solid #4a4a57; border-radius: 4px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
 .hbtn:hover, .hbtn[aria-expanded="true"] { border-color: var(--yellow); }
 .hbtn.ask { background: var(--yellow); border-color: var(--yellow); color: var(--on-yellow); font-weight: 600; }
+.hbtn.icon { display: inline-flex; align-items: center; justify-content: center; padding: 4px 7px; }
+.hbtn.icon svg { width: 16px; height: 16px; }
+/* the theme switch: pinned to the header's top-right corner, clear of the controls however they wrap */
+#themeBtn { position: absolute; top: 12px; right: 14px; }
+header .hbar { padding-right: 64px; }
 .popover { position: absolute; right: 24px; top: 58px; z-index: 30; background: var(--surface); color: var(--ink); border: 1px solid var(--rule-strong);
   border-radius: 6px; padding: 12px 14px; width: 260px; display: grid; gap: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
 .popover label { font-size: 12px; color: var(--muted); margin-top: 6px; }
@@ -394,6 +400,7 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
       <button class="hbtn" id="modelsBtn" type="button" aria-haspopup="true" aria-expanded="false" title="Which Azure models read, review and arbitrate">⚙ Models</button>
       <button class="hbtn ask" id="askBtn" type="button" aria-expanded="false">Ask</button>
     </div>
+    <button class="hbtn icon" id="themeBtn" type="button" aria-pressed="false"></button>
   </div>
   <div class="yellow-rule"></div>
   <div class="popover" id="modelCtl" hidden role="dialog" aria-label="Models">
@@ -1657,6 +1664,29 @@ function bindDoctor() {
     try { changed(await api(`/api/engagements/${E.id}/doctor/holds`, {method: "POST", body: {release: true}})); toast("Released: every cell is computed again"); } catch (err) { toast(err.message, 6000); } });
 }
 bind.doctor = bindDoctor;
+
+// ---- theme: light or dark, as chosen here (remembered in this browser), else as the system has it ----------------
+const THEME_KEY = "vd-theme";
+const SUN = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`;
+const MOON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>`;
+const systemDark = matchMedia("(prefers-color-scheme: dark)");
+const themeNow = () => document.documentElement.dataset.theme || (systemDark.matches ? "dark" : "light");
+function themeButton() {
+  const dark = themeNow() === "dark", b = $("#themeBtn"), t = dark ? "Switch to the light theme" : "Switch to the dark theme";
+  b.innerHTML = dark ? SUN : MOON; b.title = t; b.setAttribute("aria-label", t); b.setAttribute("aria-pressed", String(dark));
+}
+function themeRedraw() {  // charts take their colours when drawn: draw the page again
+  themeButton();
+  if (E) { render(); if (!$("#askDrawer").hidden) drawAsk(); }
+}
+$("#themeBtn").onclick = () => {
+  const t = themeNow() === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem(THEME_KEY, t); } catch {}
+  themeRedraw();
+};
+systemDark.addEventListener("change", () => { if (!document.documentElement.dataset.theme) themeRedraw(); });
+themeButton();
 
 // ---- Ask: the engagement's chat, beside every page ----------------------------------------------------------
 function setAsk(open) {

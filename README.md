@@ -138,8 +138,9 @@ confirm, report facts and tables the agents couldn't settle, builds to start, fi
 that don't match. The sidebar counts them by page. **Doctor**: why a figure comes out wrong, and what to do
 (below). **Setup**: Files and Roles. **Last year**: The report (its
 tables and key facts), Rebuild in Python (step 6 below) and the Map. **This year**: Summary (step 7), the
-**Value bridge** and What changed (the client models compared). Ask is a panel beside every page, and the
-Azure models sit behind the Models button. The pipeline behind the pages is below; each step is checked by a
+**Value bridge** and What changed (the client models compared). Ask is a panel beside every page, the
+Azure models sit behind the Models button, and a switch in the header's top-right corner picks the light or dark
+theme (remembered in the browser; the system's until one is picked). The pipeline behind the pages is below; each step is checked by a
 person before the next relies on it:
 1. **Files.** Workbooks go through the Model Desk pipeline and library (`bench/library.py`), so a model uploaded in
    either app is built once. Reports (PDF, PPTX) are read by `bench/docingest.py` into Markdown with page markers.
