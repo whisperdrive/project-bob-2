@@ -12,12 +12,13 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/charts.js"></script>
 <style>
-/* Palette: off-black #2e2e38 / #1a1a24, ground #f6f6fa, greys #c4c4cd / #747480, the accent blue #1a9afa (dark ink on
-   it: white on it is too faint to read). */
+/* Palette: off-black #2e2e38 / #1a1a24, ground #f6f6fa, greys #c4c4cd / #747480, the accent blue #1a9afa for lines,
+   rules and borders. Solid fills that carry text or a tick (buttons, done circles) are a deeper shade of it, #1478d0,
+   with white on top: white on #1a9afa itself is under 3:1, on #1478d0 it is 4.5:1. */
 :root {
   --ground: #f6f6fa; --surface: #ffffff; --raised: #fbfbfd; --ink: #2e2e38; --muted: #6b6b78; --rule: #e1e1e6;
   --rule-strong: #c4c4cd; --bar: #1a1a24; --bar-ink: #ffffff; --bar-muted: #c4c4cd; --accent: #1a9afa;
-  --on-accent: #1a1a24; --link: #1270c2; --blue: #1a9afa;
+  --accent-fill: #1478d0; --on-accent: #ffffff; --link: #1270c2; --blue: #1a9afa;
   --ok-bg: #e5f3ea; --ok: #16692f; --warn-bg: #fff3cc; --warn: #7a5200; --bad-bg: #fbe7e5; --bad: #a3261c;
   --info-bg: #e3f1fd; --info: #0f5a9c; --code-bg: #f0f0f4;
   --s1: #1a9afa; --s2: #747480; --s3: #2e2e38;
@@ -85,7 +86,7 @@ footer.disclaimer b { color: var(--ink); font-weight: 600; }
 
 .hbtn { background: #2e2e38; color: #fff; border: 1px solid #4a4a57; border-radius: 4px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
 .hbtn:hover, .hbtn[aria-expanded="true"] { border-color: var(--accent); }
-.hbtn.ask { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.hbtn.ask { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); font-weight: 600; }
 .hbtn.icon { display: inline-flex; align-items: center; justify-content: center; padding: 4px 7px; }
 .hbtn.icon svg { width: 16px; height: 16px; }
 /* the theme switch: pinned to the header's top-right corner, clear of the controls however they wrap */
@@ -130,7 +131,7 @@ nav.side .cnt { background: var(--warn-bg); color: var(--warn); border-radius: 9
 @media (max-width: 900px) { .shell, .shell.asking { grid-template-columns: minmax(0, 1fr); } nav.side { position: static; max-height: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 16px; }
   nav.side .sec { display: none; } nav.side button { width: auto; } .drawer { position: static; height: auto; border-left: 0; border-top: 1px solid var(--rule); } }
 .dot { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #74747f; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; }
-.dot.done { background: var(--accent); border-color: var(--accent); color: #2e2e38; }
+.dot.done { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); }
 .dot.work { border-color: var(--blue); color: var(--blue); }
 
 main { max-width: 1360px; margin: 0; padding: 22px 24px 60px; display: grid; gap: 18px; }
@@ -148,7 +149,7 @@ main { max-width: 1360px; margin: 0; padding: 22px 24px 60px; display: grid; gap
 
 .btn { background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 4px; padding: 6px 14px; cursor: pointer; font-size: 14px; font-weight: 400; }
 .btn:hover { border-color: var(--ink); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn.primary { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); font-weight: 600; }
 .btn.primary:hover { filter: brightness(.95); }
 .btn.small { padding: 3px 9px; font-size: 12.5px; }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--link); padding-left: 4px; padding-right: 4px; }
@@ -366,7 +367,7 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
 .st { display: grid; justify-items: center; gap: 2px; background: none; border: 0; cursor: pointer; padding: 2px 6px; min-width: 104px; text-align: center; color: inherit; }
 .st:hover .nm { text-decoration: underline; }
 .st .ic { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; border: 2px solid var(--rule-strong); font-weight: 700; font-size: 12.5px; position: relative; color: var(--muted); background: var(--surface); }
-.st.done .ic { background: var(--accent); border-color: var(--accent); color: #2e2e38; }
+.st.done .ic { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); }
 .st.you .ic { border-color: #e0b400; color: var(--warn); background: var(--warn-bg); animation: glowy 1.8s ease-out infinite; }
 .st.error .ic { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
 .st.running .ic { border-color: var(--rule); }
@@ -382,7 +383,7 @@ dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
 .subflow { display: flex; align-items: center; flex-wrap: wrap; row-gap: 6px; margin-top: 8px; font-size: 12px; }
 .sf-node { padding: 3px 10px; border-radius: 99px; border: 1px solid var(--rule-strong); color: var(--muted); background: var(--surface); white-space: nowrap; }
 .sf-node.past { color: var(--ink); border-color: var(--accent); }
-.sf-node.cur { color: #fff; background: var(--blue); border-color: var(--blue); font-weight: 600; animation: glow 1.6s ease-out infinite; }
+.sf-node.cur { color: var(--on-accent); background: var(--accent-fill); border-color: var(--accent-fill); font-weight: 600; animation: glow 1.6s ease-out infinite; }
 .sf-link { width: 20px; height: 2px; background: var(--rule-strong); }
 .sf-link.past { background: var(--accent); }
 .swap .arr { display: inline-block; animation: flip 1.2s steps(1) infinite; }

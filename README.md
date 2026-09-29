@@ -140,8 +140,8 @@ that don't match. The sidebar counts them by page. **Doctor**: why a figure come
 tables and key facts), Rebuild in Python (step 6 below) and the Map. **This year**: Summary (step 7), the
 **Value bridge** and What changed (the client models compared). Ask is a panel beside every page, the
 Azure models sit behind the Models button, and a switch in the header's top-right corner picks the light or dark
-theme (remembered in the browser; the system's until one is picked). The accent is blue (#1a9afa, dark text on
-it), on the off-black and grey palette. A disclaimer at the foot of every page says the desk is experimental,
+theme (remembered in the browser; the system's until one is picked). The accent is blue (#1a9afa for lines and
+borders; buttons and done circles are a deeper #1478d0 with white on them, 4.5:1), on the off-black and grey palette. A disclaimer at the foot of every page says the desk is experimental,
 that its output must be checked by a qualified person and isn't advice, and gives the copyright and trademark
 notes.
 
