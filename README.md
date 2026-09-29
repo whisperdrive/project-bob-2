@@ -314,13 +314,26 @@ person before the next relies on it:
    - **The report's charts.** Last year's report charted last year's client model, so the same rows drawn from
      that model must reproduce each chart. Charts are found in three places: pictures the table reader classed
      as figures, PPTX charts (whose data is exact), and charts drawn in the PDF itself (bars sharing a baseline
-     or plotted lines, found from the page's drawing, with the axis labels taken in). gpt-6-luna reads each one
-     (title, kind, units, years, each series' values). Code finds the model rows whose financial-year totals
-     follow each series, allowing for units and sign, within 6%. gpt-6-sol then compares the report's picture
-     with the recreation (the data, not the styling). A series it rejects gets the next candidate row, up to
-     three tries. The same rows in this year's client model give this year's chart. They run by themselves the
-     first time the page opens after the overlay is built. `tests/make_engagement_pack.py` puts both kinds of
-     chart in the synthetic report.
+     or plotted lines, found from the page's drawing). A drawn chart is cropped with its axis labels and legend
+     but no further: not across an empty strip (two panels side by side are two charts; a commentary column
+     beside one isn't part of it), and not past the rule over a panel. It takes its title from that panel. A
+     figure the table reader cut out of a drawn chart (often just the plot) gives way to the drawn chart's own
+     crop. gpt-6-luna reads each one (title, kind, units, years, each series' values). A chart whose x axis
+     isn't a run of years (valuation ranges like FY26-FY30, peers, a strip of an axis on its own) isn't a chart
+     over years; it's listed, not recreated. Code finds the model rows whose financial-year totals follow each
+     series, allowing for units and sign, within 6%. A series named for a site or segment can be the sum of
+     that site's rows (its section, or rows carrying its name). A row that shares no word with the series must
+     follow it within 2% over six years or more, a multiple or a percentage isn't rescaled by thousands, and a
+     series too small to read off the picture isn't matched. The recreation is drawn from those financial-year
+     totals, so rows from a quarterly and an annual sheet chart together. gpt-6-sol then compares the report's
+     picture with the recreation (the data, not the styling); it isn't asked when most series have no row. A
+     series it rejects gets the next candidate row, up to three tries. The same rows in this year's client model
+     give this year's chart. **Compare** puts the report's reading beside the model's numbers, series by series
+     and year by year. You can pick the rows for a series by hand (searched by label or section, added up on one
+     sheet); the chart is then redrawn from them and checked by numbers. They run by themselves the first time
+     the page opens after the overlay is built. `tests/make_engagement_pack.py` puts both kinds of chart in the
+     synthetic report; `tests/check_charts.py` checks the finding, the time axis, the matching and the gates on
+     a report laid out in panels.
 
 **The value bridge** (`overlay.value_bridge`) goes from last year's value to this year's for each of the report's
 conclusions in the overlay, one change at a time, so the steps add up exactly: last year's value (the rebuild);

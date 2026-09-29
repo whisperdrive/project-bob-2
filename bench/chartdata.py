@@ -9,9 +9,11 @@ chart review all see the same thing.
   balances at the start), rates / percentages / indices averaged; partial years marked
 The workbook values in spec["series"][i]["data"] are never changed.
 """
+import json
 import re
 import sqlite3
 from calendar import month_abbr, monthrange
+from collections import Counter
 from datetime import date, timedelta
 from statistics import median
 
@@ -42,7 +44,18 @@ def fy_end_month(db: sqlite3.Connection) -> int:
         for (v,) in db.execute("SELECT value FROM cells WHERE sheet=? AND row=?", (sheet, r)):
             if isinstance(v, (int, float)) and not isinstance(v, bool) and 1 <= v <= 12:
                 return int(v)
-    return 12
+    # else the month an annual timeline's periods end in (30 June every year: a June year end)
+    months = Counter()
+    for sheet, lay in db.execute("SELECT sheet, layout FROM sheets"):
+        lay = json.loads(lay or "{}")
+        if not lay.get("header_row") or not lay.get("tl_first"):
+            continue
+        ends = [v for (v,) in db.execute("SELECT value FROM cells WHERE sheet=? AND row=? AND col BETWEEN ? AND ? ORDER BY col",
+                                         (sheet, lay["header_row"], lay["tl_first"], lay["tl_last"]))]
+        ds = [date.fromisoformat(v[:10]) for v in ends if isinstance(v, str) and re.match(r"\d{4}-\d{2}-\d{2}", v)]
+        if len(ds) >= 3 and all(330 <= (b - a).days <= 400 for a, b in zip(ds, ds[1:])):
+            months[Counter(d.month for d in ds).most_common(1)[0][0]] += 1
+    return months.most_common(1)[0][0] if months else 12
 
 
 def aggregation(name: str, units: str | None) -> str:

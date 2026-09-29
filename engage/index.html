@@ -1651,9 +1651,9 @@ document.addEventListener("click", e => { const pop = $("#modelCtl"); if (!pop.h
 document.addEventListener("keydown", e => { if (e.key === "Escape") { $("#modelCtl").hidden = true; $("#modelsBtn").setAttribute("aria-expanded", "false"); } });
 
 // ---- step 7: the summary: the report's summary table and charts, rebuilt and rolled forward -----------------
-const SUM = {eid: null, data: null, loading: false, changes: {}, vd: null, method: {}, seq: 0, chartsSeen: null};
+const SUM = {eid: null, data: null, loading: false, changes: {}, vd: null, method: {}, seq: 0, chartsSeen: null, cmpSel: {}, picker: null};
 function viewSummary() {
-  if (SUM.eid !== E.id) Object.assign(SUM, {eid: E.id, data: null, changes: {}, vd: null, method: {}, chartsSeen: null});
+  if (SUM.eid !== E.id) Object.assign(SUM, {eid: E.id, data: null, changes: {}, vd: null, method: {}, chartsSeen: null, cmpSel: {}, picker: null});
   const head = `<div class="lede"><div><h1><b>Summary</b></h1><p>Last year's report, rebuilt and rolled forward: its summary table recomputed on last year's client model (it should tie) and on this year's, and its charts redrawn from both models and checked against the report's own by eye. Change an assumption, the valuation date or the discounting method to see your scenario.</p></div></div>`;
   const d = SUM.data;
   if (!d) return head + `<div class="card"><p class="muted" style="margin:0">${SUM.loading ? "Recomputing the summary…" : "Loading…"}</p></div>`;
@@ -1714,23 +1714,81 @@ function summaryCard(d) {
   <p class="small muted" style="margin:8px 0 0">Assumptions without an input in the overlay can't be changed here. The discounting method applies to each discounting under a figure and carries through the formulas above it (see how the figure is built in <b>Rebuild in Python → Valuation (DCF)</b>).</p></div>`;
 }
 function chartsCard(d) {
-  const st = d.charts_status || E.charts_status, running = busy(st), ch = d.charts?.charts || [];
-  const img = p => p ? `<div class="src-img"><img src="/api/engagements/${E.id}/charts/${encodeURIComponent(p.split("/").pop())}?v=${encodeURIComponent(d.charts?.at || "")}" alt="The chart in last year's report"></div>` : `<p class="small muted">Its data is in the file itself (no picture).</p>`;
-  const head = `<div class="row" style="justify-content:space-between"><div><h2>The report's charts</h2><p class="sub" style="margin:0">Each chart in last year's report, read by eye, drawn again from the model rows that match it, and checked against the report's own picture by a second model. The report charted last year's client model, so the rebuild should match; the same rows in this year's model give this year's chart.</p></div>
-    ${running ? `<span class="pill info">${esc(d.charts_step || E.charts_step || "Working")}</span>` : `<button class="btn small" id="sumCharts">${ch.length || d.charts ? "Recreate them again" : "Recreate the report's charts"}</button>`}</div>`;
+  const st = d.charts_status || E.charts_status, running = busy(st), all = d.charts?.charts || [];
+  const head = `<div class="row" style="justify-content:space-between"><div><h2>The report's charts</h2><p class="sub" style="margin:0">Each chart in last year's report, read off the page, drawn again from the model rows that follow it, and checked against the report. The report charted last year's client model, so the rebuild should match; the same rows in this year's model give this year's chart. <b>Compare</b> sets the report's reading beside the model's numbers, series by series, and lets you pick the rows where the match is wrong.</p></div>
+    ${running ? `<span class="pill info">${esc(d.charts_step || E.charts_step || "Working")}</span>` : `<button class="btn small" id="sumCharts">${all.length || d.charts ? "Recreate them again" : "Recreate the report's charts"}</button>`}</div>`;
   if (d.charts_error || E.charts_error) return `<div class="card">${head}<div class="callout bad small" style="margin-top:8px">${esc(d.charts_error || E.charts_error)}</div></div>`;
   if (!d.charts) return `<div class="card">${head}<p class="muted small">${running ? "Finding the charts in the report and recreating them…" : "Not recreated yet."}</p></div>`;
-  if (!ch.length) return `<div class="card">${head}<p class="muted small">No charts found in the report.</p></div>`;
-  return `<div class="card">${head}${ch.map((c, i) => {
-    const v = (c.tries || []).slice(-1)[0]?.verdict, rows = (c.picks || []).map((p, k) => p ? `${esc(c.read?.series?.[k]?.name || "series " + (k + 1))} → <span class="mono">${esc(p.sheet)}!r${p.row}</span> ${esc(p.label)} <span class="muted">(${(p.error * 100).toFixed(1)}% off the reading${p.scale !== 1 ? `, ×${p.scale}` : ""})</span>` : `${esc(c.read?.series?.[k]?.name || "")}: no matching row`);
-    return `<div style="margin-top:16px;border-top:1px solid var(--rule);padding-top:12px"><h3 style="margin:0;font-size:15px">${esc(c.caption || c.read?.title || "Chart " + (i + 1))} <span class="muted small">page ${c.page} · ${esc(c.source)}</span>
-      ${c.problem ? `<span class="pill warn">${esc(c.problem)}</span>` : c.matches ? `<span class="pill ok">✓ matches the report</span>` : `<span class="pill bad">Doesn't match</span>`}</h3>
-      ${v && !c.matches ? `<ul class="why small">${(v.differences || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : v ? `<p class="small muted" style="margin:4px 0 0">Checked by ${esc(v.by || "")}${(c.tries || []).length > 1 ? ` after ${c.tries.length} tries` : ""}.</p>` : ""}
-      ${rows.length ? `<p class="small" style="margin:4px 0 0">${rows.join("<br>")}</p>` : ""}
+  const ch = all.filter(c => !c.skipped), skipped = all.filter(c => c.skipped);
+  if (!ch.length && !skipped.length) return `<div class="card">${head}<p class="muted small">No charts found in the report.</p></div>`;
+  const imgUrl = p => `/api/engagements/${E.id}/charts/${encodeURIComponent(p.split("/").pop())}?v=${encodeURIComponent(d.charts?.at || "")}`;
+  const img = p => p ? `<div class="src-img"><a href="${imgUrl(p)}" target="_blank" rel="noopener" title="Open it full size"><img src="${imgUrl(p)}" alt="The chart in last year's report"></a></div>` : `<p class="small muted">Its data is in the file itself (no picture).</p>`;
+  const body = ch.map(c => {
+    const i = all.indexOf(c), v = (c.tries || []).slice(-1)[0]?.verdict, name = c.caption || c.read?.title || "Chart " + (i + 1);
+    const status = c.problem ? `<span class="pill warn">${esc(c.problem)}</span>` : c.matches ? `<span class="pill ok">✓ matches the report</span>` : `<span class="pill bad">Doesn't match</span>`;
+    const how = c.read?.exact ? "values exact, from the file" : c.read ? "values read off the picture by eye (approximate)" : "";
+    const notes = c.series_notes || {};
+    const rows = (c.read?.series || []).map((s, k) => {
+      const p = c.picks?.[k];
+      const what = p ? `→ <span class="mono">${esc(p.rows?.length > 1 ? `${p.sheet} ${p.rows.length} rows` : `${p.sheet}!r${p.row}`)}</span> ${esc(p.label)} <span class="muted">(${p.error != null ? (p.error * 100).toFixed(1) + "% off the reading" : ""}${p.scale !== 1 ? `, ×${p.scale}` : ""}${p.manual ? ", your pick" : ""})</span>`
+        : `<span class="muted">${esc(notes[k] || "no matching row")}</span>`;
+      return `<div class="small">${esc(s.name || "series " + (k + 1))} ${what} ${c.compare ? `<button class="btn small ghost" data-pick="${esc(c.id)}:${k}">${p ? "Change" : "Pick rows"}</button>` : ""}</div>`;
+    }).join("");
+    return `<div style="margin-top:16px;border-top:1px solid var(--rule);padding-top:12px" data-chart="${esc(c.id)}"><h3 style="margin:0;font-size:15px">${esc(name)} <span class="muted small">page ${c.page} · ${esc(c.source)}</span> ${status}</h3>
+      ${v && !c.matches && (v.differences || []).length ? `<ul class="why small">${(v.differences || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : v ? `<p class="small muted" style="margin:4px 0 0">Checked by ${esc(v.by || "")}${(c.tries || []).length > 1 ? ` after ${c.tries.length} tries` : ""}.</p>` : ""}
+      <p class="small muted" style="margin:4px 0 0">${esc(how)}</p><div style="margin-top:4px">${rows}</div>
+      ${SUM.picker?.cid === c.id ? pickerHtml(c) : ""}
       <div class="chartrow"><div><div class="small muted">In the report</div>${img(c.source !== "pptx chart" ? c.png : null)}</div>
         <div id="sumRebuilt${i}"><div class="small muted">Rebuilt from last year's model</div></div>
-        <div id="sumCurrent${i}"><div class="small muted">This year's model</div>${c.current_spec ? "" : `<p class="small muted">${esc(c.current_problem || (c.picks ? "Not on this year's model (its rows couldn't be found there)" : ""))}</p>`}</div></div></div>`;
-  }).join("")}</div>`;
+        <div id="sumCurrent${i}"><div class="small muted">This year's model</div>${c.current_spec ? "" : `<p class="small muted">${esc(c.current_problem || (c.picks ? "Not on this year's model (its rows couldn't be found there)" : ""))}</p>`}</div></div>
+      ${c.compare ? `<details class="work" data-k="cmp-${esc(c.id)}" ${c.matches ? "" : "open"} style="margin-top:10px"><summary>Compare the report's reading with the model, series by series</summary><div class="in">${compareHtml(c, i)}</div></details>` : ""}</div>`;
+  }).join("");
+  const skip = skipped.length ? `<details class="work" data-k="cmp-skipped" style="margin-top:16px"><summary>${skipped.length} not recreated: not charts over years</summary><div class="in"><ul class="why small">${skipped.map(c => `<li>${esc(c.caption || c.read?.title || c.id)} <span class="muted">page ${c.page} · ${esc(c.source)}</span>: ${esc(c.skipped)}${c.png ? ` · <a href="${imgUrl(c.png)}" target="_blank" rel="noopener">see it</a>` : ""}</li>`).join("")}</ul></div></details>` : "";
+  return `<div class="card">${head}${body}${skip}</div>`;
+}
+// The compare view of one chart: every series' fit in a table, and one series at a time as a chart (the model's
+// numbers as columns, the report's reading as a line) with its years.
+const pct = x => x == null ? "–" : `${x > 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
+function cmpStats(s) {
+  const d = (s.diff || []).filter(x => x != null).map(Math.abs);
+  return d.length ? {mean: d.reduce((a, b) => a + b, 0) / d.length, max: Math.max(...d)} : null;
+}
+function compareHtml(c, i) {
+  const cm = c.compare, sel = SUM.cmpSel?.[c.id] ?? Math.max(0, cm.series.findIndex(s => !s.model || (cmpStats(s)?.mean ?? 1) > 0.05));
+  const s = cm.series[sel];
+  const table = `<div class="scroll"><table><thead><tr><th>Series</th><th>Model rows</th><th class="num">Average gap</th><th class="num">Largest gap</th><th></th></tr></thead><tbody>${cm.series.map((x, k) => {
+    const st = cmpStats(x), p = c.picks?.[k];
+    return `<tr class="click ${k === sel ? "sel" : ""}" data-cmpsel="${esc(c.id)}:${k}"><td>${esc(x.name)}</td><td class="small">${p ? `<span class="mono">${esc(p.rows?.length > 1 ? `${p.sheet} ${p.rows.length} rows` : `${p.sheet}!r${p.row}`)}</span> ${esc(p.label)}` : `<span class="muted">${esc((c.series_notes || {})[k] || "none")}</span>`}</td>
+      <td class="num">${st ? (st.mean * 100).toFixed(1) + "%" : "–"}</td><td class="num">${st ? (st.max * 100).toFixed(1) + "%" : "–"}</td><td><button class="btn small ghost" data-pick="${esc(c.id)}:${k}">${p ? "Change" : "Pick rows"}</button></td></tr>`; }).join("")}</tbody></table></div>`;
+  const years = `<div class="scroll" style="max-height:320px;overflow:auto"><table><thead><tr><th>Year</th><th class="num">Report (read)</th><th class="num">Model</th><th class="num">Gap</th></tr></thead><tbody>${cm.labels.map((lab, k) => {
+    const g = s.diff?.[k];
+    return `<tr><td>${esc(lab)}</td><td class="num">${drNum(s.read[k])}</td><td class="num">${s.model ? drNum(s.model[k]) : "–"}</td><td class="num ${g != null && Math.abs(g) > 0.05 ? "brk" : ""}">${pct(g)}</td></tr>`; }).join("")}</tbody></table></div>`;
+  return `<p class="small muted" style="margin:0 0 8px">Gaps are the model less the reading, as a share of the reading. A reading by eye is good to a few percent; gaps well beyond that mean the wrong rows (or a misread chart). Click a series to see it year by year. <a href="#" data-cmpcopy="${esc(c.id)}">Copy the comparison</a></p>${table}
+    <div class="grid2" style="margin-top:12px"><div id="sumCmp${i}"></div>${years}</div>`;
+}
+function compareSpec(c) {
+  const cm = c.compare, k = SUM.cmpSel?.[c.id] ?? Math.max(0, cm.series.findIndex(s => !s.model || (cmpStats(s)?.mean ?? 1) > 0.05)), s = cm.series[k];
+  const series = [...(s.model ? [{name: `${s.name}: model`, as: "bar", data: s.model, range: "model"}] : []), {name: `${s.name}: report (read)`, as: "line", data: s.read, range: "the report"}];
+  return {title: `${s.name}: the report's reading and the model`, kind: "combo", units: c.read?.units || "", labels: cm.labels, period_labels: cm.labels, frequency: "annual", sign: 1, series};
+}
+function compareText(c) {
+  const cm = c.compare, L = [`${c.caption || c.read?.title || c.id} (page ${c.page}, ${c.source}; ${c.read?.exact ? "values exact from the file" : "values read by eye"})`];
+  cm.series.forEach((s, k) => {
+    const p = c.picks?.[k], st = cmpStats(s);
+    L.push("", `${s.name}: ${p ? `${p.sheet} ${p.rows?.length > 1 ? `rows ${p.rows.join(", ")}` : `r${p.row}`} ${p.label} (x${p.scale})` : (c.series_notes || {})[k] || "no matching row"}${st ? `; average gap ${(st.mean * 100).toFixed(1)}%, largest ${(st.max * 100).toFixed(1)}%` : ""}`);
+    L.push(cm.labels.map((lab, j) => `${lab}: ${s.read[j] ?? "–"}${s.model ? ` / ${s.model[j] == null ? "–" : Number(s.model[j]).toFixed(2)} (${pct(s.diff?.[j])})` : ""}`).join("; "));
+  });
+  return L.join("\n");
+}
+// Picking rows for a series by hand: search last year's client model (or the overlay), tick rows on one sheet.
+function pickerHtml(c) {
+  const P = SUM.picker, s = c.read.series[P.series], books = [["prior_model", "last year's client model"], ["prior_overlay", "the overlay"]].filter(([k]) => E.roles[k]);
+  return `<div class="card" style="margin:10px 0;background:var(--raised)"><div class="row" style="justify-content:space-between"><b>Rows for “${esc(s.name)}”</b><button class="btn small ghost" id="pkClose">Close</button></div>
+    <p class="small muted" style="margin:4px 0 8px">Search by label or section, tick the rows that make up this series (they're added up, on one sheet), then use them. The chart is redrawn from them and compared with the report's reading.</p>
+    <div class="row"><select class="in" id="pkBook">${books.map(([k, n]) => `<option value="${k}" ${P.book === k ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+      <input class="in" id="pkQ" placeholder="e.g. ${esc(s.name)}" value="${esc(P.q || "")}" style="flex:1;min-width:200px"><button class="btn small" id="pkGo">Search</button></div>
+    <div class="scroll" style="max-height:260px;overflow:auto;margin-top:8px">${P.loading ? `<p class="small muted">Searching…</p>` : (P.results || []).length ? `<table><tbody>${P.results.map(r => `<tr><td><input type="checkbox" data-pkrow="${esc(r.sheet)}|${r.row}" ${P.sel.has(`${r.sheet}|${r.row}`) ? "checked" : ""} aria-label="${esc(r.label)}"></td><td class="mono small">${esc(r.sheet)}!r${r.row}</td><td>${esc(r.label || "")}${r.section ? ` <span class="muted small">${esc(r.section)}</span>` : ""}</td><td class="small muted">${esc(r.samples || "")}</td></tr>`).join("")}</tbody></table>` : P.results ? `<p class="small muted">No rows found.</p>` : ""}</div>
+    <div class="row" style="margin-top:8px"><button class="btn primary small" id="pkUse" ${P.sel.size ? "" : "disabled"}>Use ${P.sel.size || ""} row${P.sel.size === 1 ? "" : "s"}</button>${c.picks?.[P.series] ? `<button class="btn small ghost" id="pkClear">Leave this series out</button>` : ""}<span class="small muted" id="pkMsg"></span></div></div>`;
 }
 async function loadSummary() {
   const seq = ++SUM.seq; SUM.loading = true;
@@ -1763,10 +1821,59 @@ function bindSummary() {
   (d.charts?.charts || []).forEach((c, i) => {
     if (c.spec && $(`#sumRebuilt${i}`)) { $(`#sumRebuilt${i}`).append(chartCard(c.spec)); }
     if (c.current_spec && $(`#sumCurrent${i}`)) { $(`#sumCurrent${i}`).append(chartCard(c.current_spec)); }
+    if (c.compare && $(`#sumCmp${i}`)) { $(`#sumCmp${i}`).append(chartCard(compareSpec(c))); }
   });
+  bindCompare(d);
   mountCharts($("#main"));
 }
 bind.summary = bindSummary;
+function redrawSummary() { keepOpen($("#main"), () => { $("#main").innerHTML = viewSummary(); bindSummary(); }); }
+function bindCompare(d) {
+  const chart = id => (d.charts?.charts || []).find(c => c.id === id);
+  document.querySelectorAll("[data-cmpsel]").forEach(tr => tr.onclick = e => {
+    if (e.target.closest("button")) return;
+    const [id, k] = tr.dataset.cmpsel.split(":"); SUM.cmpSel = {...(SUM.cmpSel || {}), [id]: +k}; redrawSummary();
+  });
+  document.querySelectorAll("[data-cmpcopy]").forEach(a => a.onclick = e => { e.preventDefault(); drCopy(compareText(chart(a.dataset.cmpcopy))); });
+  const search = async () => {
+    const P = SUM.picker, fid = E.roles[P.book]?.id;
+    if (!fid) return;
+    P.q = $("#pkQ")?.value || ""; P.loading = true; redrawSummary();
+    try { P.results = await api(`/api/engagements/${E.id}/models/${fid}/rows?q=${encodeURIComponent(P.q)}&limit=60`); }
+    catch (err) { P.results = []; toast(err.message, 6000); }
+    P.loading = false; redrawSummary(); $("#pkQ")?.focus();
+  };
+  document.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => {
+    const [id, k] = b.dataset.pick.split(":"), c = chart(id), s = c.read.series[+k];
+    SUM.picker = {cid: id, series: +k, book: c.picks?.[+k]?.book || "prior_model", q: s.name || "", results: null, sel: new Set(), loading: false};
+    const p = c.picks?.[+k];
+    if (p) for (const r of p.rows || [p.row]) SUM.picker.sel.add(`${p.sheet}|${r}`);
+    search();
+  });
+  if (!SUM.picker) return;
+  const P = SUM.picker, send = async rows => {
+    $("#pkMsg").textContent = "Redrawing…";
+    try {
+      const c = await api(`/api/engagements/${E.id}/charts/${encodeURIComponent(P.cid)}/pick`, {method: "POST", body: {series: P.series, rows}});
+      const list = SUM.data.charts.charts, at = list.findIndex(x => x.id === c.id);
+      if (at >= 0) list[at] = c;
+      SUM.picker = null; OVR.sum = null; redrawSummary();
+      toast(c.matches ? "Redrawn from your rows: it matches the report" : "Redrawn from your rows");
+    } catch (err) { $("#pkMsg").textContent = err.message; }
+  };
+  $("#pkClose")?.addEventListener("click", () => { SUM.picker = null; redrawSummary(); });
+  $("#pkGo")?.addEventListener("click", search);
+  $("#pkQ")?.addEventListener("keydown", e => { if (e.key === "Enter") search(); });
+  $("#pkBook")?.addEventListener("change", e => { P.book = e.target.value; P.sel.clear(); search(); });
+  document.querySelectorAll("[data-pkrow]").forEach(cb => cb.onchange = () => {
+    const [sheet] = cb.dataset.pkrow.split("|");
+    if (cb.checked && [...P.sel].some(x => x.split("|")[0] !== sheet)) { cb.checked = false; toast("Rows from one sheet only: they're added up period by period"); return; }
+    cb.checked ? P.sel.add(cb.dataset.pkrow) : P.sel.delete(cb.dataset.pkrow);
+    const use = $("#pkUse"); use.disabled = !P.sel.size; use.textContent = `Use ${P.sel.size || ""} row${P.sel.size === 1 ? "" : "s"}`;
+  });
+  $("#pkUse")?.addEventListener("click", () => send([...P.sel].map(x => { const [sheet, row] = x.split("|"); return {book: P.book, sheet, row: +row}; })));
+  $("#pkClear")?.addEventListener("click", () => send([]));
+}
 function viewPython() {
   const head = `<div class="lede"><div><h1><b>Rebuild in Python</b></h1><p>Last year's overlay rebuilt as a Python module from its own formulas: every formula cell becomes Python, checked against the value Excel saved, then against the report. Run it live: change the assumptions, or feed it from the prior or the current client model to roll the valuation forward.</p></div></div>`;
   if (!E.roles.prior_overlay) return head + `<div class="card empty">Assign the prior overlay in Roles first.</div>`;

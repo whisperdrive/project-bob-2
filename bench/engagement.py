@@ -1189,7 +1189,7 @@ def _charts_file(eid: int) -> Path | None:
     return Path(d["out_dir"]) / "report_charts.json" if d else None
 
 
-def recreate_charts(eid: int) -> None:
+def recreate_charts(eid: int) -> dict:
     """Queue the report's charts: found, read, recreated from the prior client model, checked, redrawn on this
     year's model (reportcharts.py)."""
     r = roles(eid)
@@ -1197,6 +1197,7 @@ def recreate_charts(eid: int) -> None:
         raise ValueError("assign last year's report and client model (Roles) first")
     _set("engagements", eid, charts_status="queued", charts_step="Waiting to start", charts_error=None)
     _jobs.put(("charts", eid))
+    return {"queued": True}
 
 
 def _charts_job(eid: int) -> None:
@@ -1235,6 +1236,10 @@ def summary_view(eid: int, changes: dict | None = None, valuation_date: str | No
     f = _charts_file(eid)
     if f and f.exists():
         out["charts"] = json.loads(f.read_text(encoding="utf-8"))
+        import reportcharts
+        for ch in out["charts"].get("charts") or []:  # files saved before the compare view: work it out now
+            if "compare" not in ch and ch.get("read", {}).get("series") and reportcharts.time_axis(ch["read"].get("x_labels")):
+                ch["compare"] = reportcharts.comparison(ch["read"], ch.get("spec") if ch.get("spec", {}).get("labels") else None)
     elif f and e.get("overlay_status") == "done" and not e.get("charts_status"):
         recreate_charts(eid)
         out.update(charts_status="queued", charts_step="Waiting to start")
@@ -1262,6 +1267,53 @@ def bridge_view(eid: int, changes: dict | None = None, valuation_date: str | Non
     sess, summary = overlay_session(eid)
     clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
     return ovmod.deep(ovmod.value_bridge, sess, summary, reference(eid), clean, valuation_date, months, method)
+
+
+def chart_pick(eid: int, cid: str, series: int, rows: list[dict] | None) -> dict:
+    """A person's rows for one series of one of the report's charts (rows: [{"book", "sheet", "row"}], all on one
+    sheet; empty to clear it): the chart redrawn from them, checked by numbers against the reading, and redrawn on
+    this year's model."""
+    import reportcharts
+    f = _charts_file(eid)
+    if not f or not f.exists():
+        raise ValueError("recreate the report's charts first")
+    data = json.loads(f.read_text(encoding="utf-8"))
+    ch = next((c for c in data.get("charts") or [] if c["id"] == cid), None)
+    if not ch or not ch.get("read"):
+        raise ValueError("no such chart")
+    read = ch["read"]
+    years = reportcharts.time_axis(read.get("x_labels"))
+    if not years or not 0 <= series < len(read["series"]):
+        raise ValueError("that chart isn't one over years, or has no such series")
+    picks = list(ch.get("picks") or [None] * len(read["series"]))
+    if rows:
+        if len({(r["book"], r["sheet"]) for r in rows}) > 1:
+            raise ValueError("pick rows from one sheet of one workbook")
+        w = _role_wb(eid, rows[0]["book"])
+        if not w:
+            raise ValueError(f"no {rows[0]['book'].replace('_', ' ')} assigned")
+        p = reportcharts.pick_rows(w["db_path"], read, series, rows[0]["sheet"], [int(r["row"]) for r in rows])
+        picks[series] = {**p, "book": rows[0]["book"]}
+    else:
+        picks[series] = None
+    title = ch.get("caption") or read.get("title") or ""
+    spec = reportcharts.spec_for(read, picks, years, title)
+    verdict = reportcharts.numbers_verdict(read, picks, ch.get("series_notes"))
+    ch.update(spec=spec, picks=picks, matches=verdict["matches"], compare=reportcharts.comparison(read, spec))
+    ch.setdefault("tries", []).append({"picks": picks, "verdict": {**verdict, "by": "numbers, with your rows"}, "png": None})
+    ch.pop("problem", None)
+    prior, cur = _role_wb(eid, "prior_model"), _role_wb(eid, "current_model")
+    ch.pop("current_spec", None)
+    if prior and cur:
+        try:
+            ch["current_spec"] = reportcharts.current_spec(
+                prior["db_path"], cur["db_path"], read,
+                [p if p and p.get("book") == "prior_model" else None for p in picks], title + " (this year)")
+            ch.pop("current_problem", None)
+        except Exception as e:
+            ch["current_problem"] = f"{type(e).__name__}: {e}"
+    f.write_text(json.dumps(data, default=str), encoding="utf-8")
+    return ch
 
 
 def chart_png(eid: int, name: str) -> Path | None:

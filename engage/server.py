@@ -304,6 +304,17 @@ async def recreate_charts(eid: int):
     return {"ok": True}
 
 
+class ChartPick(BaseModel):
+    series: int
+    rows: list[dict] = []
+
+
+@app.post("/api/engagements/{eid}/charts/{cid}/pick")
+async def chart_pick(eid: int, cid: str, body: ChartPick):
+    """Your rows for one series of a report chart: redrawn from them and checked against the reading."""
+    return await _run(engagement.chart_pick, eid, cid, body.series, body.rows)
+
+
 @app.get("/api/engagements/{eid}/charts/{name}")
 async def chart_png(eid: int, name: str):
     p = engagement.chart_png(eid, name)
