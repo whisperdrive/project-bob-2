@@ -338,7 +338,14 @@ person before the next relies on it:
      differ it keeps both and says where (the overlay's saved link values are out of date there, or the Python
      differs). It knows
      the report's key facts, the levers, the outputs and the feeds. Charts go through the same chart review as
-     on the Model Desk.
+     on the Model Desk. **Dictation** (`bench/dictation.py`): the microphone beside Ask streams speech to an Azure
+     Speech resource (`SPEECH_KEY` and `SPEECH_REGION` in `.env`; the Free F0 tier gives 5 audio hours a month,
+     one stream at a time). Words appear in the box as they're heard, to read and correct before asking.
+     Microsoft's Speech SDK is loaded in the page on first use, pinned and checksummed. The server keeps the key.
+     It hands the page a short-lived token and the engagement's own words as a phrase list: the names in the
+     report's facts, their labels, the outputs, levers and sheet names, then common valuation terms. Dictation
+     stops on the microphone or Esc, and after 8 seconds of silence (the free tier counts silence too). Enter
+     stops it and asks. The line under the box shows the minutes dictated from this desk this month.
 7. **Summary** (`overlay.summary_table`, `bench/reportcharts.py`). Last year's report, rebuilt and rolled forward.
    - **Valuation summary.** The rows are the report's conclusions (with their low and high ends), its key
      assumptions and its approach. The columns are the report; the rebuild on last year's client model (it

@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bench"))
+import dictation  # noqa: E402
 import engagement  # noqa: E402
 import library  # noqa: E402
 import usage  # noqa: E402
@@ -63,7 +64,7 @@ def charts_js():  # the chart drawing shared with the other app (web/charts.js)
 def config():
     return {"models": MODELS, "default_model": engagement.DEFAULT_MODEL, "default_reviewer": engagement.DEFAULT_REVIEWER,
             "default_arbiter": engagement.DEFAULT_ARBITER,
-            "roles": engagement.rolesmod.ROLES}
+            "roles": engagement.rolesmod.ROLES, "dictation": dictation.status()}
 
 
 class NewEngagement(BaseModel):
@@ -429,6 +430,20 @@ async def overlay_dcf(eid: int, body: OverlayDcf):
     b = body.model_dump()
     return await _run(engagement.overlay_dcf, eid, b.pop("mode"), b.pop("changes"), b.pop("valuation_date"),
                       b.pop("months"), **b)
+
+
+class Dictated(BaseModel):
+    seconds: float
+
+
+@app.get("/api/engagements/{eid}/dictation")
+async def dictation_start(eid: int):  # a Speech token, the language and the engagement's words for the Ask box's microphone
+    return await _run(dictation.start, eid)
+
+
+@app.post("/api/dictation/usage")
+async def dictation_usage(req: Dictated):
+    return await _run(dictation.record, req.seconds)
 
 
 class Ask(BaseModel):

@@ -321,6 +321,15 @@ details.work[open] summary::before { transform: rotate(90deg); }
 .chat-stats b { color: var(--ink); }
 .composer { display: flex; gap: 10px; align-items: flex-end; }
 .composer textarea { flex: 1; resize: none; min-height: 46px; max-height: 180px; font-family: var(--sans); font-size: 14.5px; padding: 10px 12px; }
+/* dictation: the microphone beside Ask, red while it listens */
+.composer .mic { display: inline-flex; align-items: center; justify-content: center; width: 40px; padding: 6px 0; color: var(--ink); }
+.composer .mic svg { width: 18px; height: 18px; }
+.composer .mic.on { background: var(--bad); border-color: var(--bad); color: #fff; animation: glowred 1.2s infinite; }
+.composer .mic.wait { opacity: .6; cursor: progress; }
+@keyframes glowred { 0% { box-shadow: 0 0 0 0 rgba(163, 38, 28, .5); } 70%, 100% { box-shadow: 0 0 0 7px rgba(163, 38, 28, 0); } }
+@media (prefers-reduced-motion: reduce) { .composer .mic.on { animation: none; } }
+.dict-note { min-height: 18px; margin-top: 6px; }
+.dict-note.bad { color: var(--bad); }
 /* the call log dialog */
 dialog#callsDlg { border: 1px solid var(--rule-strong); border-radius: 8px; background: var(--ground); color: var(--ink); padding: 0; width: min(1100px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
 dialog#callsDlg::backdrop { background: rgb(0 0 0 / .4); }
@@ -1647,6 +1656,7 @@ bind.doctor = bindDoctor;
 
 // ---- Ask: the engagement's chat, beside every page ----------------------------------------------------------
 function setAsk(open) {
+  if (!open && DICT.state === "listening") dictStop();
   $("#askDrawer").hidden = !open;
   $("#shell").classList.toggle("asking", open);
   $("#askBtn").setAttribute("aria-expanded", String(open));
@@ -2484,7 +2494,8 @@ function ovAskPane() {
     <div class="row small"><label for="chatModel" class="muted">Model</label><select class="in" id="chatModel">${CFG.models.map(m => `<option ${m === (CHAT.model || E.model) ? "selected" : ""}>${esc(m)}</option>`).join("")}</select>
     ${CHAT.history.length ? `<button class="btn small" id="newChat">New chat</button>` : ""}</div></div>
     <div class="thread" id="thread">${CHAT.html || intro}</div>
-    <form class="composer" id="askForm"><textarea id="question" rows="1" placeholder="Ask about the valuation, the models or a what-if…" aria-label="Question"></textarea><button class="btn primary" id="send" ${CHAT.streaming ? "disabled" : ""}>Ask</button></form></div>`;
+    <form class="composer" id="askForm"><textarea id="question" rows="1" placeholder="Ask about the valuation, the models or a what-if…" aria-label="Question"></textarea>${MIC}<button class="btn primary" id="send" ${CHAT.streaming ? "disabled" : ""}>Ask</button></form>
+    <div class="dict-note small muted" id="dictNote" aria-live="polite"></div></div>`;
 }
 function bindOvAsk() {
   mountCharts($("#thread"));
@@ -2492,9 +2503,19 @@ function bindOvAsk() {
   $("#newChat")?.addEventListener("click", () => { Object.assign(CHAT, {history: [], html: "", session: newSession()}); $("#ovAsk").innerHTML = ovAskPane(); bindOvAsk(); });
   $("#examples")?.addEventListener("click", e => { const b = e.target.closest("button"); if (b) ovAsk(b.textContent); });
   const q = $("#question"), grow = () => { q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 180) + "px"; };
-  $("#askForm").onsubmit = e => { e.preventDefault(); const t = q.value.trim(); if (!t || CHAT.streaming) return; q.value = ""; grow(); ovAsk(t); };
-  q.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#askForm").requestSubmit(); } };
+  $("#askForm").onsubmit = async e => {
+    e.preventDefault();
+    if (DICT.state !== "off") await dictStop();  // Enter while dictating: finish the sentence, then ask
+    const q = $("#question"); if (!q) return;
+    const t = q.value.trim(); if (!t || CHAT.streaming) return; q.value = ""; q.dispatchEvent(new Event("input")); ovAsk(t);
+  };
+  q.onkeydown = e => {
+    if (e.key === "Escape" && DICT.state === "listening") { e.preventDefault(); dictStop(); }
+    else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#askForm").requestSubmit(); }
+  };
   q.oninput = grow;
+  $("#dictate").onclick = () => DICT.state === "off" ? dictStart() : DICT.state === "listening" ? dictStop() : null;
+  dictButton();
 }
 const argText = a => Object.entries(a).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
 function runCard(res) {  // an overlay_run result, as a compact table
@@ -2550,6 +2571,121 @@ async function ovAsk(text) {
   const s = $("#send"); if (s) { s.disabled = false; $("#question")?.focus(); }
   if (!$("#newChat") && CHAT.history.length && $("#ovAsk")) { $("#ovAsk").innerHTML = ovAskPane(); bindOvAsk(); }
   spend();
+}
+
+// ---- Ask: dictation --------------------------------------------------------------------------------------------
+// The microphone streams to the Azure Speech resource in .env through Microsoft's Speech SDK (loaded on first use,
+// pinned and checksummed); the server hands out a short-lived token and the engagement's own words as a phrase list.
+// Words appear in the box as they're heard; it stops on a second click, Esc, Enter (which then asks), after
+// DICT_SILENCE seconds without speech (the free tier counts silence too) or after DICT_MAX seconds.
+const SPEECH_SDK = {src: "https://cdn.jsdelivr.net/npm/microsoft-cognitiveservices-speech-sdk@1.52.0/distrib/browser/microsoft.cognitiveservices.speech.sdk.bundle-min.js",
+  integrity: "sha256-PkbvyIZFDxlA/U2lyvNaNiqEYplTVuMbI8PGrFi6Ou4="};
+const DICT_SILENCE = 8, DICT_MAX = 180;
+const DICT = {state: "off", rec: null, base: "", said: "", heard: "", t0: 0, last: 0, timer: null, done: null, error: null};
+const MIC = `<button type="button" class="btn mic" id="dictate" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>`;
+let speechLoad = null;
+function loadSpeech() {
+  if (window.SpeechSDK) return Promise.resolve(window.SpeechSDK);
+  return speechLoad ||= new Promise((ok, no) => {
+    const s = Object.assign(document.createElement("script"), {src: SPEECH_SDK.src, integrity: SPEECH_SDK.integrity, crossOrigin: "anonymous"});
+    s.onload = () => window.SpeechSDK ? ok(window.SpeechSDK) : no(new Error("Microsoft's speech library loaded but didn't start."));
+    s.onerror = () => { speechLoad = null; s.remove(); no(new Error("Couldn't load Microsoft's speech library from cdn.jsdelivr.net (offline, blocked, or its checksum didn't match).")); };
+    document.head.append(s);
+  });
+}
+function dictWhy(text, lead = "Dictation stopped: ") {
+  const t = String(text || "");
+  if (/NotAllowedError|Permission denied|permission/i.test(t)) return "The browser blocked the microphone: allow it for this page (the icon at the left of the address bar), then try again.";
+  if (/NotFoundError|device not found|no microphone/i.test(t)) return "No microphone found: plug one in or pick one in the system's sound settings.";
+  if (/quota/i.test(t)) return "The free tier's 5 hours of speech for this month are used up; dictation works again on the 1st.";
+  if (/429|too many|throttl/i.test(t)) return "Azure Speech is busy with another stream (the free tier takes one at a time: close Speech Studio or another desk tab), then try again.";
+  if (/401|unauthori[sz]ed|authentication/i.test(t)) return "Azure Speech refused the token: check SPEECH_KEY and SPEECH_REGION in .env.";
+  if (/1006|Unable to contact server/i.test(t)) return `Couldn't connect to Azure Speech from the browser (wss://${DICT.region || "<region>"}.stt.speech.microsoft.com): this network may block it, or the service refused the token.`;
+  return lead + t;
+}
+const dictUsed = u => `Dictated from this desk this month: ${Math.round(u.used_seconds / 60)} min of the ${u.free_seconds / 3600} free hours.`;
+function dictNote(text, bad) { const n = $("#dictNote"); if (n) { n.textContent = text || ""; n.classList.toggle("bad", !!bad); } }
+function dictButton() {
+  const b = $("#dictate"); if (!b) return;
+  b.classList.toggle("on", DICT.state === "listening");
+  b.classList.toggle("wait", DICT.state === "starting" || DICT.state === "stopping");
+  b.setAttribute("aria-pressed", String(DICT.state !== "off"));
+  const t = DICT.state === "off" ? "Dictate the question (Azure Speech)" : "Stop dictating (Esc)";
+  b.title = t; b.setAttribute("aria-label", t);
+  const q = $("#question"); if (q) q.readOnly = DICT.state === "listening";
+}
+function dictShow() {  // the box: what was in it, what's been said, and what's being heard now
+  const q = $("#question"); if (!q) return;
+  q.value = DICT.base + DICT.said + DICT.heard;
+  q.dispatchEvent(new Event("input")); q.scrollTop = q.scrollHeight;
+}
+async function dictStart() {
+  if (DICT.state !== "off" || !E) return;
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    dictNote(`The browser only allows the microphone on localhost or https: open the desk at http://localhost:${location.port || 8002}.`, true); return; }
+  DICT.state = "starting"; DICT.error = null; dictButton(); dictNote("Starting the microphone…");
+  let rec = null;
+  try {
+    const [sdk, info] = await Promise.all([loadSpeech(), api(`/api/engagements/${E.id}/dictation`)]);
+    const mic = await navigator.mediaDevices.getUserMedia({audio: true});  // asked here first, for a clear message if it's refused
+    mic.getTracks().forEach(t => t.stop());
+    DICT.region = info.region;
+    const cfg = sdk.SpeechConfig.fromAuthorizationToken(info.token, info.region);
+    cfg.speechRecognitionLanguage = info.language;
+    rec = new sdk.SpeechRecognizer(cfg, sdk.AudioConfig.fromDefaultMicrophoneInput());
+    const words = sdk.PhraseListGrammar.fromRecognizer(rec);
+    info.phrases.forEach(p => words.addPhrase(p));
+    const v = $("#question")?.value || "";
+    Object.assign(DICT, {rec, base: v && !/\s$/.test(v) ? v + " " : v, said: "", heard: "", t0: Date.now(), last: Date.now()});
+    rec.recognizing = (_, e) => { if (DICT.rec !== rec) return; DICT.heard = e.result.text; DICT.last = Date.now(); dictShow(); };
+    rec.recognized = (_, e) => {
+      if (DICT.rec !== rec) return;
+      if (e.result.reason === sdk.ResultReason.RecognizedSpeech && e.result.text) { DICT.said += e.result.text + " "; DICT.last = Date.now(); }
+      DICT.heard = ""; dictShow();
+    };
+    rec.canceled = (_, e) => {
+      if (DICT.rec !== rec) return;
+      if (e.reason === sdk.CancellationReason.Error) DICT.error = dictWhy(`${e.errorCode} ${e.errorDetails}`);
+      dictStop();
+    };
+    DICT.state = "listening"; dictButton();
+    await new Promise((ok, no) => rec.startContinuousRecognitionAsync(ok, no));
+    if (DICT.rec !== rec || DICT.state !== "listening") return;  // cancelled as it started
+    dictNote(`Listening, with ${info.phrases.length} of the engagement's words as hints. Stops after ${DICT_SILENCE} s of silence, or on Esc; Enter stops and asks.`);
+    DICT.timer = setInterval(() => {
+      const now = Date.now();
+      if (now - DICT.last > DICT_SILENCE * 1000 || now - DICT.t0 > DICT_MAX * 1000) dictStop();
+    }, 500);
+    $("#question")?.focus();
+  } catch (err) {
+    if (rec && DICT.rec === rec && DICT.state === "listening") { DICT.error = dictWhy(err?.message || err); return dictStop(); }
+    try { rec?.close(); } catch {}
+    Object.assign(DICT, {state: "off", rec: null}); dictButton();
+    dictNote(err?.name === "NotAllowedError" || err?.name === "NotFoundError" ? dictWhy(err.name) : dictWhy(err?.message || err, ""), true);
+  }
+}
+function dictStop() {
+  if (DICT.state === "stopping") return DICT.done;
+  if (DICT.state !== "listening") return Promise.resolve();
+  DICT.state = "stopping"; dictButton(); clearInterval(DICT.timer);
+  const rec = DICT.rec, seconds = (Date.now() - DICT.t0) / 1000;
+  return DICT.done = new Promise(ok => {
+    let once = false;
+    const finish = () => {
+      if (once) return; once = true;
+      try { rec.close(); } catch {}
+      DICT.said += DICT.heard; DICT.heard = ""; dictShow();
+      const q = $("#question"); if (q) { q.value = q.value.replace(/\s+$/, ""); q.dispatchEvent(new Event("input")); }
+      Object.assign(DICT, {state: "off", rec: null, done: null}); dictButton();
+      const error = DICT.error; DICT.error = null;
+      dictNote(error || "", !!error);
+      if (!error) api("/api/dictation/usage", {method: "POST", body: {seconds}}).then(u => dictNote(dictUsed(u))).catch(() => {});
+      if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+      ok();
+    };
+    try { rec.stopContinuousRecognitionAsync(finish, finish); } catch { finish(); }
+    setTimeout(finish, 4000);  // the service didn't answer the stop: close anyway, so the free tier's one stream is let go
+  });
 }
 
 // ---- tables: a header sits the way its column does -------------------------------------------------------------
