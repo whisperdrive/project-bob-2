@@ -311,6 +311,23 @@ def main() -> None:
     finally:
         sess.ov.value = real_value
     print("columns: ok (the tie on the overlay as saved; the rebuild on last year's client model checked against it)")
+    # ---- the overlay's own outputs as rows: every column, last year beside this year; the gate doesn't see them
+    import sqlite3
+    import outputs
+    sched = [o for o in outputs.detect(sqlite3.connect(summary["wiring"]["overlay"]["db_path"]), summary["sheets"],
+                                       summary["levers"], summary["outputs"]) if o["kind"] == "figure"]
+    plain = ov.deep(lambda: ov.summary_table(sess, summary, FACTS))
+    full = ov.deep(lambda: ov.summary_table(sess, summary, FACTS, schedule=sched))
+    assert full["this_year_gaps"] == plain["this_year_gaps"], "the schedule's rows don't enter the gate"
+    extra = [r for r in full["rows"] if r.get("source") == "overlay"]
+    assert extra and all(set(r["values"]) == set(full["columns"]) for r in extra), extra[:1]
+    assert "Report!C5" not in {r["cell"] for r in extra}, "a figure the report quotes isn't listed twice"
+    mid = next(r for r in extra if r["cell"] == "Val!C21")  # "Selected valuation"
+    assert mid["values"]["saved"] == mid["values"]["rebuilt"] and mid["values"]["this_year"] != mid["values"]["saved"]
+    bridge = ov.deep(lambda: ov.value_bridge(sess, summary, FACTS, schedule=sched))
+    assert [b["cell"] for b in bridge["bridges"]] == ["Report!C5"], "the bridge stays on the report's figures"
+    print(f"schedule rows: ok ({len(extra)} of the overlay's own figures beside the report's, last year and this year; "
+          "the gate and the bridge unchanged)")
     agents_check(sess, summary, fnd, sure)
     ov.deep(sess.configure, "workbook")
     roles_check(res, db)

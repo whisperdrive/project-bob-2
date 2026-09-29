@@ -1596,6 +1596,14 @@ def schedule_view(eid: int) -> dict:
             "changed_at": mine.get("changed_at")}
 
 
+def _schedule_rows(eid: int) -> list[dict]:
+    """The schedule's conclusions and assumptions that are single figures, for the Summary (none before a build)."""
+    try:
+        return [o for o in schedule_view(eid)["outputs"] if o["kind"] == "figure" and o["class"] in ("conclusion", "assumption")]
+    except (ValueError, OSError):
+        return []
+
+
 def set_schedule(eid: int, classes: dict | None = None, outside: dict | None = None, confirm: bool = False) -> dict:
     """A person's classes ({"Sheet!r12": "working" | None to go back to the detected one}), report figures marked
     as produced outside the model ({fact key: True | False}), and confirming the schedule as it stands."""
@@ -1702,7 +1710,8 @@ def summary_view(eid: int, changes: dict | None = None, valuation_date: str | No
     sess, summary = overlay_session(eid)
     _sync_roll(eid, sess, summary)
     clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
-    out["table"] = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid), clean, valuation_date, months, method)
+    out["table"] = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid), clean, valuation_date, months, method,
+                              _schedule_rows(eid))
     out["identity"] = {f["key"]: f.get("value_text") for f in reference(eid) if f.get("category") == "identity"}
     out["roll_plan"] = summary.get("roll")  # as the dates are now (_sync_roll), with which are checked
     out["rows"] = rows_view(eid)  # the row agents: running, or what they decided
@@ -1722,7 +1731,8 @@ def bridge_view(eid: int, changes: dict | None = None, valuation_date: str | Non
     sess, summary = overlay_session(eid)
     _sync_roll(eid, sess, summary)
     clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
-    return ovmod.deep(ovmod.value_bridge, sess, summary, reference(eid), clean, valuation_date, months, method)
+    return ovmod.deep(ovmod.value_bridge, sess, summary, reference(eid), clean, valuation_date, months, method,
+                      _schedule_rows(eid))
 
 
 def chart_pick(eid: int, cid: str, series: int, rows: list[dict] | None) -> dict:

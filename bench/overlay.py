@@ -879,13 +879,17 @@ def dcf_origins(sess: Session, summary: dict, cells: list[str]) -> dict:
 
 
 def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
-                  valuation_date: str | None = None, months: int | None = None, method: dict | None = None) -> dict:
+                  valuation_date: str | None = None, months: int | None = None, method: dict | None = None,
+                  schedule: list[dict] | None = None) -> dict:
     """The report's summary, rebuilt and rolled forward. Rows: the report's conclusions (with their ranges), its
     assumptions and its approach. Columns: the report; as saved (the overlay's own Excel values: last year's tie to
     the report is checked here, once); rebuilt (the Python overlay fed from last year's client model, or from the
     values saved in the overlay without one: it shouldn't move from as saved, and feed_moves says where it does);
     this year, rolled forward (the current feed); and a scenario: this year (last year without a current model) with
-    the person's assumption changes, valuation date and discounting method. The method reaches a figure through its trace (dcftrace.recompute): each discounting under it is
+    the person's assumption changes, valuation date and discounting method. schedule: the overlay's own outputs
+    (outputs.py); its conclusions and assumptions that no report row has come after them (source "overlay"), with
+    every column, so last year sits beside this year whether or not the report quoted them. They don't enter the
+    gate: this year's gate (this_year_gaps) is the same with or without them, and they are held with the table. The method reaches a figure through its trace (dcftrace.recompute): each discounting under it is
     redone with the new method and the formulas above carry the results up; that is checked first by
     reproducing the module's own value with the method unchanged."""
     import dcf
@@ -924,8 +928,18 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         elif cat == "approach":
             rows.append({"kind": "approach", "key": f.get("key"), "label": f.get("label") or f.get("key"),
                          "report": f.get("value_text"), "page": f.get("page")})
+    used = {r["cell"] for r in rows if r.get("cell")} | {r["lever"]["cell"] for r in rows if r.get("lever")}
+    for o in schedule or []:  # the overlay's own figures the report doesn't quote
+        if o.get("kind") != "figure" or o.get("class") not in ("conclusion", "assumption") or not o.get("cell") \
+                or o["cell"] in used:
+            continue
+        used.add(o["cell"])
+        rows.append({"kind": o["class"], "key": None, "label": o["label"], "report": None, "unit": None, "page": None,
+                     "cell": o["cell"], "scale": 1.0, "sign": 1, "source": "overlay"})
+        keys.add(parse_a1(o["cell"]))
     keys = sorted(keys)
-    by_fig = dcf_origins(sess, summary, [r["cell"] for r in rows if r["kind"] == "conclusion" and r.get("cell")]) \
+    ours = lambda r: r["kind"] == "conclusion" and r.get("cell") and r.get("source") != "overlay"  # the gate's figures
+    by_fig = dcf_origins(sess, summary, [r["cell"] for r in rows if ours(r)]) \
         if w.get("current") and sess.rowmap else {}
     origins = sorted({k for x in by_fig.values() for k in x["amounts"]})
     timing = sorted({k for x in by_fig.values() for k in x["timing"]} - {(s_, r_, "") for s_, r_ in origins})
@@ -1002,7 +1016,7 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         date_hold = bool((summary.get("roll") or {}).get("date_check"))
         by_cell = {}
         for row in rows:
-            if row["kind"] != "conclusion" or not row.get("cell"):
+            if not ours(row):
                 continue
             mine = (by_fig.get(row["cell"]) or {}).get("amounts") or []
             gone = [k for k in mine if k in missing]
@@ -1059,13 +1073,17 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
                 c["zero_roll"] = row["zero_roll"]
                 c["reliable"] = c["reliable"] and ok
         gaps["zero_roll_off"] = [{"cell": r["cell"], "label": r["label"], **r["zero_roll"]} for r in rows
-                                 if r.get("zero_roll") and not r["zero_roll"]["ok"]]
+                                 if r.get("zero_roll") and not r["zero_roll"]["ok"] and ours(r)]
         if gaps["by_cell"]:
             gaps["reliable"] = all(x["reliable"] for x in gaps["by_cell"].values())
     cols["scenario"], sc_roll, sc_defaults, sc_months = read(sc_feed, True, valuation_date, months)
     val = lambda col, cell: _show(cols[col].get(parse_a1(cell))) if cell else None
     for row in rows:
-        if row["kind"] == "conclusion" and row.get("cell"):
+        if row.get("source") == "overlay":
+            row["values"] = {col: val(col, row["cell"]) for col in cols}
+            a, b = cols["saved"].get(parse_a1(row["cell"])), cols["rebuilt"].get(parse_a1(row["cell"]))
+            row["feed_moves"] = base_feed == "prior" and isinstance(a, float) and isinstance(b, float) and not dcf._close(a, b)
+        elif row["kind"] == "conclusion" and row.get("cell"):
             for part, cell in (("values", row["cell"]), ("low", row.get("low_cell")), ("high", row.get("high_cell"))):
                 if not cell:
                     continue
@@ -1188,7 +1206,8 @@ def _rate_check(sess: Session, db, rows: list[dict], traces: dict) -> dict | Non
 
 
 def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
-                 valuation_date: str | None = None, months: int | None = None, method: dict | None = None) -> dict:
+                 valuation_date: str | None = None, months: int | None = None, method: dict | None = None,
+                 schedule: list[dict] | None = None) -> dict:
     """Last year's value to this year's, step by step, for each of the report's conclusions in the overlay:
       last year           the rebuild on last year's model (it ties to the report)
       time value          each discounting under it grows at its own rate from last year's valuation date to this
@@ -1205,10 +1224,13 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
     w = summary["wiring"]
     if not w.get("current"):
         return {"bridges": [], "why": "assign this year's client model (Roles) and rebuild in Python"}
-    table = summary_table(sess, summary, facts, changes, valuation_date, months, method)
+    table = summary_table(sess, summary, facts, changes, valuation_date, months, method, schedule)
     gaps = table.get("this_year_gaps") or {}
     held = {c for c, x in (gaps.get("by_cell") or {}).items() if not x["reliable"]}
-    figures = [r["cell"] for r in table["rows"] if r["kind"] == "conclusion" and r.get("cell") and r.get("values")]
+    conc = [r for r in table["rows"] if r["kind"] == "conclusion" and r.get("cell") and r.get("values")]
+    # the report's figures; the overlay's own only where none of the report's was found in it (no report)
+    conc = [r for r in conc if r.get("source") != "overlay"] or conc
+    figures = [r["cell"] for r in conc]
     if gaps and not gaps.get("reliable", True) and (not gaps.get("by_cell") or all(c in held for c in figures)):
         what = (f"{len(gaps['dcf_missing'])} of the {gaps['dcf_rows']} rows the DCF's cash flows come from weren't found in "
                 "this year's model" if gaps.get("basis") == "dcf" else
@@ -1220,8 +1242,7 @@ def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict 
     db = rodb.connect(path)
     base_feed = table["feeds"]["rebuilt"]
     vd1 = (table.get("roll") or {}).get("valuation_date")
-    rows = [r for r in table["rows"] if r["kind"] == "conclusion" and r.get("cell") and r.get("values")
-            and r["cell"] not in held]
+    rows = [r for r in conc if r["cell"] not in held]
     withheld = [{"label": r["label"], "cell": r["cell"]} for r in table["rows"] if r.get("cell") in held]
     traced, need = {}, set()
     for r in rows:

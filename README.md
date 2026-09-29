@@ -462,7 +462,10 @@ person before the next relies on it:
      stops it and asks. The line under the box shows the minutes dictated from this desk this month.
 7. **Summary** (`overlay.summary_table`, `bench/reportcharts.py`). Last year's report, rebuilt and rolled forward.
    - **Valuation summary.** The rows are the report's conclusions (with their low and high ends), its key
-     assumptions and its approach. The columns are the report; the overlay as saved (its own Excel values:
+     assumptions and its approach, and after each section the overlay's own figures the report doesn't quote
+     (its output schedule, Rebuild in Python -> Outputs), with every column: last year beside this year whether
+     or not the report quoted them. Those don't enter this year's gate; their this-year values are held when the
+     table as a whole is, and the value bridge stays on the report's figures. The columns are the report; the overlay as saved (its own Excel values:
      last year's tie to the report is checked here, once, at the report's printed precision); the Python overlay
      rebuilt on last year's client model (it shouldn't move from as saved: where it does, the file assigned as
      last year's client model isn't the version the overlay was built on, and the cell says so); this year,

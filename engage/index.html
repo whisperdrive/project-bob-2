@@ -1650,8 +1650,9 @@ function limits() {
 
 // ---- overview: last year's value, this year's, the bridge between them, how sure we are, what needs you ------
 const OVR = {eid: null, sum: null, br: null, loading: false, stamp: null};
-function mainRow(rows) {
-  const c = (rows || []).filter(r => r.kind === "conclusion" && r.values);
+function mainRow(rows) {  // the report's equity value, else its first figure; the overlay's own only without one
+  const all = (rows || []).filter(r => r.kind === "conclusion" && r.values), mine = all.filter(r => r.source !== "overlay");
+  const c = mine.length ? mine : all;
   return c.find(r => /equity/i.test(r.key || r.label)) || c[0];
 }
 function viewOverview() {
@@ -1924,7 +1925,10 @@ const sumMoney = (row, v) => {  // with the report's own prefix and suffix ("A$"
 };
 const sumNum = (row, v) => {  // a conclusion as the report prints it: its units and decimals
   if (v == null || typeof v !== "number") return v == null ? "–" : esc(v);
-  const x = (row.sign || 1) * v / (row.scale || 1), m = String(row.report || "").match(/\d[\d,]*(?:\.(\d+))?/), dp = m && m[1] ? m[1].length : 0;
+  const x = (row.sign || 1) * v / (row.scale || 1), m = String(row.report || "").match(/\d[\d,]*(?:\.(\d+))?/);
+  // the report's decimals; an assumption the report doesn't quote under 1 is a rate: a percentage; else one decimal
+  if (!row.report && row.kind === "assumption" && Math.abs(x) < 1 && x !== 0) return `${(100 * x).toLocaleString(undefined, {maximumFractionDigits: 3})}%`;
+  const dp = m ? (m[1] ? m[1].length : 0) : 1;
   return x.toLocaleString(undefined, {minimumFractionDigits: dp, maximumFractionDigits: dp});
 };
 const unreliable = (t, row) => {  // this year's figure held back: its own gate where the figure has one, else the table's
@@ -2040,6 +2044,11 @@ function summaryCard(d) {
     const cur = SUM.changes[l.cell];
     return `<td class="num"><input type="text" data-sumlever="${esc(l.cell)}" value="${esc(cur !== undefined ? leverShown(l, cur) : leverShown(l, v))}" aria-label="${esc(r.label)}">${l.unit === "%" ? " %" : ""}</td>`;
   };
+  // the report's rows, and the overlay's own figures the report doesn't quote (its output schedule), under them
+  const quoted = rows => rows.filter(r => r.source !== "overlay");
+  const ownRows = rows => { const own = rows.filter(r => r.source === "overlay"); if (!own.length) return "";
+    return `<tr><td colspan="${cols.length + 2}" class="small muted" style="padding-top:8px">From the overlay, not quoted in the report (its output schedule): ${own.length}. This year's values here are held with the table's gate, not each on its own rows.</td></tr>`
+      + own.map(r => `<tr><td>${esc(r.label)} <span class="mono small muted">${esc(r.cell)}</span></td><td class="num"><span class="muted small">not quoted</span></td>${cols.map(c => cell(r, c)).join("")}</tr>`).join(""); };
   // a section's rows the overlay has, and those it doesn't: the report quotes more than the overlay computes
   const outside = new Set(E.schedule?.outside || []);  // marked produced outside the model (the Outputs tab)
   const scope = (rows, has, yes, no) => { const n = rows.filter(has).length, m = rows.filter(r => !has(r) && outside.has(r.key)).length, rest = rows.length - n - m;
@@ -2051,7 +2060,7 @@ function summaryCard(d) {
   const V = E.overlay?.validation, gap = V && V.matched < V.cells ? V.cells - V.matched : 0;
   const errNote = errs.length ? `<div class="callout bad small" style="margin-top:10px"><b>${errs.length} figure(s) come out as Excel errors</b> (${esc([...new Set(errs.flatMap(r => cols.map(c => r.values?.[c]).filter(isErr)))].join(", "))}) in the Python overlay${gap ? `, which differs from Excel in ${gap.toLocaleString()} formula cell(s)` : ""}. <a href="#" data-go="doctor">The doctor</a> follows them back to the cells where they start, says why, and checks the files and rows being read.</div>` : "";
   return `<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-end"><div><h2>Valuation summary</h2>
-    <p class="sub" style="margin:0">Rows from last year's report. <b>As saved</b> is the overlay's own Excel values: last year's tie to the report is checked there, once. <b>${esc(name.rebuilt)}</b> is the Python overlay ${t.feeds.rebuilt === "prior" ? "fed from last year's client model: it shouldn't move from as saved" : "on the values saved in the overlay"}; this year feeds it from this year's client model, rolled forward${t.roll?.valuation_date ? ` to ${esc(t.roll.valuation_date)}` : ""}.${rollDates()}</p></div>
+    <p class="sub" style="margin:0">Rows from last year's report. <b>As saved</b> is the overlay's own Excel values: last year's tie to the report is checked there, once. <b>${esc(name.rebuilt)}</b> is the Python overlay ${t.feeds.rebuilt === "prior" ? "fed from last year's client model: it shouldn't move from as saved" : "on the values saved in the overlay"}; this year feeds it from this year's client model, rolled forward. A lever is an input: the same in every column until you change it${t.roll?.valuation_date ? ` to ${esc(t.roll.valuation_date)}` : ""}.${rollDates()}</p></div>
     <div class="row small" style="gap:10px;align-items:flex-end">${t.feeds.scenario === "current" ? `<label class="muted">Valuation date<br><input type="date" id="sumVd" value="${esc(SUM.vd || vdDefault)}"></label>` : ""}
       <label class="muted">Discounting<br>${sel("sumTiming", [["", "As in the model"], ["end", "End of period"], ["mid", "Mid-period"]], SUM.method.timing)}</label>
       <label class="muted">Time measured by<br>${sel("sumDc", [["", "As in the model"], ["actual/actual", "Actual/actual"], ["actual/365", "Actual/365"]], SUM.method.day_count)}</label>
@@ -2059,10 +2068,12 @@ function summaryCard(d) {
   ${errNote}${priorFeedNote()}${rateNote(t)}${agentsNote(d)}${gapNote(t)}${(() => { const rp = d.roll_plan; return rp?.date_check || SUM.editDate ? `<div class="callout warn small" style="margin-top:10px">${rp?.date_check ? `<b>This year's valuation date isn't known.</b> This year's model is dated ${esc(rp.dates?.current_client || "?")}, which isn't after last year's valuation date (${esc(rp.prior_valuation_date || "?")}): that's likely the model's own date, not this year's valuation date, so nothing is rolled and this year's figures wait for it. ` : ""}Set this year's valuation date for the engagement (a model's own "Valuation date" rows usually give it):
       <span class="row" style="margin-top:6px"><input class="in" type="date" id="sumThisVd" value="${esc(rp?.dates?.this_year || "")}" min="${esc(rp?.prior_valuation_date || "")}"><button class="btn small primary" id="sumThisVdSave">Set</button>${rp?.dates?.this_year ? `<button class="btn small ghost" id="sumThisVdClear">Clear</button>` : ""}<span class="small" id="sumThisVdMsg"></span></span></div>` : rp?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${rp.months} months is ${esc(rp.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""; })()}
   <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
-    <tr class="sec"><td colspan="${cols.length + 2}">Conclusions${scope(conc, r => r.cell, "rebuilt", "the overlay doesn't compute: out of the rebuild's scope, not a failure")}</td></tr>
-    ${[...conc.filter(r => r.cell), ...conc.filter(r => !r.cell)].map(r => `<tr><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
-    <tr class="sec"><td colspan="${cols.length + 2}">Key assumptions${scope(ass, r => r.lever, "an input in the overlay", "not an input there (the report's value, for reference)")}</td></tr>
-    ${[...ass.filter(r => r.lever), ...ass.filter(r => !r.lever)].map(r => `<tr><td>${esc(r.label)}${r.basis ? `<div class="small muted">${esc(r.basis)}</div>` : ""}</td><td class="num">${esc(r.report || "")}</td>${cols.map(c => lev(r, c)).join("")}</tr>`).join("")}
+    <tr class="sec"><td colspan="${cols.length + 2}">Conclusions${scope(quoted(conc), r => r.cell, "rebuilt", "the overlay doesn't compute: out of the rebuild's scope, not a failure")}</td></tr>
+    ${[...quoted(conc).filter(r => r.cell), ...quoted(conc).filter(r => !r.cell)].map(r => `<tr><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
+    ${ownRows(conc)}
+    <tr class="sec"><td colspan="${cols.length + 2}">Key assumptions${scope(quoted(ass), r => r.lever, "an input in the overlay", "not an input there (the report's value, for reference)")}</td></tr>
+    ${[...quoted(ass).filter(r => r.lever), ...quoted(ass).filter(r => !r.lever)].map(r => `<tr><td>${esc(r.label)}${r.basis ? `<div class="small muted">${esc(r.basis)}</div>` : ""}</td><td class="num">${esc(r.report || "")}</td>${cols.map(c => lev(r, c)).join("")}</tr>`).join("")}
+    ${ownRows(ass)}
     <tr class="sec"><td colspan="${cols.length + 2}">Approach</td></tr>
     ${app.map(r => `<tr><td>${esc(r.label)}</td><td colspan="${cols.length + 1}">${esc(r.report || "")}</td></tr>`).join("")}
     ${t.detected_method.length ? `<tr><td>Discounting found in the overlay</td><td colspan="${cols.length + 1}">${t.detected_method.map(esc).join("<br>")}${Object.keys(t.method || {}).length ? `<div class="small"><b>Your scenario:</b> ${esc([t.method.timing && (t.method.timing === "mid" ? "mid-period" : "end of period"), t.method.day_count].filter(Boolean).join(", "))}</div>` : ""}</td></tr>` : ""}
