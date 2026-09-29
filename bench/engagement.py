@@ -1388,7 +1388,23 @@ def recreate_charts(eid: int) -> dict:
     return {"queued": True}
 
 
+def _fy_hint(eid: int):
+    """The engagement's financial-year end for the charts, from last year's valuation date (chartdata.fy_end_hint)."""
+    import chartdata
+    vd = next((f for f in reference(eid) if f["key"] == "valuation_date" and f.get("value")), None)
+    if vd:
+        return chartdata.fy_end_hint(int(vd["value"]) // 100 % 100)
+    rows = _q("SELECT overlay_json FROM engagements WHERE id=?", eid)  # else the roll's, from the overlay build
+    prior = ((json.loads((rows[0]["overlay_json"] if rows else None) or "null") or {}).get("roll") or {}).get("prior_valuation_date")
+    return chartdata.fy_end_hint(int(prior[5:7]) if prior else None)
+
+
 def _charts_job(eid: int) -> None:
+    with _fy_hint(eid):
+        _charts_run(eid)
+
+
+def _charts_run(eid: int) -> None:
     import reportcharts
     rl = roles(eid)
     d = _doc(rl["prior_report"]["id"])
@@ -1466,6 +1482,11 @@ def chart_pick(eid: int, cid: str, series: int, rows: list[dict] | None) -> dict
     """A person's rows for one series of one of the report's charts (rows: [{"book", "sheet", "row"}], all on one
     sheet; empty to clear it): the chart redrawn from them, checked by numbers against the reading, and redrawn on
     this year's model."""
+    with _fy_hint(eid):
+        return _chart_pick(eid, cid, series, rows)
+
+
+def _chart_pick(eid: int, cid: str, series: int, rows: list[dict] | None) -> dict:
     import reportcharts
     f = _charts_file(eid)
     if not f or not f.exists():
@@ -2067,11 +2088,22 @@ def rebuild_workbook(eid: int, fid: int) -> dict:
     """Process a workbook again from scratch. Its model.db is shared (other engagements, the Model Desk), so every
     live Python overlay reading it lets go of it first: the build deletes the file, which Windows won't do while
     it's open."""
+    return library.rebuild(_release(eid, fid)["id"], _model(eid))
+
+
+def retry_workbook(eid: int, fid: int) -> dict:
+    """Process a failed workbook again. It may have failed because a live Python overlay held its model.db (Windows
+    won't delete an open file), so those let go of it first, as for a rebuild."""
+    return library.retry(_release(eid, fid)["id"])
+
+
+def _release(eid: int, fid: int) -> dict:
+    """Every live Python overlay reading the workbook's model.db lets go of it (its build deletes the file)."""
     w = next((w for w in workbooks(eid) if w["id"] == fid), None)
     if not w:
         raise ValueError("that workbook isn't in this engagement")
     for other, (sess, _) in list(_SESSIONS.items()):
-        if w["db_path"] in sess.paths():
+        if w["db_path"] and w["db_path"] in sess.paths():
             try:
                 import overlay as ovmod
                 ovmod.deep(sess.close)
@@ -2079,7 +2111,7 @@ def rebuild_workbook(eid: int, fid: int) -> dict:
                 _SESSIONS.pop(other, None)
     for key in [k for k in _SHEET_NAMES if k[0] == w["db_path"]]:
         _SHEET_NAMES.pop(key, None)
-    return library.rebuild(fid, _model(eid))
+    return w
 
 
 def retry_document(did: int) -> None:

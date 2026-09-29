@@ -196,7 +196,7 @@ async def confirm_date(eid: int, fid: int, body: DateCheck):
 
 @app.post("/api/engagements/{eid}/workbooks/{fid}/retry")
 async def retry_workbook(eid: int, fid: int):
-    await _run(lambda: library.retry(fid) and True)
+    await _run(lambda: engagement.retry_workbook(eid, fid) and True)
     return {"ok": True}
 
 

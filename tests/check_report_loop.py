@@ -9,6 +9,8 @@
 - A fact's number is worked out by code from its text: none for a name holding digits or a range without a
   preferred point. Stored facts are brought up to date once, and one handed to a person whose number changed goes
   back to the loop.
+- Retrying a workbook that failed lets go of the live Python overlays reading its model.db first, as a rebuild does
+  (Windows won't delete an open file, so a retry without it failed every time).
 
     uv run python tests/check_report_loop.py
 """
@@ -114,6 +116,25 @@ def main() -> None:
     assert list(lanes["report"].queue) == [("resolve_facts", did)] and engagement._REOPEN[did] == {on_page, held_by_check}
     print("mid-loop: ok (facts a decision reopens while a loop runs get a loop of their own when it finishes)")
     numbers_check(eid, tmp)
+    retry_check()
+
+
+def retry_check() -> None:
+    import library
+    import overlay as ovmod
+    closed = []
+    sess = type("Sess", (), {"paths": lambda self: ["/books/model.db"], "close": lambda self: closed.append(1)})()
+    was = engagement.workbooks, library.retry, ovmod.deep
+    engagement.workbooks = lambda eid: [{"id": 5, "db_path": "/books/model.db"}]
+    library.retry = lambda fid: {"id": fid, "status": "queued"}
+    ovmod.deep = lambda fn, *a: fn(*a)
+    engagement._SESSIONS[42] = (sess, {})
+    try:
+        assert engagement.retry_workbook(42, 5)["status"] == "queued"
+        assert closed == [1] and 42 not in engagement._SESSIONS, "the live overlay let go of the model.db first"
+    finally:
+        engagement.workbooks, library.retry, ovmod.deep = was
+    print("retry: ok (a failed workbook's retry closes the live overlays reading it, as a rebuild does)")
 
 
 def numbers_check(eid: int, tmp: Path) -> None:

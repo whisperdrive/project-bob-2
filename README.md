@@ -90,7 +90,8 @@ Valuation tab: works on the workbook's DCFs with no model calls (`bench/valuatio
 like a valuation (enterprise value, equity value, NPV, total valuation) whose formula is, or adds amounts to, a
 `SUMPRODUCT` of a cash-flow row and a discount-factor row. The assumptions are read back from the discount factors:
 for each candidate valuation date and convention, the rate is back-solved from one factor and kept only if it
-reproduces every factor. The cut-off is the last period with a non-zero factor, and the rate is named by the cell
+reproduces every factor there is. Where the factors are worked out from a present-value row (present value over
+cash flow), a period with no cash flow shows none, and isn't taken for a factor of 0. The cut-off is the last period with a non-zero factor, and the rate is named by the cell
 holding that value. The value cell's formula is split into additive terms: the PV, other cells (debt, cash) and
 `SUMIFS` picks of one period's amount. The tab has two steps:
 1. **Validate** (`GET /api/files/{id}/valuation`): can the client's anchor values be reproduced? It lists every
@@ -312,7 +313,10 @@ person before the next relies on it:
    checked on the Files page; the Summary shows them and which are checked. Periods move separately from the
    valuation date, sheet by sheet, by the whole periods that ended in between: from September to December an
    annual sheet's FY2026 is still FY2026 while a quarterly sheet moves one quarter (moving an annual sheet by
-   three months would land on dates it doesn't have). Client values come from the same line item in the period,
+   three months would land on dates it doesn't have). Where this year's model ends its periods on the same date
+   as last year's (a concession or asset life with an end date: a fixed horizon), the periods don't move at all,
+   only the valuation date: they are the same dates, and moving them would read periods past the end that this
+   year's model doesn't have. Client values come from the same line item in the period,
    found however this year's model changed (`bench/rowfind.py`). Each of last year's rows is looked for several
    ways, and the one the evidence supports best is taken:
    - **label**: the same label on the same sheet (its n-th occurrence, else the nearest), provided the sheet of
@@ -453,7 +457,9 @@ person before the next relies on it:
      crop. gpt-6-luna reads each one (title, kind, units, years, each series' values). A chart whose x axis
      isn't a run of years (valuation ranges like FY26-FY30, peers, a strip of an axis on its own) isn't a chart
      over years; it's listed, not recreated. Code finds the model rows whose financial-year totals follow each
-     series, allowing for units and sign, within 6%. A series named for a site or segment can be the sum of
+     series, allowing for units and sign, within 6%. The financial year comes from the model (a named range, a
+     labelled month, an annual timeline's period ends), else from last year's valuation date: a model of quarters
+     alone shows none, and calendar years would put a June-year model's every row in the wrong years. A series named for a site or segment can be the sum of
      that site's rows (its section, or rows carrying its name). A row that shares no word with the series must
      follow it within 2% over six years or more, a multiple or a percentage isn't rescaled by thousands, and a
      series too small to read off the picture isn't matched. The recreation is drawn from those financial-year
@@ -516,7 +522,8 @@ calls from both lanes share the same rate limit. A queued job is shown as in lin
 ahead of it and when that job started (for example "Map: in line behind the row agents (started 14:02)"). The
 row agents show under Rebuild in Python while they work.
 
-Any processed file can be rebuilt from scratch from the Files step. A workbook's build is shared: every
+Any processed file can be rebuilt from scratch from the Files step, and a failed one retried; either first closes
+the live Python overlays reading the workbook (Windows won't delete an open file, which is often why it failed). A workbook's build is shared: every
 engagement using it, and the Model Desk, get the new one, and live Python overlays let go of the old file first.
 A report is read again: every table is re-read and re-checked, and its key facts are kept and re-checked against
 the new reading. Uploading the same workbook to another engagement reuses its build. The same report uploaded to

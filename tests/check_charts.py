@@ -9,6 +9,8 @@ readings are given as the vision model would return them.
                an annual sheet; both chart together (annual, from financial-year totals); a multiple (units x)
                isn't matched to a row a thousand times bigger; a series too small to read isn't matched
   this year    the same rows followed into this year's model, the groups too
+  year end     a model of quarters only has no annual timeline to show its financial year: the engagement's (last
+               year's valuation date's month) is used, not December, so a June-year model's rows total by June years
 
     uv run python tests/check_charts.py
 """
@@ -162,6 +164,32 @@ def report(path: Path, fy0: int, totals: dict) -> None:
         pdf.savefig(fig); plt.close(fig)
 
 
+def year_end_check(out: Path) -> None:
+    import sqlite3
+    import build_map
+    import chartdata
+    from datetime import timedelta
+    path = out / "quarters_only.xlsx"
+    wb = xlsxwriter.Workbook(path)
+    dt = wb.add_format({"num_format": "dd-mmm-yy"})
+    ws = wb.add_worksheet("Ops")
+    ws.write(2, 1, "Period ending")
+    ws.write(4, 1, "Revenue")
+    y, m = 2025, 9
+    for k in range(12):  # Sep-25 .. Jun-28: three June years, each 4 x 100
+        ws.write_datetime(2, 3 + k, date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1), dt)
+        ws.write_number(4, 3 + k, 100.0)
+        y, m = (y + 1, 3) if m == 12 else (y, m + 3)
+    wb.close()
+    db = sqlite3.connect(build_map.main(str(path), str(out / "quarters_db"))["db"])
+    assert chartdata.fy_end_month(db) == 12, "no hint: December, as before"
+    with chartdata.fy_end_hint(6):
+        assert chartdata.fy_end_month(db) == 6
+        row = next(r for r in rc.fy_totals(db) if r["label"] == "Revenue")
+    assert row["years"] == {2026: 400.0, 2027: 400.0, 2028: 400.0}, row["years"]
+    print("year end: ok (a quarterly model's rows total by the engagement's June years, not calendar years)")
+
+
 def main() -> None:
     out = Path(tempfile.mkdtemp(prefix="charts_"))
     fy0 = YEARS[0]
@@ -260,6 +288,7 @@ def main() -> None:
     assert abs(cur["series"][0]["data"][0] - site_years("North", fy0 + 1)[fy0 + 1]) < 1e-6
     assert [s["name"] for s in cur["series"]] == ["North", "South", "East", "Total revenue"]
     print("this year: ok")
+    year_end_check(out)
     print("charts: all checks passed")
 
 

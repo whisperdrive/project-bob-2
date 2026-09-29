@@ -277,7 +277,8 @@ def row_chart(eid: int, rng: str, title: str, feeds: list[str] | None = None, ch
         notes.append("Periods are labelled with last year's dates; the rolled-forward line's periods each move on by the roll.")
     if notes:
         spec["note"] = " ".join(notes)
-    return chartdata.enrich(spec, rodb.connect(path))
+    with engagement._fy_hint(eid):  # a quarterly model's financial years: the engagement's, not the calendar's
+        return chartdata.enrich(spec, rodb.connect(path))
 
 
 def extra_tool(eid: int):

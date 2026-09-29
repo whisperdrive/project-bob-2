@@ -9,6 +9,8 @@ chart review all see the same thing.
   balances at the start), rates / percentages / indices averaged; partial years marked
 The workbook values in spec["series"][i]["data"] are never changed.
 """
+import contextlib
+import contextvars
 import json
 import re
 import sqlite3
@@ -30,8 +32,25 @@ def _d(label) -> date | None:
     return date(int(m[1]), int(m[2]), int(m[3])) if m else None
 
 
+_FY_HINT: contextvars.ContextVar[int | None] = contextvars.ContextVar("fy_end_hint", default=None)
+
+
+@contextlib.contextmanager
+def fy_end_hint(month: int | None):
+    """The engagement's financial-year end (last year's valuation date's month), for a model that doesn't say: a
+    model of quarters or months has no annual timeline to show it, and a calendar year would put every row of a
+    June-year model in the wrong years."""
+    token = _FY_HINT.set(month)
+    try:
+        yield
+    finally:
+        _FY_HINT.reset(token)
+
+
 def fy_end_month(db: sqlite3.Connection) -> int:
-    """The model's financial-year end month (1-12) from a named range or a labelled row; 12 if not found."""
+    """The model's financial-year end month (1-12): a named range, a labelled row (a month number: a "Year end"
+    row holding a date is the model's own convention, not its financial year), the month an annual timeline's
+    periods end in, the engagement's hint (fy_end_hint), else 12."""
     for name, ref in db.execute("SELECT name, ref FROM names"):
         if re.search(r"fy.?(end.?)?month|year.?end.?month", name, re.I) and "!" in ref:
             sheet, addr = ref.rsplit("!", 1)
@@ -55,7 +74,7 @@ def fy_end_month(db: sqlite3.Connection) -> int:
         ds = [date.fromisoformat(v[:10]) for v in ends if isinstance(v, str) and re.match(r"\d{4}-\d{2}-\d{2}", v)]
         if len(ds) >= 3 and all(330 <= (b - a).days <= 400 for a, b in zip(ds, ds[1:])):
             months[Counter(d.month for d in ds).most_common(1)[0][0]] += 1
-    return months.most_common(1)[0][0] if months else 12
+    return months.most_common(1)[0][0] if months else (_FY_HINT.get() or 12)
 
 
 def aggregation(name: str, units: str | None) -> str:
