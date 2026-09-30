@@ -215,7 +215,24 @@ def reading_check(out: Path) -> None:
     assert reads.get(rc._read_key(png, Reader()), {}).get("title") == "Kept", "seeded from the last run's record"
     other = type("R", (), {"model": "another"})()
     assert rc._read_key(png, other) not in reads, "another model reads again"
-    print("reading: ok (mixed units, a two-figure read's rounding, O&M, a stacked segment by the total, readings kept)")
+    # each recreation compared by the vision model once: the same pictures and values again take the kept verdict
+    calls = []
+    real = rc.check
+    rc.check = lambda reader, a, b, read, ours: calls.append(1) or {"matches": True, "series": [], "differences": []}
+    try:
+        chart = {"id": "k1", "png": "charts/c1.png", "caption": "Usage income"}
+        one = {"is_chart": True, "title": "Usage income", "kind": "column", "units": "A$m",
+               "x_labels": [f"FY{y % 100}" for y in years], "series": [{"name": "Usage income", "drawn_as": "bar", "values": a}]}
+        kept, reviewer = {}, type("R", (), {"model": "vision", "reviewer_model": "reviewer"})()
+        drawn = [{"key": "prior_model", "rows": [{**rows_[0], "cols": list(range(4, 12))}]}]  # columns to cite
+        first = rc.recreate(reviewer, chart, one, drawn, out, kept)
+        again = rc.recreate(reviewer, chart, one, drawn, out, kept)
+        assert first["matches"] and again["matches"] and len(calls) == 1 and len(kept) == 1, (calls, kept)
+        assert rc._kept(out, "checks") == kept, "kept beside the readings"
+    finally:
+        rc.check = real
+    print("reading: ok (mixed units, a two-figure read's rounding, O&M, a stacked segment by the total, readings "
+          "and comparisons kept)")
 
 
 def year_end_check(out: Path) -> None:

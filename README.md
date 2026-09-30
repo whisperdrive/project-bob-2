@@ -509,7 +509,8 @@ person before the next relies on it:
      stacked chart a segment is a difference of two heights and reads coarsely: one no row follows within 6%
      takes its best row within 12% if, with it, the stack's total follows the read total within 6%. Each
      picture is read once, kept by the picture, the prompt and the model (charts/reads.json), so recreating the
-     charts again (a matcher changed, rows picked) makes no new readings. The financial year comes from the model (a named range, a
+     charts again (a matcher changed, rows picked) makes no new readings; and each recreation is compared by the
+     reviewer once, kept by both pictures, the values beside them and the model (charts/checks.json). The financial year comes from the model (a named range, a
      labelled month, an annual timeline's period ends), else from last year's valuation date: a model of quarters
      alone shows none, and calendar years would put a June-year model's every row in the wrong years. A series named for a site or segment can be the sum of
      that site's rows (its section, or rows carrying its name). A row that shares no word with the series must

@@ -674,8 +674,10 @@ def _stack_fill(read: dict, years: list, books: list[dict], title: str, cands: l
     return [[loose[i]] if i in loose else cs for i, cs in enumerate(cands)]
 
 
-def recreate(reader, chart: dict, read: dict, books: list[dict], out_dir: Path) -> dict:
-    """Match, draw and check one chart, trying the next candidates for a series the check rejects."""
+def recreate(reader, chart: dict, read: dict, books: list[dict], out_dir: Path, checks: dict | None = None) -> dict:
+    """Match, draw and check one chart, trying the next candidates for a series the check rejects. checks: the
+    vision comparisons kept (by both pictures, the values and the reviewer model): the same recreation isn't
+    compared again."""
     years = time_axis(read.get("x_labels"))
     res = {"read": read, "tries": []}
     if not years:
@@ -725,7 +727,13 @@ def recreate(reader, chart: dict, read: dict, books: list[dict], out_dir: Path) 
         elif sum(p is not None for p in same) * 2 < wanted:  # the check would only say series are missing
             verdict = _rows_verdict(read, same, set(notes))
         elif report_png:
-            verdict = check(reader, report_png, png, read, exact_values(spec))
+            key = _check_key(report_png, png, read, exact_values(spec), reader)
+            verdict = (checks or {}).get(key)
+            if verdict is None:
+                verdict = check(reader, report_png, png, read, exact_values(spec))
+                if checks is not None:
+                    checks[key] = {**verdict, "by": verdict.get("by") or reader.reviewer_model}
+                    _save_kept(out_dir, "checks", checks)
         else:
             verdict = _numeric_check(read, exact_values(spec), same, set(notes))
         verdict.setdefault("by", reader.reviewer_model)
@@ -877,9 +885,34 @@ def _reads(out_dir: Path, reader) -> dict:
 
 
 def _save_reads(out_dir: Path, reads: dict) -> None:
-    f = out_dir / "charts" / "reads.json"
+    _save_kept(out_dir, "reads", reads)
+
+
+CHECK_VERSION = hashlib.sha256((CHECK_PROMPT + json.dumps(_CHECK, sort_keys=True)).encode()).hexdigest()[:12]
+
+
+def _check_key(report_png: bytes, ours_png: bytes, read: dict, ours: dict, reader) -> str:
+    """A comparison holds for the same two pictures, the same values beside them, prompt and reviewer model. Our
+    picture is drawn from the spec alone, so the same recreation gives the same bytes."""
+    h = hashlib.sha256()
+    for part in (report_png, ours_png, json.dumps([read.get("x_labels"), read.get("series"), ours], sort_keys=True,
+                                                   default=str).encode()):
+        h.update(hashlib.sha256(part).digest())
+    return f"{h.hexdigest()[:32]}|{CHECK_VERSION}|{reader.reviewer_model}"
+
+
+def _kept(out_dir: Path, name: str) -> dict:
+    f = out_dir / "charts" / f"{name}.json"
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_kept(out_dir: Path, name: str, kept: dict) -> None:
+    f = out_dir / "charts" / f"{name}.json"
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(reads), encoding="utf-8")
+    f.write_text(json.dumps(kept, default=str), encoding="utf-8")
 
 
 def run(reader, doc: dict, pdf_path: str | None, out_dir: str | Path, books: list[dict], current_db: str | None,
@@ -891,7 +924,7 @@ def run(reader, doc: dict, pdf_path: str | None, out_dir: str | Path, books: lis
     charts = find(doc, pdf_path, out_dir)
     for b in books:
         b["rows"] = fy_totals(rodb.connect(b["db_path"]))
-    reads = _reads(out_dir, reader)
+    reads, checks = _reads(out_dir, reader), _kept(out_dir, "checks")
     out = []
     for i, ch in enumerate(charts, 1):
         if ch.get("skipped"):
@@ -916,7 +949,7 @@ def run(reader, doc: dict, pdf_path: str | None, out_dir: str | Path, books: lis
             continue
         progress((i - 0.5) / max(1, len(charts)), f"Chart {i} of {len(charts)}: finding its rows and checking the recreation")
         try:
-            res = recreate(reader, ch, read, books, out_dir)
+            res = recreate(reader, ch, read, books, out_dir, checks)
         except Exception as e:
             out.append({**ch, "read": read, "problem": f"couldn't recreate it: {type(e).__name__}: {e}"})
             continue
