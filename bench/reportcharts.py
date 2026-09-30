@@ -16,8 +16,10 @@ year's client model give this year's version of the chart.
                                 the next candidate rows are tried for a series it rejects, twice at most
 run() does all of it for one engagement and returns what the page shows.
 """
+import hashlib
 import io
 import json
+import math
 import re
 from datetime import date
 from pathlib import Path
@@ -438,10 +440,18 @@ NO_NAME_TOL = 0.02   # a row that shares no word with the series must follow it 
 NO_NAME_PTS = 6      # ... over at least this many years: numbers alone match by coincidence otherwise
 
 
+MIXED = re.compile(r"[;/,]|\band\b", re.I)
+CURRENCY = re.compile(r"[$€£¥]|\b(?:m|bn|k|mn|million|billion|thousands?|000s?)\b", re.I)
+
+
 def _scales(units: str, name: str) -> tuple:
     """Unit scales a series may need: none for a multiple (10.9x is never 10,900 of anything), percentages as
-    fractions for a %, else thousands and millions either way."""
+    fractions for a %, else thousands and millions either way. A chart whose units mix a currency and a % ("A$m;
+    %": columns in A$m, a line in %) doesn't say which a series is: all of them, unless its name does."""
     u = f"{units} {name}"
+    pct = re.compile(r"%|per ?cent", re.I)
+    if pct.search(units or "") and CURRENCY.search(units or "") and MIXED.search(units or "") and not pct.search(name or ""):
+        return SCALES + (100.0, 0.01)
     if re.search(r"%|per ?cent", u, re.I):
         return (1.0, 100.0, 0.01)
     if UNSCALED.search(units or "") or UNSCALED.search(name or ""):
@@ -449,18 +459,44 @@ def _scales(units: str, name: str) -> tuple:
     return SCALES
 
 
+def _rounding(values: list) -> float:
+    """How much error the read's own rounding explains, as a share of its size: where most values are read to two
+    significant figures (490, 1,770, 38), half a step each; 0 for a read more precise than that."""
+    vs = [abs(v) for v in values if isinstance(v, (int, float)) and v]
+    if not vs:
+        return 0.0
+    steps = [10 ** (math.floor(math.log10(v)) - 1) for v in vs]
+    if sum(abs(v / st - round(v / st)) < 1e-9 for v, st in zip(vs, steps)) < 0.8 * len(vs):
+        return 0.0
+    return sum(st / 2 for st in steps) / sum(vs)
+
+
+STOP = {"and", "of", "the", "for", "&"}
+
+
+def _acronym(name: str, label: str) -> bool:
+    """A label's "O&M" or "R/M" for a series named "Operations and maintenance": its content words' initials."""
+    words = [w for w in re.findall(r"[a-z]+", (name or "").lower()) if w not in STOP]
+    if not 2 <= len(words) <= 4:
+        return False
+    initials = "".join(w[0] for w in words)
+    return initials in {"".join(m) for m in re.findall(r"\b([a-z])\s*[&/]\s*([a-z])\b", (label or "").lower())}
+
+
 def match(values: list, years: list, rows: list[dict], name: str = "", limit: int = 5, units: str = "",
           tol: float = MATCH_TOL) -> list[dict]:
     """Rows that follow a series: mean absolute error over its years, as a share of its size, after the best of
-    the unit scales it may need and either sign; under tol. A row whose label and section share no word with the
-    series' name must follow it within NO_NAME_TOL over NO_NAME_PTS years or more. Best fit first; the label
-    decides near-ties."""
+    the unit scales it may need and either sign; under tol, widened by what the read's own rounding explains (at
+    most tol again). A row whose label and section share no word with the series' name (nor its initials: O&M for
+    operations and maintenance) must follow it within NO_NAME_TOL over NO_NAME_PTS years or more. Best fit first;
+    the label decides near-ties."""
     pts = [(y, v) for y, v in zip(years, values) if y is not None and isinstance(v, (int, float))]
     if len(pts) < 3:
         return []
     size = sum(abs(v) for _, v in pts) or 1.0
     want = _words(name)
     scales = _scales(units, name)
+    within = tol + min(tol, _rounding([v for _, v in pts]))
     out = []
     for r in rows:
         got = [(r["years"].get(y), v) for y, v in pts]
@@ -474,10 +510,13 @@ def match(values: list, years: list, rows: list[dict], name: str = "", limit: in
                     best = (err, sgn * k)
         words = _words(r.get("section", "") + " " + r["label"])
         sim = len(want & words) / (len(want | words) or 1)
-        ok = best[0] <= tol and (sim > 0 or (best[0] <= min(tol, NO_NAME_TOL) and len(pts) >= NO_NAME_PTS))
+        if not sim and _acronym(name, r["label"]):
+            sim = 0.5
+        ok = best[0] <= within and (sim > 0 or (best[0] <= min(tol, NO_NAME_TOL) and len(pts) >= NO_NAME_PTS))
         if ok:
             out.append({**{k: r[k] for k in ("sheet", "row", "label", "cols")}, "error": round(best[0], 4),
                         "scale": best[1], "label_match": round(sim, 2), "years": r["years"],
+                        **({"within_rounding": True} if best[0] > tol else {}),
                         **({"rows": r["rows"]} if r.get("rows") else {})})
     out.sort(key=lambda m: (round(m["error"] / 0.01), -m["label_match"], m["error"]))
     return out[:limit]
@@ -600,6 +639,41 @@ def _rows_verdict(read: dict, picks: list, skip: set = frozenset()) -> dict:
                        for s, p in zip(read["series"], picks)]}
 
 
+def _stack_fill(read: dict, years: list, books: list[dict], title: str, cands: list, notes: dict, tol: float) -> list:
+    """A stacked chart's segments are read off coarsely (each segment is a difference of two heights), but their
+    sum, the top of the stack, is read well. A segment no row follows within tol takes its best row within twice
+    tol, kept only if with every segment's row the stack's total follows the read total within tol; marked as
+    found by the total. Otherwise the candidates are as they were."""
+    loose = {}
+    for i, cs in enumerate(cands):
+        if cs or i in notes:
+            continue
+        s, found = read["series"][i], []
+        for b in books:
+            rows = b["rows"] + groups(b["rows"], s["name"], title)
+            found += [{**m, "book": b["key"], "by": "the stack's total"}
+                      for m in match(s["values"], years, rows, s["name"], units=read.get("units") or "", tol=2 * tol)]
+        if not found:
+            return cands  # a segment with nothing near it: the total can't vouch for it
+        loose[i] = sorted(found, key=lambda m: (round(m["error"] / 0.01), -m["label_match"], m["error"]))[0]
+    if not loose:
+        return cands
+    picks = {i: (cs[0] if cs else loose[i]) for i, cs in enumerate(cands) if i not in notes}
+    if len({p.get("book") for p in picks.values()}) > 1:  # one workbook per chart
+        return cands
+    err = size = 0.0
+    for j, y in enumerate(years):
+        vals = [s["values"][j] for i, s in enumerate(read["series"]) if i in picks and j < len(s["values"])]
+        if y is None or not any(isinstance(v, (int, float)) for v in vals):
+            continue
+        read_total = sum(v for v in vals if isinstance(v, (int, float)))
+        ours = sum(p["scale"] * (p["years"].get(y) or 0.0) for p in picks.values())
+        err, size = err + abs(ours - read_total), size + abs(read_total)
+    if not size or err / size > tol:
+        return cands
+    return [[loose[i]] if i in loose else cs for i, cs in enumerate(cands)]
+
+
 def recreate(reader, chart: dict, read: dict, books: list[dict], out_dir: Path) -> dict:
     """Match, draw and check one chart, trying the next candidates for a series the check rejects."""
     years = time_axis(read.get("x_labels"))
@@ -625,6 +699,8 @@ def recreate(reader, chart: dict, read: dict, books: list[dict], out_dir: Path) 
                                                            tol=tol)]
         cs.sort(key=lambda m: (round(m["error"] / 0.01), -m["label_match"], m["error"]))
         cands.append(cs)
+    if "stack" in (read.get("kind") or "").lower():
+        cands = _stack_fill(read, years, books, title, cands, notes, tol)
     res["candidates"] = [[{k: m[k] for k in ("book", "sheet", "row", "label", "error", "scale")} for m in cs[:3]] for cs in cands]
     res["series_notes"] = notes
     if not any(cands):
@@ -772,6 +848,40 @@ def current_spec(prior_db: str, current_db: str, read: dict, picks: list, title:
     return spec_for(read, mapped, shifted, title)
 
 
+READ_VERSION = hashlib.sha256((DIGITISE_PROMPT + json.dumps(_DIGITISE, sort_keys=True)).encode()).hexdigest()[:12]
+
+
+def _read_key(png: bytes, reader) -> str:
+    """A reading holds for the same picture, the same prompt and schema, and the same model."""
+    return f"{hashlib.sha256(png).hexdigest()[:24]}|{READ_VERSION}|{reader.model}"
+
+
+def _reads(out_dir: Path, reader) -> dict:
+    """The charts' readings kept (charts/reads.json), so recreating the charts again (a matcher changed, rows
+    picked) doesn't read every picture again. Seeded once from the last run's record, whose readings were made with
+    this prompt."""
+    f = out_dir / "charts" / "reads.json"
+    try:
+        reads = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except (OSError, ValueError):
+        reads = {}
+    last = out_dir / "report_charts.json"
+    if not reads and last.exists():
+        try:
+            for ch in json.loads(last.read_text(encoding="utf-8")).get("charts") or []:
+                if ch.get("read") and ch.get("png") and (out_dir / ch["png"]).exists() and ch.get("source") != "pptx chart":
+                    reads[_read_key((out_dir / ch["png"]).read_bytes(), reader)] = ch["read"]
+        except (OSError, ValueError):
+            pass
+    return reads
+
+
+def _save_reads(out_dir: Path, reads: dict) -> None:
+    f = out_dir / "charts" / "reads.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(reads), encoding="utf-8")
+
+
 def run(reader, doc: dict, pdf_path: str | None, out_dir: str | Path, books: list[dict], current_db: str | None,
         progress=None) -> dict:
     """Every chart in the report: found, read, recreated from the prior model, checked, and redrawn on this
@@ -781,6 +891,7 @@ def run(reader, doc: dict, pdf_path: str | None, out_dir: str | Path, books: lis
     charts = find(doc, pdf_path, out_dir)
     for b in books:
         b["rows"] = fy_totals(rodb.connect(b["db_path"]))
+    reads = _reads(out_dir, reader)
     out = []
     for i, ch in enumerate(charts, 1):
         if ch.get("skipped"):
@@ -788,8 +899,15 @@ def run(reader, doc: dict, pdf_path: str | None, out_dir: str | Path, books: lis
             continue
         progress((i - 1) / max(1, len(charts)), f"Chart {i} of {len(charts)}: reading it")
         try:
-            read = from_markdown(ch["markdown"]) if ch["source"] == "pptx chart" else \
-                digitise(reader, (out_dir / ch["png"]).read_bytes(), f"page {ch['page']}")
+            if ch["source"] == "pptx chart":
+                read = from_markdown(ch["markdown"])
+            else:
+                png = (out_dir / ch["png"]).read_bytes()
+                key = _read_key(png, reader)
+                read = reads.get(key)
+                if read is None:
+                    read = reads[key] = digitise(reader, png, f"page {ch['page']}")
+                    _save_reads(out_dir, reads)
         except Exception as e:  # one chart failing doesn't stop the rest
             out.append({**ch, "problem": f"couldn't read it: {type(e).__name__}: {e}"})
             continue

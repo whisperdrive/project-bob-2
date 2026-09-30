@@ -9,11 +9,15 @@ readings are given as the vision model would return them.
                an annual sheet; both chart together (annual, from financial-year totals); a multiple (units x)
                isn't matched to a row a thousand times bigger; a series too small to read isn't matched
   this year    the same rows followed into this year's model, the groups too
+  reading      a mixed-units chart ("A$m; %") tries thousands too; a read to two significant figures is allowed its
+               rounding; "O&M" is operations and maintenance; a stacked chart's segment is found by the stack's total
+               when its own read is too coarse, not when the total doesn't follow; each picture is read once
   year end     a model of quarters only has no annual timeline to show its financial year: the engagement's (last
                year's valuation date's month) is used, not December, so a June-year model's rows total by June years
 
     uv run python tests/check_charts.py
 """
+import json
 import sys
 import tempfile
 from datetime import date
@@ -164,6 +168,56 @@ def report(path: Path, fy0: int, totals: dict) -> None:
         pdf.savefig(fig); plt.close(fig)
 
 
+def reading_check(out: Path) -> None:
+    years = list(range(2026, 2034))
+    row = lambda label, vals, r=10: {"sheet": "Ops", "row": r, "label": label, "section": "", "cols": [],
+                                     "years": dict(zip(years, vals))}
+    base = [484.5, 605.0, 669.3, 702.0, 731.8, 760.4, 802.2, 850.9]
+    # a chart of A$m columns and a % line; the model in thousands: the series is found at 1/1000
+    thousands = row("Total revenue (excl GST)", [v * 1000 for v in base])
+    read = [490, 600, 670, 700, 730, 760, 800, 850]
+    got = rc.match(read, years, [thousands], "Revenue", units="A$m; %")
+    assert got and got[0]["scale"] == 0.001, got
+    assert not rc.match(read, years, [thousands], "Revenue", units="%"), "a % chart doesn't try thousands"
+    # read to two significant figures, 6.4% off: within the read's rounding (and at most twice the tolerance)
+    om = row("Maintenance costs", [v / 1.064 for v in read], 20)
+    got = rc.match(read, years, [om], "Maintenance")
+    assert got and got[0].get("within_rounding") and 0.06 < got[0]["error"] < 0.07, got
+    assert not rc.match([491.3, 601.7, 670.9, 700.2, 731.1, 760.8, 801.4, 850.6], years, [om], "Maintenance"), \
+        "a precise read gets no rounding allowance"
+    # an acronym in the label for the series' name; no shared word otherwise
+    om2 = row("O&M expenses (incl. R&M)", [v * 1.04 for v in read], 21)
+    assert rc.match(read, years, [om2], "Operations and maintenance")[0]["label_match"] == 0.5
+    assert not rc.match(read, years, [om2], "Operations and capital"), "other initials, no escape"
+    # a stacked chart: the second segment read 10% off, the stack's total within tolerance
+    a, b = [100.0 * (1 + 0.05 * k) for k in range(8)], [60.0 + k for k in range(8)]
+    rows_ = [row("Usage income", a, 30), row("Fees and charges", [v * 0.9 for v in b], 31)]
+    books = [{"key": "prior_model", "rows": rows_}]
+    stacked = {"kind": "stacked column", "units": "A$m", "series": [
+        {"name": "Usage income", "values": a}, {"name": "Fees and charges", "values": b}]}
+    mine = lambda ms: [{**m, "book": "prior_model"} for m in ms]  # as recreate has them
+    cands = [mine(rc.match(a, years, rows_, "Usage income")), mine(rc.match(b, years, rows_, "Fees and charges"))]
+    assert cands[0] and not cands[1]
+    filled = rc._stack_fill(stacked, years, books, "Revenue", cands, {}, rc.MATCH_TOL)
+    assert filled[1] and filled[1][0]["by"] == "the stack's total" and filled[1][0]["row"] == 31, filled[1]
+    off = [row("Usage income", [v * 0.95 for v in a], 30), rows_[1]]  # both segments low: the total 7% off, no
+    cands = [mine(rc.match(a, years, off, "Usage income")), mine(rc.match(b, years, off, "Fees and charges"))]
+    assert not rc._stack_fill(stacked, years, [{"key": "prior_model", "rows": off}], "Revenue", cands, {}, rc.MATCH_TOL)[1]
+    # each picture read once: the second run takes the kept reading
+    class Reader:
+        model = "vision"
+    png = b"\x89PNG fake chart picture"
+    (out / "charts").mkdir(exist_ok=True)
+    (out / "charts" / "c1.png").write_bytes(png)
+    (out / "report_charts.json").write_text(json.dumps({"charts": [{"png": "charts/c1.png", "source": "drawn in the PDF",
+                                                                     "read": {"is_chart": True, "title": "Kept"}}]}))
+    reads = rc._reads(out, Reader())
+    assert reads.get(rc._read_key(png, Reader()), {}).get("title") == "Kept", "seeded from the last run's record"
+    other = type("R", (), {"model": "another"})()
+    assert rc._read_key(png, other) not in reads, "another model reads again"
+    print("reading: ok (mixed units, a two-figure read's rounding, O&M, a stacked segment by the total, readings kept)")
+
+
 def year_end_check(out: Path) -> None:
     import sqlite3
     import build_map
@@ -305,6 +359,7 @@ def main() -> None:
     assert [s["name"] for s in cur["series"]] == ["North", "South", "East", "Total revenue"]
     print("this year: ok")
     year_end_check(out)
+    reading_check(out)
     print("charts: all checks passed")
 
 

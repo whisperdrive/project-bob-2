@@ -486,7 +486,13 @@ person before the next relies on it:
      crop. gpt-6-luna reads each one (title, kind, units, years, each series' values). A chart whose x axis
      isn't a run of years (valuation ranges like FY26-FY30, peers, a strip of an axis on its own) isn't a chart
      over years; it's listed, not recreated. Code finds the model rows whose financial-year totals follow each
-     series, allowing for units and sign, within 6%. The financial year comes from the model (a named range, a
+     series, allowing for units and sign, within 6%, widened by what the read's own rounding explains where
+     the values are read to two significant figures (at most 6% more). A chart whose units mix a currency and a
+     % tries every scale. A label's "O&M" counts as a name shared with "Operations and maintenance". In a
+     stacked chart a segment is a difference of two heights and reads coarsely: one no row follows within 6%
+     takes its best row within 12% if, with it, the stack's total follows the read total within 6%. Each
+     picture is read once, kept by the picture, the prompt and the model (charts/reads.json), so recreating the
+     charts again (a matcher changed, rows picked) makes no new readings. The financial year comes from the model (a named range, a
      labelled month, an annual timeline's period ends), else from last year's valuation date: a model of quarters
      alone shows none, and calendar years would put a June-year model's every row in the wrong years. A series named for a site or segment can be the sum of
      that site's rows (its section, or rows carrying its name). A row that shares no word with the series must
