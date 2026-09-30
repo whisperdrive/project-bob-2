@@ -893,12 +893,13 @@ CHECK_VERSION = hashlib.sha256((CHECK_PROMPT + json.dumps(_CHECK, sort_keys=True
 
 def _check_key(report_png: bytes, ours_png: bytes, read: dict, ours: dict, reader) -> str:
     """A comparison holds for the same two pictures, the same values beside them, prompt and reviewer model. Our
-    picture is drawn from the spec alone, so the same recreation gives the same bytes."""
+    picture is drawn from the spec alone, so the same recreation gives the same bytes (with the same matplotlib)."""
     h = hashlib.sha256()
     for part in (report_png, ours_png, json.dumps([read.get("x_labels"), read.get("series"), ours], sort_keys=True,
                                                    default=str).encode()):
         h.update(hashlib.sha256(part).digest())
-    return f"{h.hexdigest()[:32]}|{CHECK_VERSION}|{reader.reviewer_model}"
+    import matplotlib  # another version can draw the same spec otherwise: a new comparison, not a stale one
+    return f"{h.hexdigest()[:32]}|{CHECK_VERSION}|{matplotlib.__version__}|{reader.reviewer_model}"
 
 
 def _kept(out_dir: Path, name: str) -> dict:
