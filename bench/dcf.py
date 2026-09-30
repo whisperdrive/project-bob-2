@@ -6,8 +6,9 @@ Periods ending on or before the valuation date (and after terminal_date, if give
 DCF sheets usually do with a "post valuation date" flag.
 
 Conventions:
-  timing    "end" (default) or "mid": discount to the period end, or to the middle of the part of the
-            period after the valuation date
+  timing    "end" (default), "mid" or "mid-year": discount to the period end, to the middle of the part of the
+            period after the valuation date, or half a year before the period end (the mid-year convention as
+            models often write it: (end - valuation date) / 365 - 0.5)
   day_count "actual/actual" (Excel YEARFRAC basis 1, default) or "actual/365" (what XNPV uses)
   "auto"    with compare_to: tries every combination and keeps the one closest to the workbook's value
 
@@ -22,7 +23,7 @@ _DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 _REF = re.compile(r"^'?(?P<sheet>[^!]+?)'?!\$?(?P<c1>[A-Z]{1,3})\$?(?P<r1>\d+)(?::\$?(?P<c2>[A-Z]{1,3})\$?(?P<r2>\d+))?$")
 _ROWREF = re.compile(r"^'?(?P<sheet>[^!]+?)'?!r?(?P<row>\d+)$", re.I)
 _END_LABEL = re.compile(r"\bend\b.*\bdate\b|period\s*end|end\s*of\s*period|period\s*ending", re.I)
-TIMINGS = ("end", "mid")
+TIMINGS = ("end", "mid", "mid-year")
 DAY_COUNTS = ("actual/actual", "actual/365")
 
 
@@ -195,6 +196,8 @@ def factors(ends, val_date, rate, timing, day_count, terminal_date=None) -> dict
             start = ends[cols[i - 1]] + timedelta(days=1) if i else e - timedelta(days=90)
             start = max(start, val_date)
             t = yearfrac(val_date, start + (e - start) / 2, day_count)
+        elif timing == "mid-year":
+            t = yearfrac(val_date, e, day_count) - 0.5
         else:
             t = yearfrac(val_date, e, day_count)
         out[c] = 1 / (1 + rate) ** t

@@ -574,7 +574,8 @@ def scenario(db_path: str, cell: str | None = None, rate: float | None = None, v
         changes.append(f"discount rate {model['rate']:.2%} → {sc['rate']:.2%}")
     if sc["valuation_date"] != model["valuation_date"]:
         changes.append(f"valuation date {model['valuation_date']} → {sc['valuation_date']}")
-    words = {"end": "end of period", "mid": "mid-period", "actual/actual": "actual/actual (YEARFRAC)",
+    words = {"end": "end of period", "mid": "mid-period", "mid-year": "mid-year (half a year before each period's end)",
+             "actual/actual": "actual/actual (YEARFRAC)",
              "actual/365": "actual/365 (XNPV)"}
     if sc["timing"] != model["timing"]:
         changes.append(f"discounted at {words[model['timing']]} → {words[sc['timing']]}")

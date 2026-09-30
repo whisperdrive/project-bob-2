@@ -1517,7 +1517,8 @@ def dcf_live(sess: Session, summary: dict, mode: str = "workbook", changes: dict
     lo = live["rate"] + 0.01 if low is None or low != low else low
     hi = max(live["rate"] - 0.01, 0.0) if high is None or high != high else high
     sc = dcf.compute(live_db, **{**s_in, "compare_to": None}, rates=[lo, hi], fix=False)
-    words = {"end": "end of period", "mid": "mid-period", "actual/actual": "actual/actual (YEARFRAC)",
+    words = {"end": "end of period", "mid": "mid-period", "mid-year": "mid-year (half a year before each period's end)",
+             "actual/actual": "actual/actual (YEARFRAC)",
              "actual/365": "actual/365 (XNPV)"}
     method = []
     if not dcf._close(sc["rate"], live["rate"]):

@@ -4,6 +4,8 @@
             no cash flow: the factors are seen only where there is one (present value / cash flow), and the others
             aren't factors of 0. The rate, the valuation date and the convention are found from the ones seen, so
             the figure's discounting is known (the bridge's steps, the method selector, the DCF facts need it)
+  mid-year  factors written (end - valuation date) / 365 - 0.5, the mid-year convention as models often have it,
+            are read back as such
   rate      the discount rate three ways (overlay._rate_check): nothing said when the lever moves the rate the
             discountings use; the report's, the lever's and the discountings' rates side by side when it doesn't
 
@@ -114,6 +116,39 @@ def rate_check() -> None:
           "the report's, with their bases; a low / mid / high on one row is a range, the lever one end of it)")
 
 
+def mid_year_check() -> None:
+    out = Path(tempfile.mkdtemp(prefix="trace_mid_"))
+    vd, rate, years = date(2025, 6, 30), 0.08, list(range(2026, 2036))
+    wb = xlsxwriter.Workbook(out / "mid.xlsx")
+    dt = wb.add_format({"num_format": "dd-mmm-yy"})
+    inp = wb.add_worksheet("Inputs")
+    inp.write(3, 0, "Valuation date")
+    inp.write_datetime(3, 2, vd, dt)
+    inp.write(4, 0, "Discount rate")
+    inp.write_number(4, 2, rate)
+    fl = wb.add_worksheet("Flows")
+    for r, label in ((2, "Period ending"), (9, "Cash flow"), (12, "Discount factor"), (13, "Present value"),
+                     (15, "Equity value")):
+        fl.write(r, 1, label)
+    total = 0.0
+    for k, y in enumerate(years):
+        c, end = COL(3 + k), date(y, 6, 30)
+        f = 1 / (1 + rate) ** ((end - vd).days / 365 - 0.5)
+        fl.write_datetime(2, 3 + k, end, dt)
+        fl.write_number(9, 3 + k, 50.0 + k)
+        fl.write_formula(f"{c}13", f"=1/(1+Inputs!$C$5)^(({c}3-Inputs!$C$4)/365-0.5)", None, f)
+        fl.write_formula(f"{c}14", f"={c}10*{c}13", None, (50.0 + k) * f)
+        total += (50.0 + k) * f
+    fl.write_formula("C16", f"=SUM(D14:{COL(3 + len(years) - 1)}14)", None, total)
+    wb.close()
+    db = sqlite3.connect(build_map.main(str(out / "mid.xlsx"), str(out / "db"))["db"])
+    core = next(c for c in dcftrace.cores(dcftrace.trace(db, "Flows!C16")) if c.get("kind") == "pv row")
+    m = core.get("method") or {}
+    assert (m.get("timing"), m.get("day_count"), m.get("rate")) == ("mid-year", "actual/365", "Inputs!C5"), m
+    print("mid-year: ok (factors written (end - valuation date) / 365 - 0.5 read back as the mid-year convention)")
+
+
 if __name__ == "__main__":
     main()
+    mid_year_check()
     rate_check()

@@ -69,7 +69,7 @@ OVERLAY_TOOLS = [
          "cell": {"type": "string", "description": "the DCF's anchor cell, e.g. DCF!D12 (default: the main one)"},
          "changes": _CHANGES, "feed": _FEED,
          "rate": {"type": "number", "description": "discount rate for the scenario method, e.g. 0.08"},
-         "timing": {"type": "string", "enum": ["end", "mid"]},
+         "timing": {"type": "string", "enum": ["end", "mid", "mid-year"]},
          "day_count": {"type": "string", "enum": ["actual/actual", "actual/365"]},
          "cutoff": {"type": "string", "description": "'model' (default), 'none', or YYYY-MM-DD"},
          "drop_bridge": {"type": "array", "items": {"type": "string"}, "description": "labels of bridge items to leave out"}},

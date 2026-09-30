@@ -89,7 +89,9 @@ shows each result as a card.
 Valuation tab: works on the workbook's DCFs with no model calls (`bench/valuation.py`). A DCF is a cell labelled
 like a valuation (enterprise value, equity value, NPV, total valuation) whose formula is, or adds amounts to, a
 `SUMPRODUCT` of a cash-flow row and a discount-factor row. The assumptions are read back from the discount factors:
-for each candidate valuation date and convention, the rate is back-solved from one factor and kept only if it
+for each candidate valuation date and convention (the end of each period, its middle, or mid-year: half a year
+before its end, as `(end - valuation date) / 365 - 0.5` writes it; actual/actual or actual/365), the rate is
+back-solved from one factor and kept only if it
 reproduces every factor there is. Where the factors are worked out from a present-value row (present value over
 cash flow), a period with no cash flow shows none, and isn't taken for a factor of 0. The cut-off is the last period with a non-zero factor, and the rate is named by the cell
 holding that value. The value cell's formula is split into additive terms: the PV, other cells (debt, cash) and

@@ -87,7 +87,7 @@ TOOLS = [
          "valuation_date": {"type": "string", "description": "cell, named range, or YYYY-MM-DD"},
          "dates": {"type": "string", "description": "optional row of period END dates, e.g. Val!r8; found "
                                                     "automatically otherwise"},
-         "timing": {"type": "string", "enum": ["end", "mid", "auto"],
+         "timing": {"type": "string", "enum": ["end", "mid", "mid-year", "auto"],
                     "description": "end- or mid-period discounting; 'auto' tries both day counts and timings "
                                    "and keeps the one matching compare_to"},
          "day_count": {"type": "string", "enum": ["actual/actual", "actual/365"],
