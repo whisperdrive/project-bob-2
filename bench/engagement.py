@@ -114,7 +114,7 @@ def _conn() -> sqlite3.Connection:
         if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
     have = {r[1] for r in db.execute("PRAGMA table_info(engagements)")}
-    for col in ("arbiter_model", "profile_json", "schedule_json"):  # ... and before the profile and the schedule
+    for col in ("arbiter_model", "profile_json", "schedule_json", "scenarios_json"):  # ... the profile, schedule, scenarios
         if col not in have:
             db.execute(f"ALTER TABLE engagements ADD COLUMN {col} TEXT")
     db.execute("CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY, at REAL)")
@@ -274,7 +274,7 @@ def get(eid: int) -> dict | None:
     if not rows:
         return None
     e = rows[0]
-    for k in ("roles_suggested", "compare_json", "map_json", "overlay_json", "profile_json", "schedule_json"):
+    for k in ("roles_suggested", "compare_json", "map_json", "overlay_json", "profile_json", "schedule_json", "scenarios_json"):
         e[k.removesuffix("_json")] = json.loads(e.pop(k) or "null")
     wbs = workbooks(eid)
     if _agents_check_dates(eid, wbs):
@@ -1464,6 +1464,117 @@ def overlay_run(eid: int, mode: str, changes: dict, valuation_date: str | None, 
     sess, summary, clean = _live(eid, mode, changes)
     _sync_roll(eid, sess, summary)
     return ovmod.deep(ovmod.scenario, sess, summary, mode, clean, valuation_date, months)
+
+
+# ---- named scenarios: the Summary's changes kept by name, compared side by side, carried into next year's -------
+
+_COMPARED: dict[int, tuple] = {}  # engagement -> (what it was worked out from, the side-by-side)
+
+
+def _scenarios(eid: int) -> list[dict]:
+    rows = _q("SELECT scenarios_json FROM engagements WHERE id=?", eid)
+    return json.loads((rows[0]["scenarios_json"] if rows else None) or "null") or []
+
+
+def save_scenario(eid: int, name: str, changes: dict | None = None, valuation_date: str | None = None,
+                  months: int | None = None, method: dict | None = None) -> list[dict]:
+    """Keep the Summary's scenario by name (one of that name is replaced): its cell changes, valuation date, months
+    and discounting method. Each change to a lever is also kept as its move from the overlay's own value (levers:
+    {key: delta}): that's what carries into next year's engagement, where the cells may sit elsewhere."""
+    import overlay as ovmod
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("give the scenario a name")
+    if not (changes or valuation_date or months is not None or any((method or {}).values())):
+        raise ValueError("the scenario changes nothing: change an assumption, the valuation date or the method first")
+    _, summary = overlay_session(eid)
+    _, _, clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes or {})
+    levers = {}
+    with closing(rodb.connect(summary["wiring"]["overlay"]["db_path"])) as db:
+        for lv in summary.get("levers") or []:
+            if lv["cell"] in clean and lv["key"] != "valuation_date":
+                saved = db.execute("SELECT value FROM cells WHERE sheet=? AND row=? AND col=?", ovmod.parse_a1(lv["cell"])).fetchone()
+                v0 = ovmod.from_db(saved[0]) if saved else None
+                if isinstance(v0, float) and isinstance(clean[lv["cell"]], (int, float)):
+                    levers[lv["key"]] = clean[lv["cell"]] - v0
+    rest = [x for x in _scenarios(eid) if x["name"] != name]
+    rest.append({"name": name, "changes": clean, "levers": levers, "valuation_date": valuation_date, "months": months,
+                 "method": {k: v for k, v in (method or {}).items() if v}, "at": time.time()})
+    _set("engagements", eid, scenarios_json=json.dumps(rest), updated_at=time.time())
+    return rest
+
+
+def delete_scenario(eid: int, name: str) -> list[dict]:
+    rest = [x for x in _scenarios(eid) if x["name"] != name]
+    _set("engagements", eid, scenarios_json=json.dumps(rest), updated_at=time.time())
+    return rest
+
+
+def compare_scenarios(eid: int) -> dict:
+    """Each named scenario's figures beside this year's (the overlay's outputs that the report quotes, else all of
+    them). A scenario without a method is one run of the overlay; one with a method goes through the Summary, whose
+    trace redoes each discounting, so it costs a full Summary. Kept until the scenarios or the build change."""
+    import overlay as ovmod
+    scen = _scenarios(eid)
+    rows = _q("SELECT overlay_started_at, rows_secs FROM engagements WHERE id=?", eid)
+    key = (json.dumps(scen, sort_keys=True, default=str), rows[0]["overlay_started_at"] if rows else None)
+    if _COMPARED.get(eid, (None,))[0] == key:
+        return _COMPARED[eid][1]
+    sess, summary = overlay_session(eid)
+    mode = "current" if summary["wiring"].get("current") else "workbook"
+    _sync_roll(eid, sess, summary)
+    outs = [o for o in summary.get("outputs") or [] if o.get("report")] or summary.get("outputs") or []
+    base = ovmod.deep(ovmod.scenario, sess, summary, mode, {})
+    figures = [{"cell": o["cell"], "label": o["label"], "report": o.get("report"), "scale": o.get("scale") or 1.0,
+                "sign": o.get("sign") or 1, "this_year": next((r["base"] for r in base["outputs"] if r["cell"] == o["cell"]), None),
+                "scenarios": {}} for o in outs]
+    for sc in scen:
+        if sc.get("method"):
+            t = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid), sc.get("changes") or {}, sc.get("valuation_date"),
+                           sc.get("months"), sc["method"])
+            got = {r["cell"]: (r.get("values") or {}).get("scenario") for r in t["rows"] if r.get("cell")}
+        else:
+            run = ovmod.deep(ovmod.scenario, sess, summary, mode, sc.get("changes") or {}, sc.get("valuation_date"), sc.get("months"))
+            got = {r["cell"]: r["value"] for r in run["outputs"]}
+        for f in figures:
+            f["scenarios"][sc["name"]] = got.get(f["cell"])
+    out = {"figures": figures, "scenarios": [x["name"] for x in scen], "at": time.time()}
+    _COMPARED[eid] = (key, out)
+    return out
+
+
+def carry_scenarios(eid: int) -> list[dict]:
+    """Last year's named scenarios (the engagement the schedule carries from) onto this one, by lever and move: a
+    downside's "+1 point on the discount rate" becomes this year's rate plus a point (on every rate of a low / mid /
+    high range, where the rate is one). A lever not in this year's overlay is listed as not carried; changes to
+    cells that aren't levers, and the valuation date, belong to last year and don't carry."""
+    import overlay as ovmod
+    src = _schedule_source(eid)
+    theirs = _scenarios(src) if src else []
+    if not theirs:
+        raise ValueError("last year's engagement has no named scenarios")
+    sess, summary = overlay_session(eid)
+    levers = {lv["key"]: lv for lv in summary.get("levers") or []}
+    rc = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid)).get("rate_check") or {}
+    mine = {x["name"]: x for x in _scenarios(eid)}
+    with closing(rodb.connect(summary["wiring"]["overlay"]["db_path"])) as db:
+        value = lambda cell: ovmod.from_db((db.execute("SELECT value FROM cells WHERE sheet=? AND row=? AND col=?",
+                                                       ovmod.parse_a1(cell)).fetchone() or [None])[0])
+        for sc in theirs:
+            changes, dropped = {}, []
+            for k, delta in (sc.get("levers") or {}).items():
+                if k == "discount_rate" and rc.get("range"):
+                    changes.update({c["cell"]: c["value"] + delta for c in rc["range"]})
+                elif k in levers and isinstance(value(levers[k]["cell"]), float):
+                    changes[levers[k]["cell"]] = value(levers[k]["cell"]) + delta
+                else:
+                    dropped.append(k)
+            mine[sc["name"]] = {"name": sc["name"], "changes": changes, "levers": sc.get("levers") or {},
+                                "valuation_date": None, "months": None, "method": sc.get("method") or {}, "at": time.time(),
+                                "carried_from": src, "not_carried": dropped}
+    out = list(mine.values())
+    _set("engagements", eid, scenarios_json=json.dumps(out), updated_at=time.time())
+    return out
 
 
 def overlay_valuation(eid: int, cell: str | None) -> dict:

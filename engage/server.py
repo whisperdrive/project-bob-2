@@ -374,6 +374,37 @@ async def put_schedule(eid: int, body: Schedule):
     return await _run(engagement.set_schedule, eid, body.classes, body.outside, body.confirm)
 
 
+class Scenario(BaseModel):
+    name: str
+    changes: dict | None = None
+    valuation_date: str | None = None
+    months: int | None = None
+    method: dict | None = None
+
+
+@app.post("/api/engagements/{eid}/scenarios")
+async def save_scenario(eid: int, body: Scenario):
+    """Keep the Summary's scenario by name."""
+    return await _run(engagement.save_scenario, eid, body.name, body.changes, body.valuation_date, body.months, body.method)
+
+
+@app.delete("/api/engagements/{eid}/scenarios/{name}")
+async def delete_scenario(eid: int, name: str):
+    return await _run(engagement.delete_scenario, eid, name)
+
+
+@app.post("/api/engagements/{eid}/scenarios/compare")
+async def compare_scenarios(eid: int):
+    """Each named scenario's figures beside this year's."""
+    return await _run(engagement.compare_scenarios, eid)
+
+
+@app.post("/api/engagements/{eid}/scenarios/carry")
+async def carry_scenarios(eid: int):
+    """Last year's named scenarios onto this engagement, by lever and move."""
+    return await _run(engagement.carry_scenarios, eid)
+
+
 @app.get("/api/engagements/{eid}/models/{fid}")
 async def model_dashboard(eid: int, fid: int):
     """The Map step's dashboard for one of the engagement's workbooks."""

@@ -19,6 +19,8 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
   unlabelled    a row with no label found by its numbers
   schedule      the overlay's own outputs, whether or not the report quotes them: its figures and the rows of
                 periods nothing reads, classified (the report's figure where it sits, values, rates), not its inputs
+  scenarios     a scenario kept by name: its lever moves recorded; compared side by side with this year's (the same
+                figures one run of the overlay gives); carried into another engagement by lever and move; deleted
   carry         last year's confirmed schedule onto this year's overlay: each output found again by its label, a
                 row whose label is gone not followed to whatever sits at its number now, new rows flagged, a
                 person's own class winning over the carried one
@@ -337,6 +339,7 @@ def main() -> None:
     assert summary["validation"]["runtime"] == xlruntime.RUNTIME, "the validation says which runtime it was made with"
     bridge = ov.deep(lambda: ov.value_bridge(sess, summary, FACTS, schedule=sched))
     assert [b["cell"] for b in bridge["bridges"]] == ["Report!C5"], "the bridge stays on the report's figures"
+    scenarios_check(sess, summary)
     print(f"schedule rows: ok ({len(extra)} of the overlay's own figures beside the report's, last year and this year; "
           "the gate and the bridge unchanged)")
     agents_check(sess, summary, fnd, sure)
@@ -547,6 +550,44 @@ def schedule_check(summary: dict) -> None:
     n = {c: sum(o["class"] == c for o in got) for c in outputs.CLASSES}
     print(f"schedule: ok ({len(got)} outputs of the overlay: {n['conclusion']} conclusion(s), {n['assumption']} "
           f"assumption(s), {n['working']} working(s); the report's figure where it sits; inputs left out)")
+
+
+def scenarios_check(sess, summary) -> None:
+    import json as js
+    import engagement
+    was = engagement.OUT, engagement.DB, dict(engagement._SESSIONS), engagement._schedule_source, engagement._sync_roll
+    tmp = Path(tempfile.mkdtemp(prefix="scenarios_"))
+    engagement.OUT, engagement.DB = tmp, tmp / "engage.db"
+    engagement._sync_roll = lambda *a: None  # these engagements have no files to date the roll by: keep the pack's
+    try:
+        a, b = (engagement.create(n)["id"] for n in ("Asset C, FY25", "Asset C, FY26"))
+        for eid in (a, b):
+            engagement._set("engagements", eid, overlay_json=js.dumps(summary, default=str))
+            engagement._SESSIONS[eid] = (sess, summary)
+        rate = next(l for l in summary["levers"] if l["key"] == "discount_rate")
+        v0 = sess.ov.value(*ov.parse_a1(rate["cell"]))
+        kept = engagement.save_scenario(a, "Downside", {rate["cell"]: v0 + 0.01})
+        assert kept[0]["name"] == "Downside" and abs(kept[0]["levers"]["discount_rate"] - 0.01) < 1e-12, kept
+        try:
+            engagement.save_scenario(a, "Nothing", {})
+            raise AssertionError("kept a scenario that changes nothing")
+        except ValueError:
+            pass
+        side = engagement.compare_scenarios(a)
+        fig = next(f for f in side["figures"] if f["cell"] == "Report!C5")
+        run = ov.deep(ov.scenario, sess, summary, "current", {rate["cell"]: v0 + 0.01})
+        want = next(r["value"] for r in run["outputs"] if r["cell"] == "Report!C5")
+        assert abs(fig["scenarios"]["Downside"] - want) < 1e-9 and fig["scenarios"]["Downside"] < fig["this_year"], fig
+        engagement._schedule_source = lambda eid: a if eid == b else None
+        carried = engagement.carry_scenarios(b)
+        assert carried[0]["carried_from"] == a and abs(carried[0]["changes"][rate["cell"]] - (v0 + 0.01)) < 1e-12, carried
+        assert engagement.delete_scenario(a, "Downside") == []
+    finally:
+        engagement.OUT, engagement.DB, engagement._schedule_source, engagement._sync_roll = was[0], was[1], was[3], was[4]
+        engagement._SESSIONS.clear()
+        engagement._SESSIONS.update(was[2])
+    print("scenarios: ok (kept with its lever's move; side by side as one run of the overlay gives it; carried by the "
+          "move; deleted)")
 
 
 def carry_check(out: Path) -> None:

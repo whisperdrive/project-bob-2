@@ -1992,7 +1992,49 @@ function viewSummary() {
   if (!d) return head + `<div class="card"><p class="muted" style="margin:0">${SUM.loading ? "Recomputing the summary…" : "Loading…"}</p></div>`;
   const n = needs().filter(x => x.go === "summary");
   const strip = n.length ? `<div class="card" id="sumNeeds"><h2>Needs you (${n.length})</h2><ul class="needs">${n.map(x => `<li>${needLink(x)}<span>${esc(x.text)}</span><span class="where">${x.anchor ? "↓" : ""}</span></button></li>`).join("")}</ul></div>` : "";
-  return head + strip + summaryCard(d) + chartsCard(d);
+  return head + strip + summaryCard(d) + `<div class="card" id="scenCard">${scenariosCard(d)}</div>` + chartsCard(d);
+}
+// ---- named scenarios: the Summary's changes kept by name, compared side by side (engagement.save_scenario) ----
+function scenarioSays(sc) {
+  const lev = Object.entries(sc.levers || {}).map(([k, d]) => `${k.replace(/_/g, " ")} ${d >= 0 ? "+" : ""}${Math.abs(d) < 1 ? `${+(100 * d).toFixed(3)} pt` : fmt(d, 2)}`);
+  const other = Object.keys(sc.changes || {}).length - Object.keys(sc.levers || {}).length;
+  return [...lev, other > 0 && `${other} other input(s)`, sc.valuation_date && `valuation date ${sc.valuation_date}`,
+    sc.method?.timing && ({mid: "mid-period", "mid-year": "mid-year"}[sc.method.timing] || "end of period"), sc.method?.day_count].filter(Boolean).join(", ") || "no changes";
+}
+function scenariosCard(d) {
+  const list = E.scenarios || [], cur = Object.keys(SUM.changes).length || SUM.vd || Object.keys(SUM.method).length, C = SUM.compared;
+  const table = C && C.scenarios.length ? `<div class="scroll" style="margin-top:10px"><table><thead><tr><th>Figure</th><th class="num">This year</th>${C.scenarios.map(n => `<th class="num">${esc(n)}</th>`).join("")}</tr></thead><tbody>
+    ${C.figures.map(f => `<tr><td>${esc(f.label)} <span class="mono small muted">${esc(f.cell)}</span></td><td class="num">${sumNum(f, f.this_year)}</td>${C.scenarios.map(n => { const v = f.scenarios[n];
+      return `<td class="num">${sumNum(f, v)}${typeof v === "number" && typeof f.this_year === "number" && f.this_year ? `<div class="small muted">${v >= f.this_year ? "+" : ""}${(100 * (v - f.this_year) / Math.abs(f.this_year)).toFixed(1)}%</div>` : ""}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>` : "";
+  return `<div class="row" style="justify-content:space-between"><div><h2>Scenarios</h2><p class="sub" style="margin:0">The scenario above, kept by name (base, downside, bid), to load again, compare side by side and carry into next year's engagement (by how far each lever moved: "+1 point on the rate").</p></div>
+    <span class="row" style="gap:6px"><input class="in" id="scName" placeholder="Name, e.g. Downside" style="width:180px"><button class="btn small primary" id="scSave" ${cur ? "" : 'disabled title="Change an assumption, the valuation date or the method first"'}>Keep this scenario</button></span></div>
+    ${list.length ? `<ul class="why" style="color:var(--ink);margin-top:8px">${list.map(sc => `<li><b>${esc(sc.name)}</b>: ${esc(scenarioSays(sc))}${sc.carried_from ? ` <span class="pill ok" title="From last year's engagement, moved as it moved then">carried</span>` : ""}${sc.not_carried?.length ? ` <span class="small muted">(not carried: ${esc(sc.not_carried.join(", "))})</span>` : ""}
+      <button class="btn small ghost" data-scload="${esc(sc.name)}">Load</button><button class="btn small ghost" data-scdel="${esc(sc.name)}">Delete</button></li>`).join("")}</ul>
+      <button class="btn small" id="scCompare">${SUM.comparing ? "Comparing…" : "Compare side by side"}</button>${list.some(sc => sc.method && Object.keys(sc.method).length) ? ` <span class="small muted">A scenario with a discounting method recomputes the whole Summary: it takes longer.</span>` : ""}`
+      : `<p class="small muted" style="margin:8px 0 0">None kept yet. <a href="#" id="scCarry">Carry last year's</a>, if last year's engagement kept any.</p>`}
+    ${table}`;
+}
+function bindScenarios() {
+  const redraw = () => { const c = $("#scenCard"); if (c) { c.innerHTML = scenariosCard(SUM.data); bindScenarios(); } };
+  const keep = list => { E.scenarios = list; SUM.compared = null; redraw(); };
+  $("#scSave")?.addEventListener("click", () => act(async () => {
+    keep(await api(`/api/engagements/${E.id}/scenarios`, {method: "POST", body: {name: $("#scName").value, changes: SUM.changes, valuation_date: SUM.vd || null, method: SUM.method}}));
+    toast("Scenario kept.");
+  }));
+  document.querySelectorAll("[data-scload]").forEach(b => b.onclick = () => {
+    const sc = (E.scenarios || []).find(x => x.name === b.dataset.scload); if (!sc) return;
+    SUM.changes = {...(sc.changes || {})}; SUM.vd = sc.valuation_date || null; SUM.method = {...(sc.method || {})}; loadSummary();
+  });
+  document.querySelectorAll("[data-scdel]").forEach(b => b.onclick = () => act(async () => {
+    if (!confirm(`Delete the scenario "${b.dataset.scdel}"?`)) return;
+    keep(await api(`/api/engagements/${E.id}/scenarios/${encodeURIComponent(b.dataset.scdel)}`, {method: "DELETE"}));
+  }));
+  $("#scCompare")?.addEventListener("click", async () => {
+    SUM.comparing = true; redraw();
+    try { SUM.compared = await api(`/api/engagements/${E.id}/scenarios/compare`, {method: "POST"}); } catch (e) { toast(e.message, 6000); }
+    SUM.comparing = false; redraw();
+  });
+  $("#scCarry")?.addEventListener("click", e => { e.preventDefault(); act(async () => { keep(await api(`/api/engagements/${E.id}/scenarios/carry`, {method: "POST"})); toast("Last year's scenarios carried: look at each before you rely on it."); }); });
 }
 const sumMoney = (row, v) => {  // with the report's own prefix and suffix ("A$" … "m")
   const m = String(row.report || "").match(/^([^\d(-]*)[\d,.()-]+(.*)$/), n = sumNum(row, v);
@@ -2258,6 +2300,7 @@ async function loadSummary() {
 }
 function bindSummary() {
   document.querySelectorAll("#sumNeeds [data-go]").forEach(b => b.onclick = () => jumpTo(b.dataset.go, b.dataset.anchor, b.dataset.tab));
+  bindScenarios();
   const d = SUM.data;
   if (!d) { if (!SUM.loading) loadSummary(); return; }
   if (busy(E.charts_status) !== busy(SUM.chartsSeen) || (E.charts_status === "done" && SUM.chartsSeen !== "done")) { SUM.chartsSeen = E.charts_status; loadSummary(); }

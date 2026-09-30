@@ -486,7 +486,12 @@ person before the next relies on it:
      last year's tie to the report is checked here, once, at the report's printed precision); the Python overlay
      rebuilt on last year's client model (it shouldn't move from as saved: where it does, the file assigned as
      last year's client model isn't the version the overlay was built on, and the cell says so); this year,
-     rolled forward onto this year's client model; and your scenario. In the scenario you can change any assumption
+     rolled forward onto this year's client model; and your scenario. A scenario can be kept by name (base,
+     downside, bid), loaded again, compared side by side with this year's figures (one run of the overlay each;
+     one with a discounting method recomputes the Summary, and takes longer), and carried into next year's
+     engagement by how far each lever moved ("+1 point on the rate", on every rate of a range where the rate is
+     one); a lever not in next year's overlay, other inputs and the valuation date belong to the year and don't
+     carry. In the scenario you can change any assumption
      that has an input in the overlay, the valuation date, and the discounting method (end or mid-period,
      actual/actual or actual/365). The method reaches a figure through its trace: each discounting under it is
      redone, and the formulas above carry the results up (e.g. the mid value as the average of the low- and
