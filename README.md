@@ -319,8 +319,14 @@ person before the next relies on it:
    apart, to be marked as produced outside the model; the Summary (and the Map's count) then counts them as that,
    not as missing. A figure is a row with formulas in up to three cells (a low, mid and high); a row of periods
    shows its range and total. The
-   confirmed schedule is the engagement's; putting this year's value beside last year's for each output is the
-   next step.
+   confirmed schedule is the engagement's, and carries into next year's: the engagement whose prior overlay is
+   an earlier version of this one's (the library links versions of one workbook) and that confirmed its schedule
+   is last year's, and a new schedule takes its classes by itself. Each of last year's outputs is found again by
+   its label on the same sheet; one whose label is gone isn't followed to whatever row now sits at its number, and
+   is listed as missing with why (as are rows on a sheet that isn't an overlay sheet this year). Rows that weren't
+   there last year are marked new; a person's own class wins over a carried one; last year's outside-the-model
+   marks carry for the figures still on no output or input. Nothing is confirmed until a person has looked; a
+   schedule can also be carried by hand from any engagement that confirmed one.
 
    The page runs the module live. Levers are the report's assumptions located in the overlay, and any other input
    can be found by search and changed. Results update as you type. There are three feeds: the workbook as saved, the

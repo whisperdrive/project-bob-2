@@ -1227,15 +1227,27 @@ function outputsPane() {
   const num = o => o.kind === "series" ? `<span class="muted small" title="${esc(o.range || "")}">${o.periods} periods${typeof o.total === "number" ? ` · total ${fmt(o.total, 1)}` : ""}</span>` : typeof o.value === "number" ? fmt(o.value, Math.abs(o.value) < 10 ? 4 : 1) : esc(o.value ?? "");
   const report = o => !o.fact ? "" : `${esc(o.fact.report || "")}${o.fact.tie === true ? ` <span class="pill ok" title="Excel's saved value rounds to the report's figure">ties as saved</span>` : o.fact.tie === false ? ` <span class="pill bad" title="Excel's saved value doesn't round to the report's figure">doesn't tie</span>` : ""}`;
   const pick = o => `<select class="in" data-sch="${esc(o.row)}">${["conclusion", "assumption", "working"].map(k => `<option value="${k}" ${o.class === k ? "selected" : ""}>${k[0].toUpperCase() + k.slice(1)}${o.detected === k ? " (detected)" : ""}</option>`).join("")}</select>`;
-  const table = rows => `<div class="scroll"><table><thead><tr><th>Line item</th><th class="num">As saved</th><th>In the report</th><th>Class</th><th>Why</th></tr></thead><tbody>${rows.map(o => `<tr><td><b>${esc(o.label)}</b> <span class="mono small muted">${esc(o.cell || o.row)}</span></td><td class="num">${num(o)}</td><td class="small">${report(o)}</td><td>${pick(o)}${o.set ? ` <span class="small">set by you</span>` : ""}</td><td class="small muted">${esc(o.why)}</td></tr>`).join("")}</tbody></table></div>`;
+  const whose = o => o.set ? ` <span class="small">set by you</span>` : o.source === "carried" && o.class !== o.detected ? ` <span class="pill ok" title="Last year's confirmed schedule gave this row this class (detected: ${esc(o.detected)})">carried</span>` : "";
+  const table = rows => `<div class="scroll"><table><thead><tr><th>Line item</th><th class="num">As saved</th><th>In the report</th><th>Class</th><th>Why</th></tr></thead><tbody>${rows.map(o => `<tr><td><b>${esc(o.label)}</b> <span class="mono small muted">${esc(o.cell || o.row)}</span>${o.new ? ` <span class="pill warn" title="Not in last year's schedule: look at its class">new this year</span>` : ""}</td><td class="num">${num(o)}</td><td class="small">${report(o)}</td><td>${pick(o)}${whose(o)}</td><td class="small muted">${esc(o.why)}</td></tr>`).join("")}</tbody></table></div>`;
   const by = k => D.outputs.filter(o => o.class === k);
-  const out = D.outside || [];
-  return head + `<div class="row" style="justify-content:space-between;margin:6px 0 10px"><span class="small">${D.outputs.length} output(s): <b>${c.conclusion || 0}</b> conclusion(s), <b>${c.assumption || 0}</b> assumption(s), ${c.working || 0} working(s). ${status}</span><button class="btn small primary" id="schConfirm">${D.confirmed_at ? "Confirm again" : "Confirm the schedule"}</button></div>
+  const out = D.outside || [], fresh = D.outputs.filter(o => o.new).length;
+  return head + carriedCard(D) + `<div class="row" style="justify-content:space-between;margin:6px 0 10px"><span class="small">${D.outputs.length} output(s): <b>${c.conclusion || 0}</b> conclusion(s), <b>${c.assumption || 0}</b> assumption(s), ${c.working || 0} working(s). ${status}</span><button class="btn small primary" id="schConfirm">${D.confirmed_at ? "Confirm again" : "Confirm the schedule"}${fresh ? ` (${fresh} new row${fresh > 1 ? "s" : ""} to look at)` : ""}</button></div>
     <h3 style="font-size:14px;margin:10px 0 6px">Conclusions</h3>${by("conclusion").length ? table(by("conclusion")) : `<p class="small muted">None.</p>`}
     <h3 style="font-size:14px;margin:14px 0 6px">Assumptions</h3>${by("assumption").length ? table(by("assumption")) : `<p class="small muted">None among the outputs (the typed-in ones are the levers).</p>`}
     <details data-k="sch-work" style="margin-top:12px"><summary>Workings (${by("working").length})</summary>${table(by("working"))}</details></div>
     <div class="card"><h2>The report's figures on none of them</h2><p class="sub">Conclusions and assumptions the report quotes that sit neither on an output nor on an input of the overlay. Mark those the valuation produced outside the model (a split of the equity value, a multiple worked out afterwards): the Summary then counts them as outside the model rather than missing.</p>
     ${out.length ? `<ul class="why" style="color:var(--ink)">${out.map(f => `<li><label><input type="checkbox" data-outside="${esc(f.key)}" ${f.marked ? "checked" : ""}> <b>${esc(f.label)}</b> ${esc(f.value_text || "")} <span class="muted small">${esc(f.category)}${f.page ? `, page ${f.page}` : ""}</span></label></li>`).join("")}</ul>` : `<p class="small muted" style="margin:0">None: every figure the report quotes sits on an output or an input.</p>`}</div>`;
+}
+// last year's confirmed schedule, carried: from which engagement, what came across, what didn't, what's new
+function carriedCard(D) {
+  const k = D.carried, src = D.sources || {}, others = src.engagements || [];
+  const choose = others.length ? `<span class="row" style="gap:6px"><select class="in" id="schFrom">${others.map(e => `<option value="${e.id}" ${(k?.from ?? src.linked) === e.id ? "selected" : ""}>${esc(e.name)}${e.id === src.linked ? " (last year's)" : ""}</option>`).join("")}</select><button class="btn small" id="schCarry">${k ? "Carry again" : "Carry its schedule"}</button></span>` : "";
+  if (!k) return others.length ? `<div class="callout info small" style="margin-bottom:10px">${src.linked ? "Last year's engagement has a confirmed schedule." : "No earlier version of this overlay has a confirmed schedule; another engagement's can be carried by hand (its rows are found again here by their labels)."} ${choose}</div>` : "";
+  const fresh = D.outputs.filter(o => o.new).length, when = new Date(k.at * 1000).toLocaleDateString();
+  return `<div class="callout info small" style="margin-bottom:10px"><b>Carried from ${esc(k.name || "another engagement")}</b> (${esc(when)}): ${D.outputs.filter(o => o.source === "carried").length} class(es) as last year confirmed them${fresh ? `, ${fresh} row(s) new this year to look at` : ""}${k.missing?.length ? `, ${k.missing.length} of last year's not found here` : ""}${k.outside?.length ? `; ${k.outside.length} outside-the-model mark(s)` : ""}. Your own classes win over carried ones; nothing is confirmed until you confirm.
+    ${k.missing?.length ? `<details style="margin-top:6px"><summary>Last year's outputs not found here</summary><ul class="why">${k.missing.map(m => `<li><span class="mono">${esc(m.row)}</span> ${esc(m.label || "")} (${esc(m.class)}): ${esc(m.why)}</li>`).join("")}</ul></details>` : ""}
+    ${k.outside_dropped?.length ? `<div style="margin-top:4px">Not carried as outside the model, since they're in the overlay this year: ${esc(k.outside_dropped.join(", "))}.</div>` : ""}
+    <div style="margin-top:6px">${choose}</div></div>`;
 }
 async function loadSchedule(force) {
   const stamp = `${E.id}|${E.overlay_started_at || ""}|${(E.facts || []).filter(f => f.status === "approved").length}`;
@@ -1258,6 +1270,12 @@ function bindOutputs() {
   });
   document.querySelectorAll("#ovOut [data-outside]").forEach(c => c.onchange = () => putSchedule({outside: {[c.dataset.outside]: c.checked}}));
   $("#schConfirm")?.addEventListener("click", () => putSchedule({confirm: true}, "Schedule confirmed."));
+  $("#schCarry")?.addEventListener("click", async () => {
+    try { SCH.data = await api(`/api/engagements/${E.id}/schedule/carry`, {method: "POST", body: {engagement: +$("#schFrom").value}});
+      toast("Carried: look at the rows new this year, then confirm."); }
+    catch (e) { toast(e.message, 6000); }
+    redrawOutputs();
+  });
 }
 // ---- the engagement's profile: facts about the models the steps would otherwise each guess (engagement.profile_view)
 const PROF = {stamp: null, data: null, loading: false};
