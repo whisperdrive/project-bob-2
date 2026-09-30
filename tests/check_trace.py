@@ -90,8 +90,28 @@ def rate_check() -> None:
     assert got["lever"] == {"cell": "Inputs!C5", "label": "Discount rate", "value": 0.07}, got
     assert got["dcf"] == [{"cell": "Inputs!E11", "label": "Cost of equity", "value": 0.0815}]
     assert got["report"] == {"value": "7.50%", "basis": "post-tax nominal WACC"}
+    assert got["moves"] == [] and "range" not in got, "on other rows: not a range, and the lever moves nothing"
+
+    class Row:  # a low / mid / high on one row; the figure averages the values at the low and the high rate
+        def labels(self):
+            return {("Inputs", 11): "Discount rate"}
+
+        def value(self, s, r, c):
+            return {("Inputs", 11, 5): 0.091, ("Inputs", 11, 6): 0.086, ("Inputs", 11, 7): 0.081}.get((s, r, c))
+
+    class RowSess(Sess):
+        def values(self, cells):  # each rate cell is its own input: the lever moves only itself
+            return [self.over.get(k, self.ov.value(*k)) for k in cells]
+    sess = RowSess(False)
+    sess.ov = Row()
+    lever_on_end = [{**rows[0], "report": "8.60%", "lever": {"cell": "Inputs!G11", "label": "Discount rate"}}]
+    two = {"Report!C5": (None, [{"inputs": {"rate": "Inputs!E11"}, "rate_value": 0.091},
+                                {"inputs": {"rate": "Inputs!G11"}, "rate_value": 0.081}])}
+    got = ov._rate_check(sess, None, lever_on_end, two)
+    assert got["moves"] == ["Inputs!G11"] and got["report_at"] == "Inputs!F11", got
+    assert [c["cell"] for c in got["range"]] == ["Inputs!E11", "Inputs!F11", "Inputs!G11"], got["range"]
     print("rate: ok (a lever that moves the discountings' rate is left alone; one that doesn't is shown beside it and "
-          "the report's, with their bases)")
+          "the report's, with their bases; a low / mid / high on one row is a range, the lever one end of it)")
 
 
 if __name__ == "__main__":

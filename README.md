@@ -561,7 +561,10 @@ looked at. On the Summary, the conclusions and assumptions the overlay doesn't c
 does, counted apart, as outside the rebuild's scope rather than failures. Where the discount rate lever doesn't
 move the rate the discountings under the figures use (read back from their factors), the Summary shows the
 report's rate, the lever's and the discountings' side by side with their labels: rates on different bases can
-rightly differ, but a scenario on a lever that moves nothing means nothing. The row agents' record counts the
+rightly differ, but a scenario on a lever that moves nothing means nothing. Where those cells and one holding the
+report's rate sit on one row (a low, mid and high: figures that average the values at a low and a high rate), the
+Summary describes the range, which cell the report quotes, and which of the discountings' rates the lever moves.
+A lever is bound to the cell holding the report's own figure before one holding the low or high end of its range. The row agents' record counts the
 rows still open from the gate as it is now, and is marked out of date after a rebuild, a workbook built again,
 or a newer row finder.
 

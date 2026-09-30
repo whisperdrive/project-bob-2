@@ -486,7 +486,9 @@ def levers_and_outputs(overlay_db: str, sheets: list[str], facts: list[dict]) ->
     levers, outputs, seen = [], [], set()
     for m in fm:
         f = by_id[m["fact_id"]]
-        best = next((x for x in m["matches"] if x["label_match"] or x["anchor"]), None)
+        located = [x for x in m["matches"] if x["label_match"] or x["anchor"]]
+        # the cell holding the report's own figure first: a range's low or high end isn't the rate the report quotes
+        best = next((x for x in located if x.get("part") == "value"), None) or next(iter(located), None)
         if not best:
             continue
         cell = (best["sheet"], best["row"], ci(re.sub(r"\d", "", best["addr"])))
@@ -1169,11 +1171,13 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
 
 
 def _rate_check(sess: Session, db, rows: list[dict], traces: dict) -> dict | None:
-    """The discount rate three ways, where they don't agree: the report's, the lever's (the overlay cell labelled
-    like it) and the rate cells the discountings under the figures use (read back from their factors). None when
-    changing the lever moves one of those cells. Rates on different bases can rightly differ (a WACC, and a
-    cost of equity for equity cash flows); a lever that moves none of them moves nothing, so a scenario on it
-    means nothing. Said, not changed: a person decides which cell is the rate."""
+    """The discount rate as the report, the lever (the overlay cell labelled like it) and the discountings under the
+    figures (their rate cells, read back from their factors) have it, where the lever doesn't move every one of
+    those rate cells: None when it does. "moves": the rate cells it does move. "range": where the rate cells, the
+    lever and a cell holding the report's rate sit on one row (a low / mid / high: figures that average the values
+    at a low and a high rate), that row's rates, and "report_at", the cell holding the report's. Rates on different
+    bases can rightly differ (a WACC, and a cost of equity for equity cash flows), and a range's ends differ by
+    design; what matters is what a scenario on the lever moves. Said, not changed: a person decides."""
     import dcf
     used = {}
     for _, cs in traces.values():
@@ -1187,26 +1191,45 @@ def _rate_check(sess: Session, db, rows: list[dict], traces: dict) -> dict | Non
     lever = (dr or {}).get("lever")
     labels = sess.ov.labels()
     lab = lambda ref: labels.get(parse_a1(ref)[:2], "")
-    moves = False
+    moved = set()
     if lever:
         try:
             lk = parse_a1(lever["cell"])
             v0 = sess.ov.value(*lk)
             if isinstance(v0, float):
                 sess.configure("workbook", {lk: v0 + 0.01})
-                moved = sess.values([parse_a1(ref) for ref in used])
-                moves = any(isinstance(v, float) and isinstance(used[ref], float) and not dcf._close(v, used[ref])
-                            for ref, v in zip(used, moved))  # a low and a high rate: the lever is one of them
+                moved = {ref for ref, v in zip(used, sess.values([parse_a1(ref) for ref in used]))
+                         if isinstance(v, float) and isinstance(used[ref], float) and not dcf._close(v, used[ref])}
         except (ValueError, KeyError):
-            moves = False
+            moved = set()
         finally:
             sess.configure("workbook")
-    if moves:
+    if moved == set(used):
         return None
+    got = _num_in((dr or {}).get("report"))
+    report = got[0] / 100 if got and "%" in (dr or {}).get("report", "") else None
     return {"report": {"value": dr.get("report"), "basis": dr.get("basis")} if dr else None,
             "lever": {"cell": lever["cell"], "label": lever.get("label") or lab(lever["cell"]),
                       "value": sess.ov.value(*parse_a1(lever["cell"]))} if lever else None,
-            "dcf": [{"cell": ref, "label": lab(ref), "value": v} for ref, v in used.items()]}
+            "dcf": [{"cell": ref, "label": lab(ref), "value": v} for ref, v in used.items()],
+            "moves": sorted(moved), **_rate_range(sess, list(used) + ([lever["cell"]] if lever else []), report)}
+
+
+def _rate_range(sess: Session, refs: list[str], report: float | None) -> dict:
+    """{"range": [{cell, value}], "report_at"} where every one of refs sits on one sheet row (a low / mid / high);
+    the row's rates between them, and within three columns a cell holding the report's rate. {} otherwise."""
+    keys = [parse_a1(r) for r in refs]
+    if len({k[:2] for k in keys}) != 1:
+        return {}
+    s, r = keys[0][:2]
+    lo, hi = min(k[2] for k in keys), max(k[2] for k in keys)
+    rate = lambda c: (lambda v: v if isinstance(v, float) and 0 < abs(v) < 1 else None)(sess.ov.value(s, r, c))
+    at = next((c for c in sorted(range(lo - 3, hi + 4), key=lambda c: (not lo <= c <= hi, abs(c - (lo + hi) / 2)))
+               if c > 0 and report is not None and rate(c) is not None and abs(rate(c) - report) < 5e-5), None)
+    cols = [c for c in range(min(lo, at or lo), max(hi, at or hi) + 1) if rate(c) is not None]
+    if len(cols) < 2:
+        return {}
+    return {"range": [{"cell": _a1(s, r, c), "value": rate(c)} for c in cols], "report_at": _a1(s, r, at) if at else None}
 
 
 def value_bridge(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
