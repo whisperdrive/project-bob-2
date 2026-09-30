@@ -316,7 +316,9 @@ person before the next relies on it:
    check rows. Each is classed once as a conclusion, an assumption or a working, by rules a person confirms:
    where a report figure sits (with whether Excel's saved value ties to it), a DCF, a label like a value or like
    an input to the value. The report's conclusions and assumptions that sit on no output and no input are listed
-   apart, to be marked as produced outside the model; the Summary then counts them as that, not as missing. The
+   apart, to be marked as produced outside the model; the Summary (and the Map's count) then counts them as that,
+   not as missing. A figure is a row with formulas in up to three cells (a low, mid and high); a row of periods
+   shows its range and total. The
    confirmed schedule is the engagement's; putting this year's value beside last year's for each output is the
    next step.
 

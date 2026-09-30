@@ -1174,7 +1174,7 @@ function outputsPane() {
   if (!D) return head + `<p class="muted small" style="margin:0">${SCH.loading ? "Reading the overlay…" : ""}</p></div>`;
   const c = D.counts || {}, when = t => new Date(t * 1000).toLocaleString(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"});
   const status = D.confirmed_at ? `<span class="pill ok">Confirmed ${esc(when(D.confirmed_at))}</span>${D.changed_at > D.confirmed_at ? ` <span class="pill warn">changed since</span>` : ""}` : `<span class="pill warn">Not confirmed</span>`;
-  const num = o => o.kind === "series" ? `<span class="muted small">${o.periods} periods</span>` : typeof o.value === "number" ? fmt(o.value, Math.abs(o.value) < 10 ? 4 : 1) : esc(o.value ?? "");
+  const num = o => o.kind === "series" ? `<span class="muted small" title="${esc(o.range || "")}">${o.periods} periods${typeof o.total === "number" ? ` · total ${fmt(o.total, 1)}` : ""}</span>` : typeof o.value === "number" ? fmt(o.value, Math.abs(o.value) < 10 ? 4 : 1) : esc(o.value ?? "");
   const report = o => !o.fact ? "" : `${esc(o.fact.report || "")}${o.fact.tie === true ? ` <span class="pill ok" title="Excel's saved value rounds to the report's figure">ties as saved</span>` : o.fact.tie === false ? ` <span class="pill bad" title="Excel's saved value doesn't round to the report's figure">doesn't tie</span>` : ""}`;
   const pick = o => `<select class="in" data-sch="${esc(o.row)}">${["conclusion", "assumption", "working"].map(k => `<option value="${k}" ${o.class === k ? "selected" : ""}>${k[0].toUpperCase() + k.slice(1)}${o.detected === k ? " (detected)" : ""}</option>`).join("")}</select>`;
   const table = rows => `<div class="scroll"><table><thead><tr><th>Line item</th><th class="num">As saved</th><th>In the report</th><th>Class</th><th>Why</th></tr></thead><tbody>${rows.map(o => `<tr><td><b>${esc(o.label)}</b> <span class="mono small muted">${esc(o.cell || o.row)}</span></td><td class="num">${num(o)}</td><td class="small">${report(o)}</td><td>${pick(o)}${o.set ? ` <span class="small">set by you</span>` : ""}</td><td class="small muted">${esc(o.why)}</td></tr>`).join("")}</tbody></table></div>`;
@@ -1387,7 +1387,7 @@ function viewMapBody(head) {
   const books = m.overlay_client.books || [];
   return head + run + `
   ${!m.reference_approved ? `<div class="callout warn">The report facts aren't approved yet: this map uses the facts that pass the checks. Approve them in The report and rebuild.</div>` : ""}
-  <div class="flow">${[["Prior report", E.documents.find(d => d.id === E.roles.prior_report?.id)?.filename, `${found.length} of ${m.report_overlay.length} figures found in the overlay${byValue.length ? ` (${byValue.length} more only by value: coincidences?)` : ""}`],
+  <div class="flow">${[["Prior report", E.documents.find(d => d.id === E.roles.prior_report?.id)?.filename, `${found.length} of ${m.report_overlay.length} figures found in the overlay${(n => n ? `, ${n} marked outside the model` : "")(missing.filter(x => (E.schedule?.outside || []).includes(x.key)).length)}${byValue.length ? ` (${byValue.length} more only by value: coincidences?)` : ""}`],
     ["Prior overlay", f.overlay, `${m.python.filter(p => p.reproduced).length} DCF(s) found by their labels; the DCF under each report figure is in Rebuild in Python → Valuation (DCF) → The facts`],
     ["Prior client model", f.prior_model, `${(m.chain || []).length} overlay row(s) read it (${esc(m.overlay_client.mode || "")})`],
     ["Current client model", f.current_model, `${(m.chain || []).filter(c => c.current).length} of those rows found this year`]].map(([t, n, s]) => `<div class="node"><h3>${t}</h3><div class="small"><b>${esc(n || "not assigned")}</b></div><div class="small muted">${s}</div></div>`).join("")}</div>
@@ -1635,6 +1635,7 @@ function needs() {
 // aren't figures; overlays built before the count was kept: from the listed mismatches
 function mismatches(V) {
   if (!V) return {numbers: 0, text: 0};
+  if ((V.runtime || 1) !== CFG.runtime) return {numbers: 0, text: 0, stale: V.cells - V.matched};  // rebuild to know
   const text = V.text ?? (V.mismatches || []).filter(m => typeof m.workbook === "string").length;
   return {numbers: Math.max(0, V.cells - V.matched - text), text};
 }
@@ -1645,6 +1646,7 @@ function limits() {
   for (const b of (OVR.eid === E.id ? OVR.br?.bridges : null) || []) if (b.note) out.push(`${b.label}: ${b.note}`);
   if (off.text) out.push(`${off.text} label cell(s) read differently from Excel's saved text (captions, not figures)`);
   if (off.numbers && E.doctor_status) out.push(`The Python differs from Excel in ${off.numbers.toLocaleString()} formula cell(s); the doctor has looked (Doctor page)`);
+  if (off.stale) out.push(`${off.stale.toLocaleString()} formula cell(s) differed from Excel when the overlay was built, with an earlier version of the formula functions: rebuild in Python to check again`);
   return out;
 }
 
@@ -2036,7 +2038,7 @@ function summaryCard(d) {
     const zero = z && z.value != null ? `<div class="small ${z.ok ? "muted" : "bad-text"}" title="This year's model at last year's valuation date (${esc(z.valuation_date || "")}), rolled by nothing: about last year's figure if the rows found carry the same numbers">at last year's date ${sumNum(r, z.value)}${z.ratio != null ? ` (${z.ratio.toFixed(2)}×)` : ""}</div>` : "";
     if ((col === "this_year" || col === "scenario") && unreliable(t, r)) return `<td class="num"><span class="small muted" title="Too little of this year's model was found for these figures">needs rows</span>${zero}</td>`;
     const moves = col === "rebuilt" && r.feed_moves ? ` <span class="small bad-text" title="Fed from the file assigned as last year's client model, the overlay doesn't give what Excel saved: that file isn't the version the overlay was built on">moves</span>` : "";
-    return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "saved" ? tick(r) : ""}${moves}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}${zero}` : `<span class="muted small">${outside.has(r.key) ? "outside the model" : "not in the overlay"}</span>`}</td>`;
+    return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "saved" ? tick(r) : ""}${moves}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}${zero}` : `<span class="muted small">${r.outside || outside.has(r.key) ? "outside the model" : "not in the overlay"}</span>`}</td>`;
   };
   const lev = (r, col) => {
     const l = r.lever; if (!l) return `<td class="num muted small">${col === "scenario" ? "" : "–"}</td>`;
@@ -2052,7 +2054,8 @@ function summaryCard(d) {
       + own.map(r => `<tr><td>${esc(r.label)} <span class="mono small muted">${esc(r.cell)}</span></td><td class="num"><span class="muted small">not quoted</span></td>${cols.map(c => cell(r, c)).join("")}</tr>`).join(""); };
   // a section's rows the overlay has, and those it doesn't: the report quotes more than the overlay computes
   const outside = new Set(E.schedule?.outside || []);  // marked produced outside the model (the Outputs tab)
-  const scope = (rows, has, yes, no) => { const n = rows.filter(has).length, m = rows.filter(r => !has(r) && outside.has(r.key)).length, rest = rows.length - n - m;
+  const isOut = r => r.outside || outside.has(r.key);
+  const scope = (rows, has, yes, no) => { const n = rows.filter(has).length, m = rows.filter(r => !has(r) && isOut(r)).length, rest = rows.length - n - m;
     return rows.length && n < rows.length ? ` <span class="small muted" style="font-weight:400">· ${n} ${yes}${m ? ` · ${m} marked outside the model` : ""}${rest ? ` · ${rest} ${no}` : ""}</span>` : ""; };
   const vdDefault = t.scenario_roll?.valuation_date || t.roll?.valuation_date || "";
   const sel = (id, opts, cur) => `<select class="in" id="${id}">${opts.map(([v, lab]) => `<option value="${v}" ${v === (cur || "") ? "selected" : ""}>${lab}</option>`).join("")}</select>`;
@@ -2309,6 +2312,7 @@ function viewPython() {
 }
 function validationCard(O) {
   const v = O.validation, st = O.stats, issues = [];
+  if ((v.runtime || 1) !== CFG.runtime && v.matched < v.cells) issues.push("Checked with an earlier version of the formula functions (some have been fixed since): rebuild the Python overlay to check again.");
   if (Object.keys(v.quirks || {}).length) issues.push(...Object.entries(v.quirks).map(([k, n]) => `Excel behaviour reproduced on purpose: ${k} (${n} cell(s)).`));
   if (Object.keys(v.unsupported || {}).length) issues.push(`Functions not yet supported: ${Object.keys(v.unsupported).join(", ")}.`);
   if (v.cycles) issues.push(`${v.cycles} circular reference(s): the saved value is used there.`);

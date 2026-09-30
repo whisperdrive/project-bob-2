@@ -1711,7 +1711,7 @@ def summary_view(eid: int, changes: dict | None = None, valuation_date: str | No
     _sync_roll(eid, sess, summary)
     clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
     out["table"] = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid), clean, valuation_date, months, method,
-                              _schedule_rows(eid))
+                              _schedule_rows(eid), set(_schedule(eid).get("outside") or []))
     out["identity"] = {f["key"]: f.get("value_text") for f in reference(eid) if f.get("category") == "identity"}
     out["roll_plan"] = summary.get("roll")  # as the dates are now (_sync_roll), with which are checked
     out["rows"] = rows_view(eid)  # the row agents: running, or what they decided

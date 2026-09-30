@@ -324,6 +324,13 @@ def main() -> None:
     assert "Report!C5" not in {r["cell"] for r in extra}, "a figure the report quotes isn't listed twice"
     mid = next(r for r in extra if r["cell"] == "Val!C21")  # "Selected valuation"
     assert mid["values"]["saved"] == mid["values"]["rebuilt"] and mid["values"]["this_year"] != mid["values"]["saved"]
+    ev = {"id": 9, "category": "conclusion", "key": "enterprise_value", "label": "Enterprise value", "value_text": "999.9",
+          "value": 999.9, "unit": "A$m"}  # a figure the overlay doesn't compute, marked produced outside the model
+    t = ov.deep(lambda: ov.summary_table(sess, summary, FACTS + [ev], outside={"enterprise_value"}))
+    assert next(r for r in t["rows"] if r["key"] == "enterprise_value").get("outside") is True
+    assert not any(r.get("outside") for r in t["rows"] if r["key"] != "enterprise_value"), "only a row with no cell or lever"
+    import xlruntime
+    assert summary["validation"]["runtime"] == xlruntime.RUNTIME, "the validation says which runtime it was made with"
     bridge = ov.deep(lambda: ov.value_bridge(sess, summary, FACTS, schedule=sched))
     assert [b["cell"] for b in bridge["bridges"]] == ["Report!C5"], "the bridge stays on the report's figures"
     print(f"schedule rows: ok ({len(extra)} of the overlay's own figures beside the report's, last year and this year; "
@@ -520,6 +527,19 @@ def schedule_check(summary: dict) -> None:
     mine = outputs.apply(got, {"classes": {"Val!r17": "conclusion"}})
     low = next(o for o in mine if o["row"] == "Val!r17")
     assert low["class"] == "conclusion" and low["detected"] == "working" and low["set"]
+    # a label broken over lines, a low / mid / high row, and a row of periods nothing reads
+    mem = sqlite3.connect(":memory:")
+    mem.executescript("""CREATE TABLE sheets(sheet TEXT, layout TEXT); CREATE TABLE rows(sheet TEXT, row INT, label TEXT);
+        CREATE TABLE cells(sheet TEXT, row INT, col INT, value, formula TEXT);
+        CREATE TABLE edges(src_sheet TEXT, src_row INT, dst_sheet TEXT, dst_row INT, kind TEXT);
+        INSERT INTO sheets VALUES ('Out', '{"label_col": 2}');
+        INSERT INTO rows VALUES ('Out', 5, 'Equity value' || char(10) || '(ex-div)'), ('Out', 8, 'Free cash flow');""")
+    mem.executemany("INSERT INTO cells VALUES ('Out', 5, ?, ?, '=x')", [(5, 8072.1), (6, 8515.7), (7, 8959.3)])
+    mem.executemany("INSERT INTO cells VALUES ('Out', 8, ?, ?, '=y')", [(c, 10.0 * c) for c in range(4, 12)])
+    small = {o["row"]: o for o in outputs.detect(mem, ["Out"])}
+    assert small["Out!r5"]["label"] == "Equity value (ex-div)" and small["Out!r5"]["kind"] == "figure"
+    assert small["Out!r5"]["class"] == "conclusion" and small["Out!r5"]["cell"] == "Out!E5", small["Out!r5"]
+    assert small["Out!r8"]["range"] == "Out!D8:K8" and small["Out!r8"]["total"] == 600.0 and small["Out!r8"]["cell"] is None
     n = {c: sum(o["class"] == c for o in got) for c in outputs.CLASSES}
     print(f"schedule: ok ({len(got)} outputs of the overlay: {n['conclusion']} conclusion(s), {n['assumption']} "
           f"assumption(s), {n['working']} working(s); the report's figure where it sits; inputs left out)")

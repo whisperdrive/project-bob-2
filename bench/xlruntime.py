@@ -18,6 +18,8 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, ROUND_UP, Decimal
 
+RUNTIME = 2  # bump when a function's result changes (2: TEXT dates, half-up rounding): validations made with an
+             # earlier runtime are shown as out of date until the overlay is built again
 EPOCH = date(1899, 12, 30)
 _MISS = object()
 

@@ -447,7 +447,7 @@ class Session:
             for k, _, _ in bad[:limit]:
                 forms[k] = db.execute("SELECT formula FROM cells WHERE sheet=? AND row=? AND col=?", k).fetchone()[0]
         labels = self.ov.labels()
-        return {"cells": len(res), "matched": len(res) - len(bad), "cycles": len(self.B.cycles),
+        return {"cells": len(res), "matched": len(res) - len(bad), "cycles": len(self.B.cycles), "runtime": xlruntime.RUNTIME,
                 "text": sum(isinstance(w, str) for _, _, w in bad),  # label cells: Excel saved text (a caption)
                 "unsupported": dict(self.B.unsupported), "quirks": dict(xlruntime.xl.quirks),
                 "mismatches": [{"cell": _a1(*k), "label": labels.get(k[:2], ""), "python": _show(v), "workbook": _show(w),
@@ -880,7 +880,7 @@ def dcf_origins(sess: Session, summary: dict, cells: list[str]) -> dict:
 
 def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict | None = None,
                   valuation_date: str | None = None, months: int | None = None, method: dict | None = None,
-                  schedule: list[dict] | None = None) -> dict:
+                  schedule: list[dict] | None = None, outside: set | None = None) -> dict:
     """The report's summary, rebuilt and rolled forward. Rows: the report's conclusions (with their ranges), its
     assumptions and its approach. Columns: the report; as saved (the overlay's own Excel values: last year's tie to
     the report is checked here, once); rebuilt (the Python overlay fed from last year's client model, or from the
@@ -889,7 +889,8 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
     the person's assumption changes, valuation date and discounting method. schedule: the overlay's own outputs
     (outputs.py); its conclusions and assumptions that no report row has come after them (source "overlay"), with
     every column, so last year sits beside this year whether or not the report quoted them. They don't enter the
-    gate: this year's gate (this_year_gaps) is the same with or without them, and they are held with the table. The method reaches a figure through its trace (dcftrace.recompute): each discounting under it is
+    gate: this year's gate (this_year_gaps) is the same with or without them, and they are held with the table.
+    outside: the keys of report figures a person marked as produced outside the model (row["outside"]). The method reaches a figure through its trace (dcftrace.recompute): each discounting under it is
     redone with the new method and the formulas above carry the results up; that is checked first by
     reproducing the module's own value with the method unchanged."""
     import dcf
@@ -928,6 +929,9 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
         elif cat == "approach":
             rows.append({"kind": "approach", "key": f.get("key"), "label": f.get("label") or f.get("key"),
                          "report": f.get("value_text"), "page": f.get("page")})
+    for r in rows:
+        if r["kind"] in ("conclusion", "assumption") and not r.get("cell") and not r.get("lever") and r.get("key") in (outside or ()):
+            r["outside"] = True
     used = {r["cell"] for r in rows if r.get("cell")} | {r["lever"]["cell"] for r in rows if r.get("lever")}
     for o in schedule or []:  # the overlay's own figures the report doesn't quote
         if o.get("kind") != "figure" or o.get("class") not in ("conclusion", "assumption") or not o.get("cell") \

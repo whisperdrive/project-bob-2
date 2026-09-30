@@ -25,7 +25,7 @@ ASSUMPTION = re.compile(r"\brate\b|wacc|growth|multiple|\bcpi\b|inflation|\btax\
                         r"cost of|yield|escalat", re.I)  # not "terminal": a terminal value is a part of a value
 CHECK = re.compile(r"check|error|integrity", re.I)
 CLASSES = ("conclusion", "assumption", "working")
-FIGURE_CELLS = 2  # formulas in at most this many cells: a single figure, not a row of periods
+FIGURE_CELLS = 3  # formulas in at most this many cells: a single figure (or a low / mid / high), not a row of periods
 
 
 def _a1(col: int, row: int) -> str:
@@ -78,6 +78,7 @@ def detect(db: sqlite3.Connection, sheets: list[str], levers: list[dict] | None 
     out = []
     for s, r, label in db.execute(f"SELECT sheet, row, label FROM rows WHERE sheet IN ({q}) AND label IS NOT NULL "
                                   "AND label != '' ORDER BY sheet, row", sheets):
+        label = " ".join(label.split())  # "Roll \nforward": a label broken over lines in its cell
         cells = formulas.get((s, r))
         nums = [(c, v) for c, v in cells or [] if _num(v) is not None]
         if not nums or CHECK.search(label):
@@ -102,7 +103,8 @@ def detect(db: sqlite3.Connection, sheets: list[str], levers: list[dict] | None 
         out.append({"row": f"{s}!r{r}", "cell": cell if figure else None, "label": label,
                     "kind": "figure" if figure else "series", "value": nums[0][1] if figure else None,
                     "periods": None if figure else len(nums), "read": (s, r) in read, "class": cls, "why": why,
-                    "fact": fact})
+                    "fact": fact, **({} if figure else {"range": f"{s}!{_a1(nums[0][0], r)}:{_a1(nums[-1][0], r)}",
+                                                        "total": sum(v for _, v in nums)})})
     return out
 
 

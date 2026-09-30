@@ -22,6 +22,7 @@ import dictation  # noqa: E402
 import engagement  # noqa: E402
 import library  # noqa: E402
 import usage  # noqa: E402
+import xlruntime  # noqa: E402
 
 # Model deployments offered. gpt-6-luna extracts and reads tables; gpt-6-sol reviews (second reads, fact review).
 MODELS = ["gpt-6-luna", "gpt-6-sol", "gpt-4o", "gpt-4o-mini", "gpt-5-nano"]
@@ -119,7 +120,7 @@ def brand_reset():
 def config():
     return {"models": MODELS, "default_model": engagement.DEFAULT_MODEL, "default_reviewer": engagement.DEFAULT_REVIEWER,
             "default_arbiter": engagement.DEFAULT_ARBITER,
-            "roles": engagement.rolesmod.ROLES, "dictation": dictation.status()}
+            "roles": engagement.rolesmod.ROLES, "dictation": dictation.status(), "runtime": xlruntime.RUNTIME}
 
 
 class NewEngagement(BaseModel):
