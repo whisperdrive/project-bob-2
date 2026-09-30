@@ -21,6 +21,8 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
                 periods nothing reads, classified (the report's figure where it sits, values, rates), not its inputs
   scenarios     a scenario kept by name: its lever moves recorded; compared side by side with this year's (the same
                 figures one run of the overlay gives); carried into another engagement by lever and move; deleted
+  assets        the parts of a valuation its sheets are named for: detected from the names, each output tagged by its
+                sheet, section or label, a person's tag winning, tags carried with the schedule
   carry         last year's confirmed schedule onto this year's overlay: each output found again by its label, a
                 row whose label is gone not followed to whatever sits at its number now, new rows flagged, a
                 person's own class winning over the carried one
@@ -71,6 +73,7 @@ def main() -> None:
     assert v["matched"] == v["cells"], v["mismatches"][:3]
     schedule_check(summary)
     carry_check(out)
+    assets_check()
 
     # ---- facts
     fx = ov.deep(dcffacts.facts, sess, summary, "Report!C5")
@@ -536,11 +539,11 @@ def schedule_check(summary: dict) -> None:
     assert low["class"] == "conclusion" and low["detected"] == "working" and low["set"]
     # a label broken over lines, a low / mid / high row, and a row of periods nothing reads
     mem = sqlite3.connect(":memory:")
-    mem.executescript("""CREATE TABLE sheets(sheet TEXT, layout TEXT); CREATE TABLE rows(sheet TEXT, row INT, label TEXT);
+    mem.executescript("""CREATE TABLE sheets(sheet TEXT, layout TEXT); CREATE TABLE rows(sheet TEXT, row INT, label TEXT, section TEXT);
         CREATE TABLE cells(sheet TEXT, row INT, col INT, value, formula TEXT);
         CREATE TABLE edges(src_sheet TEXT, src_row INT, dst_sheet TEXT, dst_row INT, kind TEXT);
         INSERT INTO sheets VALUES ('Out', '{"label_col": 2}');
-        INSERT INTO rows VALUES ('Out', 5, 'Equity value' || char(10) || '(ex-div)'), ('Out', 8, 'Free cash flow');""")
+        INSERT INTO rows VALUES ('Out', 5, 'Equity value' || char(10) || '(ex-div)', ''), ('Out', 8, 'Free cash flow', '');""")
     mem.executemany("INSERT INTO cells VALUES ('Out', 5, ?, ?, '=x')", [(5, 8072.1), (6, 8515.7), (7, 8959.3)])
     mem.executemany("INSERT INTO cells VALUES ('Out', 8, ?, ?, '=y')", [(c, 10.0 * c) for c in range(4, 12)])
     small = {o["row"]: o for o in outputs.detect(mem, ["Out"])}
@@ -628,8 +631,27 @@ def carry_check(out: Path) -> None:
     assert by["Out!r7"]["source"] == "carried" and by["Out!r7"]["class"] == "conclusion" and not by["Out!r7"]["new"]
     assert by["Out!r6"]["source"] == "you" and by["Out!r6"]["class"] == "working", "a person's own class wins"
     assert by["Out!r10"]["new"] and by["Out!r10"]["source"] == "detected", "a row that wasn't there last year is new"
+    tagged = outputs.carry([{**o, "asset": "North" if o["row"] == "Out!r6" else ""} for o in confirmed], last, moved, ["Out"])
+    assert tagged["assets"] == {"Out!r7": "North"}, "an output's asset carries with it"
+    assert outputs.apply(now, {"carried": tagged})[2]["asset"] == "North"
     print("carry: ok (a class carried to its moved row; a gone label missing, not followed to its old number; new "
           "rows flagged; a person's own class wins)")
+
+
+def assets_check() -> None:
+    import outputs
+    assert outputs.tokens("RevenueSiteA") == ["Revenue", "Site", "A"] and outputs.tokens("PlantA2Ops") == ["Plant", "A2", "Ops"]
+    sheets = ["RevenueNorth", "RevenueSouth", "CostsNorth", "CostsSouth", "CF_Annual", "CF_Quarterly", "Summary", "Val"]
+    names = outputs.assets(sheets)
+    assert names == ["North", "South"], names  # annual / quarterly are kinds of sheet, not things
+    sched = outputs.tag([{"row": "CostsSouth!r4", "label": "Opex"}, {"row": "Val!r9", "label": "Equity value, North",
+                          "section": ""}, {"row": "Val!r12", "label": "Equity value", "section": "South"},
+                         {"row": "Val!r15", "label": "Equity value"}], names)
+    assert [o["asset"] for o in sched] == ["South", "North", "South", ""], sched
+    mine = outputs.apply([{**o, "class": "working"} for o in sched], {"assets": {"Val!r15": "North"}})
+    assert mine[3]["asset"] == "North" and mine[0]["asset"] == "South", "a person's tag wins over the one found"
+    print("assets: ok (detected from sheet names, kinds of sheet left out; tagged by sheet, label or section; a "
+          "person's tag wins)")
 
 
 def horizon_check(out: Path) -> None:

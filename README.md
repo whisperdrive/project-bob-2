@@ -287,6 +287,12 @@ person before the next relies on it:
    - the horizon: fixed where this year's client model ends its periods on the same date as last year's (a
      concession with an end date), else rolling. It drives the roll-forward: on a fixed horizon the periods stay
      and only the valuation date moves.
+   - the assets: the parts of the valuation its sheets are named for (a road, a site, a plant), where two or
+     more sheets share their first words and differ in what follows ("RevenueNorth", "RevenueSouth"), kinds of
+     sheet (annual, summary, inputs) left out. A guess from names alone, to correct as a list. Each output of
+     the schedule is tagged with the asset its sheet, section or label names (a person can change it, and the tag
+     carries with the schedule); the Summary groups the overlay's own figures by asset and marks a report row
+     whose label names one. Values aren't summed across assets: outputs aren't additive in general.
    - the periods (monthly, quarterly, annual), the currency and units (from the report's facts) and the
      discounting convention (read back from the factors of the DCFs under the figures): shown, not set.
 
@@ -518,7 +524,7 @@ person before the next relies on it:
      reviewer once, kept by both pictures, the values beside them and the model (charts/checks.json). The financial year comes from the model (a named range, a
      labelled month, an annual timeline's period ends), else from last year's valuation date: a model of quarters
      alone shows none, and calendar years would put a June-year model's every row in the wrong years. A series named for a site or segment can be the sum of
-     that site's rows (its section, or rows carrying its name). A row that shares no word with the series must
+     that site's rows (its section, rows carrying its name, or the rows of a sheet named for it). A row that shares no word with the series must
      follow it within 2% over six years or more, a multiple or a percentage isn't rescaled by thousands, and a
      series too small to read off the picture isn't matched. The recreation is drawn from those financial-year
      totals, so rows from a quarterly and an annual sheet chart together. gpt-6-sol then compares the report's

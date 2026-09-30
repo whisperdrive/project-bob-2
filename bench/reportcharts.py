@@ -407,15 +407,18 @@ GENERIC = {"total", "revenue", "revenues", "income", "sales", "cost", "costs", "
 
 def groups(rows: list[dict], name: str, title: str = "") -> list[dict]:
     """Rows that together make a series named for whose it is (a site, a segment): on one sheet, the rows whose
-    section or label carries the name's own words, totals left out (they would count twice); and those of them
-    whose label also has the chart's measure (its title's words). Each is summed by financial year."""
+    section or label carries the name's own words, or on a sheet named for it, totals left out (they would count
+    twice); and those of them whose label also has the chart's measure (its title's words). Each is summed by
+    financial year."""
     own = _words(name) - GENERIC - _words(title)
     if not own:
         return []
     measure = _words(title) & GENERIC - {"total", "net", "the", "and", "of", "for"}
+    import outputs
     by_sheet: dict[str, list] = {}
-    for r in rows:
-        if own & _words(r["section"] + " " + r["label"]) and "total" not in _words(r["label"]):
+    for r in rows:  # the sheet's name counts too: a sheet named for the site holds its rows
+        sheet_words = {w.lower() for w in outputs.tokens(r["sheet"])}
+        if own & (_words(r["section"] + " " + r["label"]) | sheet_words) and "total" not in _words(r["label"]):
             by_sheet.setdefault(r["sheet"], []).append(r)
     out = []
     for sheet, members in by_sheet.items():

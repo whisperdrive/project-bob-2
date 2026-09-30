@@ -1659,7 +1659,12 @@ def set_profile(eid: int, fields: dict) -> dict:
         elif k == "horizon" and v not in (None, ""):
             if v not in ("fixed", "rolling"):
                 raise ValueError('the horizon is "fixed" or "rolling"')
-        elif k not in ("fy_end_month", "horizon"):
+        elif k == "assets" and v not in (None, ""):
+            if isinstance(v, str):
+                v = [x.strip() for x in v.split(",") if x.strip()]
+            if not isinstance(v, list) or not all(isinstance(x, str) and x.strip() for x in v):
+                raise ValueError("the assets are a list of names")
+        elif k not in ("fy_end_month", "horizon", "assets"):
             raise ValueError(f"{k} isn't set here: it's read from the models")
         if v in (None, ""):
             mine.pop(k, None)
@@ -1768,11 +1773,36 @@ def profile_view(eid: int) -> dict:
                     "shown": units and units.get("value_text"), "set": False,
                     "how": f"the report's facts (page {units.get('page')})" if units else "not among the report's facts",
                     "drives": "shown: each figure keeps its own units"}
+    found, how = _assets_detected(eid)
+    out["assets"] = {"label": "Assets", "value": mine.get("assets") or found, "detected": found,
+                     "shown": ", ".join(mine.get("assets") or found) or "none: one valuation", "how": how,
+                     "set": "assets" in mine,
+                     "drives": "the outputs' asset tags (the Summary groups by them) and the report's charts: a series "
+                               "named for an asset can be the sum of its sheet's rows"}
     conv, how = _conventions(eid)
     out["discounting"] = {"label": "Discounting", "value": conv, "shown": conv, "how": how, "set": False,
                           "drives": "shown: read back from each DCF's factors; the Summary's method selector changes "
                                     "it for a scenario"}
-    return {"fields": out, "settable": ["fy_end_month", "horizon"]}
+    return {"fields": out, "settable": ["fy_end_month", "horizon", "assets"]}
+
+
+def _assets_detected(eid: int) -> tuple[list[str], str]:
+    """The assets the models' sheet names are named for (outputs.assets), from the client models and the overlay."""
+    import outputs as outmod
+    names = []
+    for role in ("current_model", "prior_model", "prior_overlay"):
+        w = _role_wb(eid, role)
+        names += [s for s in (w or {}).get("sheet_names") or [] if s not in names]
+    if not names:
+        return [], "needs the models: from their sheet names"
+    found = outmod.assets(names)
+    return found, (f"sheets named for them ({', '.join(s for s in names if outmod.asset_of(found, s))[:160]})" if found
+                   else f"no sheets named for parts of the valuation among {len(names)}")
+
+
+def _assets(eid: int) -> list[str]:
+    """The engagement's assets: the profile's, else detected."""
+    return _profile(eid).get("assets") or _assets_detected(eid)[0]
 
 
 # ---- the output schedule: the overlay's own outputs, whether or not the report quotes them (outputs.py) ----------
@@ -1811,12 +1841,13 @@ def schedule_view(eid: int) -> dict:
                 mine = _carry(eid, src, summary)
             except Exception:  # a carry that fails leaves the detected schedule, and the button to try again
                 traceback.print_exc()
-    sched = outmod.apply(_SCHEDULES[eid][1], mine)
+    names = _assets(eid)
+    sched = outmod.apply(outmod.tag([dict(o) for o in _SCHEDULES[eid][1]], names), mine)
     marked = set(mine.get("outside") or [])
     out = outmod.outside(reference(eid), sched, summary.get("levers"))
     return {"outputs": sched, "outside": [{**f, "marked": f["key"] in marked} for f in out],
             "counts": dict(Counter(o["class"] for o in sched)), "confirmed_at": mine.get("confirmed_at"),
-            "changed_at": mine.get("changed_at"), "carried": {k: v for k, v in (mine.get("carried") or {}).items() if k != "classes"} or None,
+            "changed_at": mine.get("changed_at"), "assets": names, "carried": {k: v for k, v in (mine.get("carried") or {}).items() if k != "classes"} or None,
             "sources": _schedule_sources(eid)}
 
 
@@ -1872,7 +1903,8 @@ def _carry(eid: int, src: int, summary: dict) -> dict:
     here = {f["key"] for f in outmod.outside(reference(eid), outmod.apply(_SCHEDULES[eid][1], mine), summary.get("levers"))}
     kept = [k for k in theirs.get("outside") or [] if k in here]
     name = (_q("SELECT name FROM engagements WHERE id=?", src) or [{}])[0].get("name")
-    mine["carried"] = {"from": src, "name": name, "at": time.time(), "classes": got["classes"], "missing": got["missing"],
+    mine["carried"] = {"from": src, "name": name, "at": time.time(), "classes": got["classes"], "assets": got.get("assets") or {},
+                       "missing": got["missing"],
                        "outside": kept, "outside_dropped": [k for k in theirs.get("outside") or [] if k not in here]}
     mine["outside"] = sorted(set(mine.get("outside") or []) | set(kept))
     _set("engagements", eid, schedule_json=json.dumps(mine), updated_at=time.time())
@@ -1895,9 +1927,11 @@ def _schedule_rows(eid: int) -> list[dict]:
         return []
 
 
-def set_schedule(eid: int, classes: dict | None = None, outside: dict | None = None, confirm: bool = False) -> dict:
+def set_schedule(eid: int, classes: dict | None = None, outside: dict | None = None, confirm: bool = False,
+                 assets: dict | None = None) -> dict:
     """A person's classes ({"Sheet!r12": "working" | None to go back to the detected one}), report figures marked
-    as produced outside the model ({fact key: True | False}), and confirming the schedule as it stands."""
+    as produced outside the model ({fact key: True | False}), assets per row ({"Sheet!r12": "Site A" | "" for the
+    whole | None to go back to the tag found}), and confirming the schedule as it stands."""
     import outputs as outmod
     mine = _schedule(eid)
     cl = dict(mine.get("classes") or {})
@@ -1911,9 +1945,15 @@ def set_schedule(eid: int, classes: dict | None = None, outside: dict | None = N
     out = set(mine.get("outside") or [])
     for k, v in (outside or {}).items():
         (out.add if v else out.discard)(k)
+    tags = dict(mine.get("assets") or {})
+    for row, a in (assets or {}).items():
+        if a is None:
+            tags.pop(row, None)
+        else:
+            tags[row] = str(a).strip()
     now = time.time()
-    mine.update(classes=cl, outside=sorted(out))
-    if classes or outside:
+    mine.update(classes=cl, outside=sorted(out), assets=tags)
+    if classes or outside or assets:
         mine["changed_at"] = now
     if confirm:
         mine["confirmed_at"] = now
@@ -2003,6 +2043,12 @@ def summary_view(eid: int, changes: dict | None = None, valuation_date: str | No
     clean = _live(eid, "current" if summary["wiring"].get("current") else "workbook", changes)[2]
     out["table"] = ovmod.deep(ovmod.summary_table, sess, summary, reference(eid), clean, valuation_date, months, method,
                               _schedule_rows(eid), set(_schedule(eid).get("outside") or []))
+    import outputs as outmod
+    names = _assets(eid)
+    for r in out["table"]["rows"]:  # the report's rows: an asset their label names
+        if r.get("source") != "overlay":
+            r["asset"] = outmod.asset_of(names, "", r.get("label"))
+    out["table"]["assets"] = names
     out["identity"] = {f["key"]: f.get("value_text") for f in reference(eid) if f.get("category") == "identity"}
     out["roll_plan"] = summary.get("roll")  # as the dates are now (_sync_roll), with which are checked
     out["rows"] = rows_view(eid)  # the row agents: running, or what they decided

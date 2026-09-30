@@ -231,8 +231,14 @@ def reading_check(out: Path) -> None:
         assert rc._kept(out, "checks") == kept, "kept beside the readings"
     finally:
         rc.check = real
+    # a series named for a site whose rows sit on a sheet named for it, their labels not naming it
+    on_sheet = [{**row("Fees", [40.0 + k for k in range(8)], 5), "sheet": "RevenueNorth"},
+                {**row("Charges", [10.0 + k for k in range(8)], 6), "sheet": "RevenueNorth"},
+                {**row("Fees", [30.0 + k for k in range(8)], 5), "sheet": "RevenueSouth"}]
+    g = rc.groups(on_sheet, "North", "Revenue")
+    assert g and g[0]["sheet"] == "RevenueNorth" and g[0]["rows"] == [5, 6], g
     print("reading: ok (mixed units, a two-figure read's rounding, O&M, a stacked segment by the total, readings "
-          "and comparisons kept)")
+          "and comparisons kept, a site's rows by its sheet's name)")
 
 
 def year_end_check(out: Path) -> None:

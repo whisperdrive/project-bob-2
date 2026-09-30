@@ -1228,7 +1228,9 @@ function outputsPane() {
   const report = o => !o.fact ? "" : `${esc(o.fact.report || "")}${o.fact.tie === true ? ` <span class="pill ok" title="Excel's saved value rounds to the report's figure">ties as saved</span>` : o.fact.tie === false ? ` <span class="pill bad" title="Excel's saved value doesn't round to the report's figure">doesn't tie</span>` : ""}`;
   const pick = o => `<select class="in" data-sch="${esc(o.row)}">${["conclusion", "assumption", "working"].map(k => `<option value="${k}" ${o.class === k ? "selected" : ""}>${k[0].toUpperCase() + k.slice(1)}${o.detected === k ? " (detected)" : ""}</option>`).join("")}</select>`;
   const whose = o => o.set ? ` <span class="small">set by you</span>` : o.source === "carried" && o.class !== o.detected ? ` <span class="pill ok" title="Last year's confirmed schedule gave this row this class (detected: ${esc(o.detected)})">carried</span>` : "";
-  const table = rows => `<div class="scroll"><table><thead><tr><th>Line item</th><th class="num">As saved</th><th>In the report</th><th>Class</th><th>Why</th></tr></thead><tbody>${rows.map(o => `<tr><td><b>${esc(o.label)}</b> <span class="mono small muted">${esc(o.cell || o.row)}</span>${o.new ? ` <span class="pill warn" title="Not in last year's schedule: look at its class">new this year</span>` : ""}</td><td class="num">${num(o)}</td><td class="small">${report(o)}</td><td>${pick(o)}${whose(o)}</td><td class="small muted">${esc(o.why)}</td></tr>`).join("")}</tbody></table></div>`;
+  const names = D.assets || [];
+  const asset = o => names.length || o.asset ? `<select class="in" data-schasset="${esc(o.row)}"><option value="" ${!o.asset ? "selected" : ""}>The whole</option>${[...new Set([...names, o.asset].filter(Boolean))].map(n => `<option ${o.asset === n ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>` : `<span class="small muted">–</span>`;
+  const table = rows => `<div class="scroll"><table><thead><tr><th>Line item</th><th class="num">As saved</th><th>In the report</th><th>Class</th>${names.length ? "<th>Asset</th>" : ""}<th>Why</th></tr></thead><tbody>${rows.map(o => `<tr><td><b>${esc(o.label)}</b> <span class="mono small muted">${esc(o.cell || o.row)}</span>${o.new ? ` <span class="pill warn" title="Not in last year's schedule: look at its class">new this year</span>` : ""}</td><td class="num">${num(o)}</td><td class="small">${report(o)}</td><td>${pick(o)}${whose(o)}</td>${names.length ? `<td>${asset(o)}</td>` : ""}<td class="small muted">${esc(o.why)}</td></tr>`).join("")}</tbody></table></div>`;
   const by = k => D.outputs.filter(o => o.class === k);
   const out = D.outside || [], fresh = D.outputs.filter(o => o.new).length;
   return head + carriedCard(D) + `<div class="row" style="justify-content:space-between;margin:6px 0 10px"><span class="small">${D.outputs.length} output(s): <b>${c.conclusion || 0}</b> conclusion(s), <b>${c.assumption || 0}</b> assumption(s), ${c.working || 0} working(s). ${status}</span><button class="btn small primary" id="schConfirm">${D.confirmed_at ? "Confirm again" : "Confirm the schedule"}${fresh ? ` (${fresh} new row${fresh > 1 ? "s" : ""} to look at)` : ""}</button></div>
@@ -1269,6 +1271,7 @@ function bindOutputs() {
     putSchedule({classes: {[s.dataset.sch]: s.value === o?.detected ? null : s.value}});
   });
   document.querySelectorAll("#ovOut [data-outside]").forEach(c => c.onchange = () => putSchedule({outside: {[c.dataset.outside]: c.checked}}));
+  document.querySelectorAll("#ovOut [data-schasset]").forEach(s => s.onchange = () => putSchedule({assets: {[s.dataset.schasset]: s.value}}));
   $("#schConfirm")?.addEventListener("click", () => putSchedule({confirm: true}, "Schedule confirmed."));
   $("#schCarry")?.addEventListener("click", async () => {
     try { SCH.data = await api(`/api/engagements/${E.id}/schedule/carry`, {method: "POST", body: {engagement: +$("#schFrom").value}});
@@ -1286,7 +1289,9 @@ function engProfileCard() {
   if (!P) return head + `<p class="muted small" style="margin:0">${PROF.loading ? "Reading the models…" : ""}</p>`;
   const f = P.fields, detected = {fy_end_month: v => MONTHS[v - 1], horizon: v => v};
   const opts = {fy_end_month: MONTHS.map((m, i) => [i + 1, m]), horizon: [["fixed", "Fixed: the periods end on the same date each year"], ["rolling", "Rolling: the periods move on each year"]]};
-  const value = (k, x) => P.settable.includes(k)
+  const value = (k, x) => k === "assets"
+    ? `<input class="in" data-profassets value="${esc(x.set ? (x.value || []).join(", ") : "")}" placeholder="As detected: ${esc((x.detected || []).join(", ") || "none")}" title="Names, separated by commas; empty for as detected" style="width:100%">`
+    : P.settable.includes(k)
     ? `<select class="in" data-prof="${k}"><option value="">As detected${x.detected ? `: ${esc(detected[k](x.detected))}` : ": not known"}</option>${opts[k].map(([v, t]) => `<option value="${v}" ${x.set && String(x.value) === String(v) ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`
     : `<b>${esc(x.shown || "–")}</b>`;
   return head + `<div class="scroll"><table><thead><tr><th></th><th>Value</th><th>How it was found</th><th>What it drives</th></tr></thead><tbody>
@@ -1301,6 +1306,11 @@ async function loadProfile(force) {
   if (state.step === "roles" && $("#engProfile")) { $("#engProfile").innerHTML = engProfileCard(); bindEngProfile(); }
 }
 function bindEngProfile() {
+  document.querySelectorAll("#engProfile [data-profassets]").forEach(inp => inp.onchange = async () => {
+    try { PROF.data = await api(`/api/engagements/${E.id}/profile`, {method: "PUT", body: {fields: {assets: inp.value.trim() || null}}});
+      SCH.stamp = null; toast("Saved. The outputs are tagged with these assets."); } catch (e) { toast(e.message, 6000); }
+    $("#engProfile").innerHTML = engProfileCard(); bindEngProfile();
+  });
   document.querySelectorAll("#engProfile [data-prof]").forEach(s => s.onchange = async () => {
     const k = s.dataset.prof, v = s.value === "" ? null : k === "fy_end_month" ? +s.value : s.value;
     try { PROF.data = await api(`/api/engagements/${E.id}/profile`, {method: "PUT", body: {fields: {[k]: v}}});
@@ -2175,8 +2185,10 @@ function summaryCard(d) {
   // the report's rows, and the overlay's own figures the report doesn't quote (its output schedule), under them
   const quoted = rows => rows.filter(r => r.source !== "overlay");
   const ownRows = rows => { const own = rows.filter(r => r.source === "overlay"); if (!own.length) return "";
+    const byAsset = [...new Set(own.map(r => r.asset || ""))].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b));
     return `<tr><td colspan="${cols.length + 2}" class="small muted" style="padding-top:8px">From the overlay, not quoted in the report (its output schedule): ${own.length}. This year's values here are held with the table's gate, not each on its own rows.</td></tr>`
-      + own.map(r => `<tr><td>${esc(r.label)} <span class="mono small muted">${esc(r.cell)}</span></td><td class="num"><span class="muted small">not quoted</span></td>${cols.map(c => cell(r, c)).join("")}</tr>`).join(""); };
+      + byAsset.map(a => (byAsset.length > 1 || a ? `<tr><td colspan="${cols.length + 2}" class="small" style="font-weight:600;padding-top:6px">${esc(a || "The whole")}</td></tr>` : "")
+        + own.filter(r => (r.asset || "") === a).map(r => `<tr><td>${esc(r.label)} <span class="mono small muted">${esc(r.cell)}</span></td><td class="num"><span class="muted small">not quoted</span></td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")).join(""); };
   // a section's rows the overlay has, and those it doesn't: the report quotes more than the overlay computes
   const outside = new Set(E.schedule?.outside || []);  // marked produced outside the model (the Outputs tab)
   const isOut = r => r.outside || outside.has(r.key);
@@ -2198,7 +2210,7 @@ function summaryCard(d) {
       <span class="row" style="margin-top:6px"><input class="in" type="date" id="sumThisVd" value="${esc(rp?.dates?.this_year || "")}" min="${esc(rp?.prior_valuation_date || "")}"><button class="btn small primary" id="sumThisVdSave">Set</button>${rp?.dates?.this_year ? `<button class="btn small ghost" id="sumThisVdClear">Clear</button>` : ""}<span class="small" id="sumThisVdMsg"></span></span></div>` : rp?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${rp.months} months is ${esc(rp.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""; })()}
   <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
     <tr class="sec"><td colspan="${cols.length + 2}">Conclusions${scope(quoted(conc), r => r.cell, "rebuilt", "the overlay doesn't compute: out of the rebuild's scope, not a failure")}</td></tr>
-    ${[...quoted(conc).filter(r => r.cell), ...quoted(conc).filter(r => !r.cell)].map(r => `<tr${r.cell ? ` id="sumrow-${aid(r.cell)}"` : ""}><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
+    ${[...quoted(conc).filter(r => r.cell), ...quoted(conc).filter(r => !r.cell)].map(r => `<tr${r.cell ? ` id="sumrow-${aid(r.cell)}"` : ""}><td>${esc(r.label)}${r.asset ? ` <span class="pill" title="The asset its label names">${esc(r.asset)}</span>` : ""}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
     ${ownRows(conc)}
     <tr class="sec"><td colspan="${cols.length + 2}">Key assumptions${scope(quoted(ass), r => r.lever, "an input in the overlay", "not an input there (the report's value, for reference)")}</td></tr>
     ${[...quoted(ass).filter(r => r.lever), ...quoted(ass).filter(r => !r.lever)].map(r => `<tr><td>${esc(r.label)}${r.basis ? `<div class="small muted">${esc(r.basis)}</div>` : ""}</td><td class="num">${esc(r.report || "")}</td>${cols.map(c => lev(r, c)).join("")}</tr>`).join("")}

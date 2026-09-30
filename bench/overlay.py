@@ -941,7 +941,7 @@ def summary_table(sess: Session, summary: dict, facts: list[dict], changes: dict
             continue
         used.add(o["cell"])
         rows.append({"kind": o["class"], "key": None, "label": o["label"], "report": None, "unit": None, "page": None,
-                     "cell": o["cell"], "scale": 1.0, "sign": 1, "source": "overlay"})
+                     "cell": o["cell"], "scale": 1.0, "sign": 1, "source": "overlay", "asset": o.get("asset") or ""})
         keys.add(parse_a1(o["cell"]))
     keys = sorted(keys)
     ours = lambda r: r["kind"] == "conclusion" and r.get("cell") and r.get("source") != "overlay"  # the gate's figures

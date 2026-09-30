@@ -334,7 +334,7 @@ async def put_roles(eid: int, body: Roles):
 
 
 class Profile(BaseModel):
-    fields: dict  # {"fy_end_month": 6 | None, "horizon": "fixed" | "rolling" | None}
+    fields: dict  # {"fy_end_month": 6 | None, "horizon": "fixed" | "rolling" | None, "assets": [names] | None}
 
 
 @app.get("/api/engagements/{eid}/profile")
@@ -352,6 +352,7 @@ class Schedule(BaseModel):
     classes: dict | None = None   # {"Sheet!r12": "conclusion" | "assumption" | "working" | None}
     outside: dict | None = None   # {fact key: True | False}: produced outside the model
     confirm: bool = False
+    assets: dict | None = None    # {"Sheet!r12": "Site A" | "" (the whole) | None}
 
 
 @app.get("/api/engagements/{eid}/schedule")
@@ -371,7 +372,7 @@ async def carry_schedule(eid: int, body: CarryFrom):
 
 @app.put("/api/engagements/{eid}/schedule")
 async def put_schedule(eid: int, body: Schedule):
-    return await _run(engagement.set_schedule, eid, body.classes, body.outside, body.confirm)
+    return await _run(engagement.set_schedule, eid, body.classes, body.outside, body.confirm, body.assets)
 
 
 class Scenario(BaseModel):

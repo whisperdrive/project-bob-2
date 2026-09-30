@@ -256,7 +256,14 @@ def profile_check(eid: int) -> None:
             raise AssertionError(f"accepted {bad}")
         except ValueError:
             pass
-    engagement.set_profile(eid, {"horizon": None})
+    engagement.set_profile(eid, {"assets": "Site A, Site B"})
+    assert engagement._profile(eid)["assets"] == ["Site A", "Site B"] and engagement._assets(eid) == ["Site A", "Site B"]
+    try:
+        engagement.set_profile(eid, {"assets": 7})
+        raise AssertionError("accepted assets that aren't names")
+    except ValueError:
+        pass
+    engagement.set_profile(eid, {"horizon": None, "assets": None})
     assert engagement._profile(eid) == {"fy_end_month": 6}
     try:
         engagement.set_schedule(eid, classes={"Val!r3": "headline"})

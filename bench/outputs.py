@@ -76,8 +76,8 @@ def detect(db: sqlite3.Connection, sheets: list[str], levers: list[dict] | None 
                                               "tie": None, "cell": lv["cell"]})
     anchors = anchors or set()
     out = []
-    for s, r, label in db.execute(f"SELECT sheet, row, label FROM rows WHERE sheet IN ({q}) AND label IS NOT NULL "
-                                  "AND label != '' ORDER BY sheet, row", sheets):
+    for s, r, label, section in db.execute(f"SELECT sheet, row, label, section FROM rows WHERE sheet IN ({q}) AND "
+                                           "label IS NOT NULL AND label != '' ORDER BY sheet, row", sheets):
         label = " ".join(label.split())  # "Roll \nforward": a label broken over lines in its cell
         cells = formulas.get((s, r))
         nums = [(c, v) for c, v in cells or [] if _num(v) is not None]
@@ -103,9 +103,57 @@ def detect(db: sqlite3.Connection, sheets: list[str], levers: list[dict] | None 
         out.append({"row": f"{s}!r{r}", "cell": cell if figure else None, "label": label,
                     "kind": "figure" if figure else "series", "value": nums[0][1] if figure else None,
                     "periods": None if figure else len(nums), "read": (s, r) in read, "class": cls, "why": why,
-                    "fact": fact, **({} if figure else {"range": f"{s}!{_a1(nums[0][0], r)}:{_a1(nums[-1][0], r)}",
+                    "fact": fact, "section": " ".join((section or "").split()), **({} if figure else {"range": f"{s}!{_a1(nums[0][0], r)}:{_a1(nums[-1][0], r)}",
                                                         "total": sum(v for _, v in nums)})})
     return out
+
+
+# ---- assets: the parts of a valuation that sheets are named for (a road, a site, a plant) --------------------------
+
+GENERIC_SUFFIX = {"annual", "quarterly", "monthly", "summary", "inputs", "input", "calc", "calcs", "calculation",
+                  "output", "outputs", "old", "new", "copy", "check", "checks", "data", "base", "case", "sens",
+                  "workings", "notes", "total", "totals", "actual", "actuals", "forecast", "budget", "real", "nominal",
+                  "a", "b", "c", "i", "ii", "iii"}
+
+
+def tokens(name: str) -> list[str]:
+    """A sheet name's words: split at spaces, punctuation and a lower-case letter before a capital ("SiteNorth" ->
+    Site, North; "PlantA2Ops" -> Plant, A2, Ops); letters and digits together stay one ("A2")."""
+    return re.findall(r"[A-Z]+[0-9]*(?=[A-Z][a-z])|[A-Z]?[a-z]+[0-9]*|[A-Z]+[0-9]*|[0-9]+", name or "")
+
+
+def assets(sheets: list[str]) -> list[str]:
+    """The assets a model's sheet names are named for: where two or more sheets share their first words (at least
+    four letters) and differ in what follows ("RevenueSiteA", "RevenueSiteB"), the differing part, unless it's a
+    kind of sheet rather than a thing (annual, summary, inputs, ...). A guess from names alone, for a person to
+    correct."""
+    words = {s: tokens(s) for s in sheets}
+    found: dict[str, int] = {}
+    for n in (1, 2):
+        groups: dict[tuple, list[str]] = {}
+        for s, w in words.items():
+            if len(w) > n and len("".join(w[:n])) >= 4:
+                groups.setdefault(tuple(x.lower() for x in w[:n]), []).append(" ".join(w[n:]))
+        for tails in groups.values():
+            tails = [t for t in dict.fromkeys(tails) if len(t.split()) <= 2 and t.lower() not in GENERIC_SUFFIX]
+            if len(tails) >= 2:
+                for t in tails:
+                    found[t] = found.get(t, 0) + 1
+    return sorted(found, key=lambda t: (-found[t], t))
+
+
+def asset_of(names: list[str], sheet: str, *texts: str) -> str:
+    """The first of names whose words all appear in the sheet's name or the texts (a section, a label); "" for none:
+    a figure of the whole."""
+    here = {x.lower() for x in tokens(sheet)} | {x.lower() for x in re.findall(r"[A-Za-z0-9]+", " ".join(t or "" for t in texts))}
+    return next((n for n in names if {x.lower() for x in re.findall(r"[A-Za-z0-9]+", n)} <= here), "")
+
+
+def tag(schedule: list[dict], names: list[str]) -> list[dict]:
+    """Each output's asset (asset_of: its sheet's name, its section, its label)."""
+    for o in schedule:
+        o["asset"] = asset_of(names, o["row"].rsplit("!r", 1)[0], o.get("section"), o["label"])
+    return schedule
 
 
 def outside(facts: list[dict], schedule: list[dict], levers: list[dict] | None = None) -> list[dict]:
@@ -128,7 +176,10 @@ def apply(schedule: list[dict], mine: dict) -> list[dict]:
     for o in schedule:
         set_, got = classes.get(o["row"]), (carried or {}).get(o["row"])
         cls, source = (set_, "you") if set_ in CLASSES else (got, "carried") if got in CLASSES else (o["class"], "detected")
+        asset = (mine.get("assets") or {}).get(o["row"])
+        carried_asset = ((mine.get("carried") or {}).get("assets") or {}).get(o["row"])
         out.append({**o, "detected": o["class"], "class": cls, "set": source == "you", "source": source,
+                    "asset": asset if asset is not None else carried_asset if carried_asset is not None else o.get("asset", ""),
                     **({"new": o["row"] not in carried} if carried is not None else {})})
     return out
 
@@ -143,7 +194,7 @@ def carry(previous: list[dict], old_db: str, new_db: str, sheets: list[str]) -> 
     a, b = ovmod.Workbook(old_db), ovmod.Workbook(new_db)
     try:
         rm = ovmod.RowMap(a, b)
-        classes, taken, missing = {}, {}, []
+        classes, taken, missing, tagged = {}, {}, [], {}
         for o in previous:
             m = re.match(r"^(.+)!r(\d+)$", o["row"])
             if not m:
@@ -161,9 +212,11 @@ def carry(previous: list[dict], old_db: str, new_db: str, sheets: list[str]) -> 
                 else:
                     taken[f"{s}!r{r2}"] = o["row"]
                     classes[f"{s}!r{r2}"] = o["class"]
+                    if o.get("asset"):
+                        tagged[f"{s}!r{r2}"] = o["asset"]
             if why:
                 missing.append({"row": o["row"], "label": o.get("label"), "class": o["class"], "why": why})
-        return {"classes": classes, "missing": missing}
+        return {"classes": classes, "missing": missing, "assets": tagged}
     finally:
         a.close()
         b.close()
