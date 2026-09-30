@@ -557,7 +557,11 @@ next thing for you to do, as a button that takes you there. Every running job sh
 and, where it reports progress, roughly how long is left. Other jobs estimate from how long the last run took,
 and finished jobs show how long they took.
 
-The Overview's **Needs you** lists only what a person can act on, one entry per cause: where last year's rebuild
+The Overview's **Needs you** lists only what a person can act on, one entry per cause, and each entry goes to the
+thing itself (a Summary row, a chart, a date, the finding on Roles), not only its page; the Summary has the same
+list at its top for what's on it. Where the rebuild on last year's client model moves from as saved, Roles says so
+above its checks, since those look only at names, dates and contents. A chart no row could be found for shows a
+neutral chip and is listed under Limits of the rebuild, apart from the charts that don't match, which are tasks. where last year's rebuild
 doesn't tie because the file assigned as last year's client model isn't the version the overlay was built on,
 that one finding stands for every conclusion it moves. **Limits of the rebuild**, beside it, lists what isn't a
 task: a figure with no discounting found under it (its roll-forward is one step), label cells whose text differs

@@ -122,6 +122,7 @@ nav.side .cnt { background: var(--warn-bg); color: var(--warn); border-radius: 9
 .needs li { border-top: 1px solid var(--rule); }
 .needs li:first-child { border-top: 0; }
 tr.flash > td { background: var(--info-bg); transition: background .4s; }
+.flash:not(tr) { outline: 2px solid var(--accent); outline-offset: 3px; transition: outline-color .4s; }
 .needs button { display: flex; width: 100%; justify-content: space-between; gap: 10px; background: none; border: 0; padding: 9px 12px; cursor: pointer; text-align: left; font-size: 14px; color: var(--ink); }
 .needs button:hover { background: var(--raised); }
 .needs .where { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
@@ -542,6 +543,23 @@ $("#mSel").onchange = async e => { E = {...E, ...await api(`/api/engagements/${E
 $("#rSel").onchange = async e => { E = {...E, ...await api(`/api/engagements/${E.id}`, {method: "PATCH", body: {reviewer_model: e.target.value}})}; toast(`Reviewer model: ${e.target.value}`); };
 $("#aSel").onchange = async e => { E = {...E, ...await api(`/api/engagements/${E.id}`, {method: "PATCH", body: {arbiter_model: e.target.value}})}; toast(`Arbiter: ${e.target.value}`); };
 function go(step, eid = E?.id) { state.step = step; history.replaceState(null, "", `#e=${eid || ""}&s=${step}`); render(); }
+const aid = x => String(x ?? "").replace(/[^A-Za-z0-9_-]/g, "_");  // a cell or an id as an element id
+function jumpTo(step, anchor, tab) {  // a needs-you item: its page, then the element itself, highlighted
+  if (tab) OV.tab = tab;
+  if (step !== state.step) go(step);
+  if (!anchor) return;
+  const t0 = Date.now(), find = () => {
+    const el = document.getElementById(anchor);
+    if (el) {
+      el.closest("details")?.setAttribute("open", "");
+      el.scrollIntoView({behavior: "smooth", block: "center"});
+      const box = el.tagName === "TR" ? el : el.closest(".callout, .card, tr, [data-chart]") || el;
+      box.classList.add("flash"); setTimeout(() => box.classList.remove("flash"), 1800);
+    } else if (Date.now() - t0 < 8000) setTimeout(find, 250);
+  };
+  setTimeout(find, 60);
+}
+const needLink = x => `<button data-go="${x.go}"${x.tab ? ` data-tab="${x.tab}"` : ""}${x.anchor ? ` data-anchor="${esc(x.anchor)}"` : ""}>`;
 
 // ---- progress of each step ---------------------------------------------------------------------------------
 function progress() {
@@ -1192,6 +1210,7 @@ function viewRoles() {
   return `<div class="lede"><div><h1><b>Who's who</b></h1><p>Which file plays which part. The first suggestion comes from the workbooks alone, as soon as they're read: how alike they are (two versions of one client model are mostly the same; a copy with extra valuation sheets holds the overlay), and what each one contains (valuation terms, charts, links to other files, the DCFs that recompute). As the report's facts come in, where its figures sit sharpens it. The overlay is a set of sheets, because it sometimes sits inside a copy of the client model.</p></div></div>
   <div class="row"><button class="btn" id="suggest">Suggest again now</button>
   <button class="btn primary" id="confirmRoles" ${Object.keys(CFG.roles).some(k => roleDraft[k]) ? "" : "disabled"}>Confirm roles</button>${status}</div>
+  ${(pf => pf ? `<div class="callout bad" id="rolesFeed"><b>${esc(pf.text)}.</b> So ${esc(pf.file)} isn't the version of the client model the overlay was built on, whatever the checks below say about its structure (they compare names, dates and contents, not what the overlay gives). Assign last year's client model again below: another version, or the client sheets inside the overlay's own workbook if it was built beside a copy. Then rebuild in Python.</div>` : "")(E.overlay_status === "done" && priorFeedOff())}
   ${rolesCheckCard(sug, docs, wbs)}
   <div class="flow">${["prior_report", "prior_overlay", "prior_model", "current_model"].map(node).join("")}</div>
   <div class="card" id="engProfile">${engProfileCard()}</div>
@@ -1289,7 +1308,7 @@ function rolesCheckCard(sug, docs, wbs) {
       ${diff.length ? `<ul class="why" style="color:var(--ink)">${diff.map(k => `<li><b>${ROLE[k]}:</b> ${k === "overlay_sheets" ? esc((so.overlay_sheets || []).join(", ")) : esc(so[k] || "none")} <span class="muted">(suggested: ${k === "overlay_sheets" ? esc((sug.roles.prior_overlay?.sheets || []).join(", ")) : esc(file(k, sug.roles[k]?.id) || "none")})</span></li>`).join("")}</ul>` : ""}
       <ul class="why">${(so.reasons || []).map(r => `<li>${esc(r)}</li>`).join("")}</ul></div>`;
   }
-  return `<div class="card"><h2>Checks on this suggestion</h2><p class="sub">Plain tests of the assignment above, then a second model's view of the same evidence. Nothing is assigned until you confirm.</p>
+  return `<div class="card" id="rolesCheck"><h2>Checks on this suggestion</h2><p class="sub">Plain tests of the assignment above, then a second model's view of the same evidence. Nothing is assigned until you confirm.</p>
     <ul class="checks">${checks.map(li).join("")}</ul>${op}</div>`;
 }
 const shortName = n => n && n.length > 34 ? n.slice(0, 31) + "…" : (n || "");
@@ -1616,7 +1635,7 @@ function leverRaw(l, shown) {
 function needs() {
   if (!E) return [];
   const out = [], docs = E.documents, wbs = E.workbooks, r = E.roles, name = x => shortName(x.filename);
-  const add = (text, go, why) => out.push({text, go, why});
+  const add = (text, go, why, anchor) => out.push({text, go, why, anchor});  // anchor: the element on that page
   for (const x of [...docs, ...wbs]) if (x.status === "error") add(`Retry ${name(x)}: it couldn't be read`, "files");
   for (const d of docs) if (d.facts_status === "error") add(`Extract the key facts again from ${name(d)}`, "reference");
   if (!docs.length) add("Upload last year's report", "files");
@@ -1625,9 +1644,9 @@ function needs() {
   const nConf = Object.values(r).filter(x => x.confirmed).length;
   if (!reading && Object.keys(r).length && nConf < 4 && !E.roles_pending) add(`Confirm who's who: ${4 - nConf} file role(s) suggested, not confirmed`, "roles");
   const facts = E.facts.filter(needsYou).length;
-  if (facts) add(`Decide ${facts} report fact(s) the agents couldn't settle`, "reference");
+  if (facts) add(`Decide ${facts} report fact(s) the agents couldn't settle`, "reference", null, "needCard");
   const tables = docs.filter(d => d.status === "done").reduce((a, d) => a + (d.n_flagged || 0), 0);
-  if (tables) add(`Check ${tables} table(s) the agents couldn't settle`, "reference");
+  if (tables) add(`Check ${tables} table(s) the agents couldn't settle`, "reference", null, "needCard");
   if (nConf === 4) for (const [key, go, verb] of [["compare", "compare", "Compare the client models"], ["map", "map", "Build the map"], ["overlay", "python", "Build the Python overlay"]]) {
     const st = E[`${key}_status`];
     if (st === "error") add(`${verb} again: it failed`, go);
@@ -1635,7 +1654,7 @@ function needs() {
   }
   if (E.charts_status === "error") add("Recreate the report's charts again: it failed", "summary");
   const pf = E.overlay_status === "done" && priorFeedOff();
-  if (pf) add(`${pf.text}: check which file is last year's client model`, "roles");
+  if (pf) add(`${pf.text}: check which file is last year's client model`, "roles", null, "rolesFeed");
   const V = E.overlay?.validation, off = mismatches(V);
   if (E.overlay_status === "done" && off.numbers && !E.doctor_status) {
     const why = [Object.keys(V.unsupported || {}).length && `functions ${Object.keys(V.unsupported).slice(0, 4).join(", ")}`,
@@ -1644,22 +1663,22 @@ function needs() {
     add(`The Python overlay differs from Excel in ${off.numbers.toLocaleString()} formula cell(s)${why ? `: ${why}` : ""}. The doctor finds where and why`, "doctor");
   }
   const rp = (OVR.eid === E.id ? OVR.sum : null)?.roll_plan || E.overlay?.roll;
-  if (E.overlay_status === "done" && rp?.date_check) add(`Set this year's valuation date: this year's model is dated ${rp.dates?.current_client || "?"}, not after last year's (${rp.prior_valuation_date})`, "summary");
+  if (E.overlay_status === "done" && rp?.date_check) add(`Set this year's valuation date: this year's model is dated ${rp.dates?.current_client || "?"}, not after last year's (${rp.prior_valuation_date})`, "summary", null, "sumThisVd");
   else if (E.overlay_status === "done" && rp?.months_assumed) add(`Check the roll-forward: ${rp.months} months was assumed`, "python");
   const sumErr = ((OVR.eid === E.id ? OVR.sum : null)?.table?.rows || []).filter(r => r.kind === "conclusion" && Object.values(r.values || {}).some(v => typeof v === "string" && v.startsWith("#"))).length;
   if (E.overlay_status === "done" && sumErr && !off.numbers && !E.doctor_status) add(`Run the doctor: ${sumErr} figure(s) come out as errors on this year's model`, "doctor");
   if (E.doctor_status === "error") add("Run the doctor again: it failed", "doctor");
-  const sum = OVR.eid === E.id ? OVR.sum : null;
+  const sum = (OVR.eid === E.id && OVR.sum?.table ? OVR.sum : null) || (SUM.eid === E.id && Object.keys(SUM.changes || {}).length === 0 ? SUM.data : null);
   const g = sum?.table?.this_year_gaps;
-  if (g && g.reliable === false && !busy(E.rows_status)) out.push({text: `${E.rows_status === "done" ? "The row agents couldn't settle this year's figures" : "This year's figures need rows"}: ${gapReasons(g).map(r => r.short).join("; ")}${g.rebuilt ? " (this year's model looks rebuilt)" : ""}`, go: "summary"});
-  for (const w of E.workbooks) if (w.status === "done" && !w.identity_confirmed && w.id === E.roles.current_model?.id && E.overlay_status === "done")
-    add(`Check the valuation date of ${shortName(w.filename)} (${w.valuation_date || "none found"}): the roll-forward runs from it`, "files");
+  if (g && g.reliable === false && !busy(E.rows_status)) out.push({anchor: "sumGaps", text: `${E.rows_status === "done" ? "The row agents couldn't settle this year's figures" : "This year's figures need rows"}: ${gapReasons(g).map(r => r.short).join("; ")}${g.rebuilt ? " (this year's model looks rebuilt)" : ""}`, go: "summary"});
+  for (const w of E.workbooks) if (w.status === "done" && !w.identity_confirmed && rollReads(w) && E.overlay_status === "done")
+    add(`Check the valuation date of ${shortName(w.filename)} (${w.valuation_date || "none found"}): the roll-forward runs from it`, "files", null, `vd-${w.id}`);
   const so = E.roles_suggested?.second_opinion;
   if (so?.differs?.length && so.confidence === "high" && Object.values(E.roles).filter(x => x.confirmed).length < 4)
-    add(`The reviewer model would assign the roles differently (high confidence): ${so.differs.map(k => k.replace("_", " ")).join(", ")}`, "roles");
+    add(`The reviewer model would assign the roles differently (high confidence): ${so.differs.map(k => k.replace("_", " ")).join(", ")}`, "roles", null, "rolesCheck");
   if (!pf) for (const row of sum?.table?.rows || []) if (row.kind === "conclusion" && row.tie && !row.tie.ok)  // pf explains them
-    add(`${row.label}: the overlay as saved gives ${sumNum(row, row.values?.saved)}, not the report's ${row.report} (the cell found for it, or another version of the overlay)`, "summary");
-  for (const c of sum?.charts?.charts || []) if (c.picks && c.matches === false) add(`The report's chart “${c.caption || c.read?.title || c.id}” doesn't match its rebuild`, "summary");
+    add(`${row.label}: the overlay as saved gives ${sumNum(row, row.values?.saved)}, not the report's ${row.report} (the cell found for it, or another version of the overlay)`, "summary", null, `sumrow-${aid(row.cell)}`);
+  for (const c of sum?.charts?.charts || []) if (c.picks && c.matches === false) add(`The report's chart “${c.caption || c.read?.title || c.id}” doesn't match its rebuild`, "summary", null, `chart-${aid(c.id)}`);
   return out;
 }
 // formula cells where the Python differs from Excel: those whose saved value is text (a caption built with TEXT())
@@ -1677,6 +1696,8 @@ function limits() {
   for (const b of (OVR.eid === E.id ? OVR.br?.bridges : null) || []) if (b.note) out.push(`${b.label}: ${b.note}`);
   if (off.text) out.push(`${off.text} label cell(s) read differently from Excel's saved text (captions, not figures)`);
   if (off.numbers && E.doctor_status) out.push(`The Python differs from Excel in ${off.numbers.toLocaleString()} formula cell(s); the doctor has looked (Doctor page)`);
+  const noRows = ((OVR.eid === E.id ? OVR.sum?.charts?.charts : null) || []).filter(c => c.problem);
+  if (noRows.length) out.push(`${noRows.length} of the report's charts weren't recreated: ${[...new Set(noRows.map(c => c.problem))].join("; ")}`);
   if (off.stale) out.push(`${off.stale.toLocaleString()} formula cell(s) differed from Excel when the overlay was built, with an earlier version of the formula functions: rebuild in Python to check again`);
   return out;
 }
@@ -1704,7 +1725,7 @@ function viewOverview() {
   const bridge = br ? `<div class="card"><div class="row" style="justify-content:space-between"><h2>How it moved</h2><button class="btn small" data-go="bridge">Value bridge</button></div><div id="ovrBridge"></div></div>` : "";
   const n = needs(), conf = confidence();
   return head + top + `<div class="grid2">${bridge || ""}<div class="stack">
-    <div class="card"><h2>Needs you${n.length ? ` (${n.length})` : ""}</h2>${n.length ? `<ul class="needs">${n.map(x => `<li><button data-go="${x.go}"${x.tab ? ` data-tab="${x.tab}"` : ""}><span>${esc(x.text)}</span><span class="where">${esc(NAV.find(s => s.id === x.go)?.name || "")} →</span></button></li>`).join("")}</ul>` : `<p class="muted" style="margin:0">Nothing. The agents have what they need.</p>`}</div>
+    <div class="card"><h2>Needs you${n.length ? ` (${n.length})` : ""}</h2>${n.length ? `<ul class="needs">${n.map(x => `<li>${needLink(x)}<span>${esc(x.text)}</span><span class="where">${esc(NAV.find(s => s.id === x.go)?.name || "")} →</span></button></li>`).join("")}</ul>` : `<p class="muted" style="margin:0">Nothing. The agents have what they need.</p>`}</div>
     ${(lim => lim.length ? `<div class="card"><h2>Limits of the rebuild</h2><p class="sub" style="margin-bottom:6px">Not tasks: what the rebuild can't do here, to read the figures with in mind.</p><ul class="why small">${lim.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "")(limits())}
     <div class="card"><h2>How sure we are</h2><ul class="conf">${conf.map(([st, txt]) => `<li class="${st}">${esc(txt)}</li>`).join("")}</ul></div></div></div>`;
 }
@@ -1738,7 +1759,7 @@ async function loadOverview() {
 }
 const overviewStamp = () => [E.overlay_status, E.charts_status, E.facts.length, Object.values(E.roles).filter(x => x.confirmed).length].join("|");
 function bindOverview() {
-  document.querySelectorAll("#main [data-go]").forEach(b => b.onclick = () => { if (b.dataset.tab) OV.tab = b.dataset.tab; go(b.dataset.go); });
+  document.querySelectorAll("#main [data-go]").forEach(b => b.onclick = () => jumpTo(b.dataset.go, b.dataset.anchor, b.dataset.tab));
   if (E.overlay_status === "done" && (!OVR.sum || OVR.stamp !== overviewStamp()) && !OVR.loading) { loadOverview(); return; }
   const t = OVR.sum?.table, r = mainRow(t?.rows), br = (OVR.br?.bridges || []).find(b => r && b.cell === r.cell);
   if (br && $("#ovrBridge")) { $("#ovrBridge").append(chartCard(bridgeSpec(br, `${br.label}: last year to this year`))); mountCharts($("#ovrBridge")); }
@@ -1951,7 +1972,9 @@ function viewSummary() {
   const head = `<div class="lede"><div><h1><b>Summary</b></h1><p>Last year's report, rebuilt and rolled forward: its summary table recomputed on last year's client model (it should tie) and on this year's, and its charts redrawn from both models and checked against the report's own by eye. Change an assumption, the valuation date or the discounting method to see your scenario.</p></div></div>`;
   const d = SUM.data;
   if (!d) return head + `<div class="card"><p class="muted" style="margin:0">${SUM.loading ? "Recomputing the summary…" : "Loading…"}</p></div>`;
-  return head + summaryCard(d) + chartsCard(d);
+  const n = needs().filter(x => x.go === "summary");
+  const strip = n.length ? `<div class="card" id="sumNeeds"><h2>Needs you (${n.length})</h2><ul class="needs">${n.map(x => `<li>${needLink(x)}<span>${esc(x.text)}</span><span class="where">${x.anchor ? "↓" : ""}</span></button></li>`).join("")}</ul></div>` : "";
+  return head + strip + summaryCard(d) + chartsCard(d);
 }
 const sumMoney = (row, v) => {  // with the report's own prefix and suffix ("A$" … "m")
   const m = String(row.report || "").match(/^([^\d(-]*)[\d,.()-]+(.*)$/), n = sumNum(row, v);
@@ -2045,10 +2068,10 @@ function gapNote(t) {
   const shown = g?.by_cell ? t.rows.filter(r => r.kind === "conclusion" && g.by_cell[r.cell]?.reliable === true) : [];
   const what = held.length && shown.length ? `This year's ${held.map(r => r.label).join(", ")} ${held.length === 1 ? "isn't" : "aren't"} shown` : "This year's figures aren't shown";
   const timing = g?.timing?.length ? `<details class="work" data-k="gap-timing" style="margin-top:6px"><summary>Timing the discounting depends on (${g.timing.length} row(s): found, or worked out from the period dates)</summary><div class="in"><ul class="why small">${g.timing.map(x => `<li><span class="mono">${esc(x.row)}</span> ${esc(x.label)} (${esc(x.why)}): ${x.derived ? `worked out: ${esc(x.derived)}` : x.found ? `this year <span class="mono">${esc(x.found)}</span>` : "not found"}${x.open ? ` <span class="pill bad">open</span>` : ""}</li>`).join("")}</ul></div></details>` : "";
-  if (g && g.reliable === false) return `<div class="callout bad small" style="margin-top:10px"><b>${esc(what)}: ${esc(gapReasons(g).map(r => r.long).join("; and "))}.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. ${need.length ? (SUM.data?.rows?.status === "done" ? `The row agents have been through these rows (what they did is above) and couldn't settle them. A row picked here overrides theirs.` : busy(SUM.data?.rows?.status) ? `The row agents are working on these rows now.` : `Check each row below: pick this year's row, keep the one found, or keep last year's values on purpose (<a href="#" data-go="python" data-tab="valuation">The facts</a> shows where the DCF's cash flows come from); the figures show here once they're all settled.`) : `Pick the rows the figures' cash flows come from in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; the figures show here once enough is found.`}${g.stood_in ? ` Meanwhile last year's values stand in for ${g.stood_in.toLocaleString()} client value(s).` : ""} <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>${list}${timing}
+  if (g && g.reliable === false) return `<div class="callout bad small" id="sumGaps" style="margin-top:10px"><b>${esc(what)}: ${esc(gapReasons(g).map(r => r.long).join("; and "))}.</b>${g.rebuilt ? ` The two models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised, so rows have to be found another way.` : ""} Without them the figures would be last year's numbers under this year's name. ${need.length ? (SUM.data?.rows?.status === "done" ? `The row agents have been through these rows (what they did is above) and couldn't settle them. A row picked here overrides theirs.` : busy(SUM.data?.rows?.status) ? `The row agents are working on these rows now.` : `Check each row below: pick this year's row, keep the one found, or keep last year's values on purpose (<a href="#" data-go="python" data-tab="valuation">The facts</a> shows where the DCF's cash flows come from); the figures show here once they're all settled.`) : `Pick the rows the figures' cash flows come from in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>; the figures show here once enough is found.`}${g.stood_in ? ` Meanwhile last year's values stand in for ${g.stood_in.toLocaleString()} client value(s).` : ""} <a href="#" id="sumShowAnyway">${SUM.showAnyway ? "Hide them" : "Show them anyway"}</a>${list}${timing}
     <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
   if (!g || !g.values) return g?.rebuilt ? `<div class="callout warn small" style="margin-top:10px">The two client models share ${Math.round(g.family * 100)}% of their line items: this year's looks rebuilt rather than revised. Every value the figures read was found, but check the rows in The facts.</div>` : "";
-  return `<div class="callout warn small" style="margin-top:10px"><b>${g.values.toLocaleString()} client value(s) on ${g.rows.length}${g.rows.length >= 30 ? "+" : ""} line item(s) weren't found in this year's model</b>${g.stood_in ? `; last year's values stand in for ${g.stood_in.toLocaleString()} of them` : ""}, so "This year" is last year's model with this year's numbers where they were found. The rows the report's figures' cash flows come from, what was found for each and how, are in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>, with a picker for the right row; the rest are listed here. <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
+  return `<div class="callout warn small" id="sumGaps" style="margin-top:10px"><b>${g.values.toLocaleString()} client value(s) on ${g.rows.length}${g.rows.length >= 30 ? "+" : ""} line item(s) weren't found in this year's model</b>${g.stood_in ? `; last year's values stand in for ${g.stood_in.toLocaleString()} of them` : ""}, so "This year" is last year's model with this year's numbers where they were found. The rows the report's figures' cash flows come from, what was found for each and how, are in <a href="#" data-go="python" data-tab="valuation">Rebuild in Python → Valuation (DCF) → The facts</a>, with a picker for the right row; the rest are listed here. <details class="work" data-k="gaps" style="margin-top:6px"><summary>The line items not found</summary><div class="in"><ul class="why small">${g.rows.map(r => `<li><span class="mono">${esc(r.row)}</span> ${esc(r.label)} (${r.values} value(s)): ${esc(r.why)}</li>`).join("")}</ul></div></details></div>`;
 }
 function rollDates() {
   const r = SUM.data?.roll_plan || E.overlay?.roll, c = r?.confirmed || {};
@@ -2108,7 +2131,7 @@ function summaryCard(d) {
       <span class="row" style="margin-top:6px"><input class="in" type="date" id="sumThisVd" value="${esc(rp?.dates?.this_year || "")}" min="${esc(rp?.prior_valuation_date || "")}"><button class="btn small primary" id="sumThisVdSave">Set</button>${rp?.dates?.this_year ? `<button class="btn small ghost" id="sumThisVdClear">Clear</button>` : ""}<span class="small" id="sumThisVdMsg"></span></span></div>` : rp?.months_assumed ? `<div class="callout warn small" style="margin-top:10px">The roll-forward of ${rp.months} months is ${esc(rp.months_basis)}. Set it in <a href="#" data-go="python">Rebuild in Python → Run it live</a>.</div>` : ""; })()}
   <div class="scroll" style="margin-top:12px"><table class="sumtab"><thead><tr><th></th><th class="num">Report</th>${cols.map(c => `<th class="num">${esc(name[c])}</th>`).join("")}</tr></thead><tbody>
     <tr class="sec"><td colspan="${cols.length + 2}">Conclusions${scope(quoted(conc), r => r.cell, "rebuilt", "the overlay doesn't compute: out of the rebuild's scope, not a failure")}</td></tr>
-    ${[...quoted(conc).filter(r => r.cell), ...quoted(conc).filter(r => !r.cell)].map(r => `<tr><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
+    ${[...quoted(conc).filter(r => r.cell), ...quoted(conc).filter(r => !r.cell)].map(r => `<tr${r.cell ? ` id="sumrow-${aid(r.cell)}"` : ""}><td>${esc(r.label)}${r.page ? ` <span class="muted small">p.${r.page}</span>` : ""}</td><td class="num">${esc(r.report || "")}${r.report_low ? `<div class="rng">${esc(r.report_low)} – ${esc(r.report_high || "")}</div>` : ""}</td>${cols.map(c => cell(r, c)).join("")}</tr>`).join("")}
     ${ownRows(conc)}
     <tr class="sec"><td colspan="${cols.length + 2}">Key assumptions${scope(quoted(ass), r => r.lever, "an input in the overlay", "not an input there (the report's value, for reference)")}</td></tr>
     ${[...quoted(ass).filter(r => r.lever), ...quoted(ass).filter(r => !r.lever)].map(r => `<tr><td>${esc(r.label)}${r.basis ? `<div class="small muted">${esc(r.basis)}</div>` : ""}</td><td class="num">${esc(r.report || "")}</td>${cols.map(c => lev(r, c)).join("")}</tr>`).join("")}
@@ -2132,7 +2155,7 @@ function chartsCard(d) {
   const img = p => p ? `<div class="src-img"><a href="${imgUrl(p)}" target="_blank" rel="noopener" title="Open it full size"><img src="${imgUrl(p)}" alt="The chart in last year's report"></a></div>` : `<p class="small muted">Its data is in the file itself (no picture).</p>`;
   const body = ch.map(c => {
     const i = all.indexOf(c), v = (c.tries || []).slice(-1)[0]?.verdict, name = c.caption || c.read?.title || "Chart " + (i + 1);
-    const status = c.problem ? `<span class="pill warn">${esc(c.problem)}</span>` : c.matches ? `<span class="pill ok">✓ matches the report</span>` : `<span class="pill bad">Doesn't match</span>`;
+    const status = c.problem ? `<span class="pill" title="Not a task: what the rebuild couldn't do for this chart (Limits of the rebuild, on the Overview)">${esc(c.problem)}</span>` : c.matches ? `<span class="pill ok">✓ matches the report</span>` : `<span class="pill bad">Doesn't match</span>`;
     const how = c.read?.exact ? "values exact, from the file" : c.read ? "values read off the picture by eye (approximate)" : "";
     const notes = c.series_notes || {};
     const rows = (c.read?.series || []).map((s, k) => {
@@ -2141,7 +2164,7 @@ function chartsCard(d) {
         : `<span class="muted">${esc(notes[k] || "no matching row")}</span>`;
       return `<div class="small">${esc(s.name || "series " + (k + 1))} ${what} ${c.compare ? `<button class="btn small ghost" data-pick="${esc(c.id)}:${k}">${p ? "Change" : "Pick rows"}</button>` : ""}</div>`;
     }).join("");
-    return `<div style="margin-top:16px;border-top:1px solid var(--rule);padding-top:12px" data-chart="${esc(c.id)}"><h3 style="margin:0;font-size:15px">${esc(name)} <span class="muted small">page ${c.page} · ${esc(c.source)}</span> ${status}</h3>
+    return `<div style="margin-top:16px;border-top:1px solid var(--rule);padding-top:12px" data-chart="${esc(c.id)}" id="chart-${aid(c.id)}"><h3 style="margin:0;font-size:15px">${esc(name)} <span class="muted small">page ${c.page} · ${esc(c.source)}</span> ${status}</h3>
       ${v && !c.matches && (v.differences || []).length ? `<ul class="why small">${(v.differences || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : v ? `<p class="small muted" style="margin:4px 0 0">Checked by ${esc(v.by || "")}${(c.tries || []).length > 1 ? ` after ${c.tries.length} tries` : ""}.</p>` : ""}
       <p class="small muted" style="margin:4px 0 0">${esc(how)}</p><div style="margin-top:4px">${rows}</div>
       ${SUM.picker?.cid === c.id ? pickerHtml(c) : ""}
@@ -2209,6 +2232,7 @@ async function loadSummary() {
   if (state.step === "summary") { keepOpen($("#main"), () => { $("#main").innerHTML = viewSummary(); bindSummary(); }); if (busy(SUM.data?.charts_status) || busy(SUM.data?.rows?.status)) schedule(); }
 }
 function bindSummary() {
+  document.querySelectorAll("#sumNeeds [data-go]").forEach(b => b.onclick = () => jumpTo(b.dataset.go, b.dataset.anchor, b.dataset.tab));
   const d = SUM.data;
   if (!d) { if (!SUM.loading) loadSummary(); return; }
   if (busy(E.charts_status) !== busy(SUM.chartsSeen) || (E.charts_status === "done" && SUM.chartsSeen !== "done")) { SUM.chartsSeen = E.charts_status; loadSummary(); }
