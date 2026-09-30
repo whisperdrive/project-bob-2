@@ -134,6 +134,7 @@ tr.flash > td { background: var(--info-bg); transition: background .4s; }
 .dot { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #74747f; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; }
 .dot.done { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); }
 .dot.work { border-color: var(--blue); color: var(--blue); }
+.dot.done.flag { background: var(--warn-bg); border-color: #e0b400; color: var(--warn); }  /* done, with something for you */
 
 main { max-width: 1360px; margin: 0; padding: 22px 24px 60px; display: grid; gap: 18px; }
 .lede { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
@@ -160,6 +161,8 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12.5px; min-height:
 
 .pill { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 99px; background: var(--code-bg); color: var(--muted); white-space: nowrap; letter-spacing: .1px; }
 .pill.ok { background: var(--ok-bg); color: var(--ok); }
+button.pill { border: 1px solid currentColor; cursor: pointer; font-family: inherit; line-height: inherit; }
+button.pill:disabled { cursor: default; opacity: .6; }
 .pill.warn { background: var(--warn-bg); color: var(--warn); }
 .pill.bad { background: var(--bad-bg); color: var(--bad); }
 .pill.info { background: var(--info-bg); color: var(--info); }
@@ -558,11 +561,19 @@ function progress() {
     doctor: E.doctor_status === "done" ? "done" : (E.doctor_status ? "work" : ""),
   };
 }
+const ROLLUP = ["files", "roles", "reference", "python", "map", "compare", "summary", "bridge"];  // the Doctor is optional
+const DOT_SAYS = {done: "Done", work: "Running or partly done", "": "Not started"};
 function renderSteps() {
-  const p = progress();
-  const counts = E ? needs().reduce((a, n) => (a[n.go] = (a[n.go] || 0) + 1, a), {}) : {};
-  $("#steps").innerHTML = NAV.map(s => s.sec ? `<div class="sec">${esc(s.sec)}</div>` : `<button data-s="${s.id}" class="${state.step === s.id ? "on" : ""}" ${!E ? "disabled" : ""} ${state.step === s.id ? 'aria-current="page"' : ""}>
-      <span class="dot ${p[s.id] || ""}" aria-hidden="true">${p[s.id] === "done" ? "✓" : ""}</span><span class="nm">${esc(s.name)}</span>${counts[s.id] ? `<span class="cnt" title="${counts[s.id]} need you">${counts[s.id]}</span>` : ""}</button>`).join("");
+  const p = progress(), n = E ? needs() : [];
+  const counts = n.reduce((a, x) => (a[x.go] = (a[x.go] || 0) + 1, a), {});
+  if (E) {  // the Overview: done when every stage is and nothing needs you; its badge is everything that does
+    p.overview = ROLLUP.every(k => p[k] === "done") && !n.length ? "done" : ROLLUP.some(k => p[k]) ? "work" : "";
+    counts.overview = n.length;
+  }
+  const says = id => { const st = p[id] || "", c = counts[id] || 0;
+    return st === "done" && c ? `Done, ${c} for you` : `${DOT_SAYS[st]}${c ? `, ${c} for you` : ""}`; };
+  $("#steps").innerHTML = NAV.map(s => s.sec ? `<div class="sec">${esc(s.sec)}</div>` : `<button data-s="${s.id}" class="${state.step === s.id ? "on" : ""}" ${!E ? "disabled" : ""} ${state.step === s.id ? 'aria-current="page"' : ""} title="${esc(`${s.name}: ${E ? says(s.id) : ""}`)}">
+      <span class="dot ${p[s.id] || ""} ${p[s.id] === "done" && counts[s.id] ? "flag" : ""}" aria-hidden="true">${p[s.id] === "done" ? "✓" : ""}</span><span class="nm">${esc(s.name)}</span>${counts[s.id] ? `<span class="cnt" title="${counts[s.id]} need you">${counts[s.id]}</span>` : ""}</button>`).join("");
   $("#steps").querySelectorAll("button").forEach(b => b.onclick = () => go(b.dataset.s));
 }
 
@@ -772,14 +783,34 @@ function viewFiles() {
     <div class="card"><h2>Models</h2><p class="sub">Shared with Model Desk: a workbook uploaded in either app is processed once.</p>
     ${wbs.length ? `<div class="scroll"><table><thead><tr><th>File</th><th>Sheets</th><th>Target · valuation date</th><th>Status</th><th></th></tr></thead><tbody>
     ${wbs.map(w => `<tr><td><b>${esc(w.filename)}</b><div class="small muted">${size(w.size || 0)}${w.line_items ? ` · ${w.line_items.toLocaleString()} line items` : ""}</div></td>
-      <td class="num">${w.sheets ?? ""}</td><td class="small">${esc(w.target_name || "")}${w.status === "done" ? `<div class="row" style="gap:4px;margin-top:2px"><input type="date" class="in" data-vdwb="${w.id}" value="${esc(w.valuation_date || "")}" aria-label="Valuation date of ${esc(w.filename)}" style="padding:2px 4px;font-size:12px">${w.identity_confirmed ? `<span class="pill ok" title="Checked by you">✓</span>` : `<span class="pill warn" title="Read from the file: the roll-forward uses it, so check it">check</span>`}</div>` : w.valuation_date ? `<div class="muted">${esc(w.valuation_date)}</div>` : ""}</td>
+      <td class="num">${w.sheets ?? ""}</td><td class="small">${esc(w.target_name || "")}${w.status === "done" ? `<div class="row" style="gap:4px;margin-top:2px"><input type="date" class="in" id="vd-${w.id}" data-vdwb="${w.id}" value="${esc(w.valuation_date || "")}" aria-label="Valuation date of ${esc(w.filename)}" style="padding:2px 4px;font-size:12px">${dateCheck(w)}</div>` : w.valuation_date ? `<div class="muted">${esc(w.valuation_date)}</div>` : ""}</td>
       <td>${statusCell(w.status, w.step, w.pct, w.error, w.started_at, w.started_at && w.processed_at > w.started_at ? w.processed_at - w.started_at : w.build_secs, null)}</td>
       <td class="nowrap">${w.status === "error" ? `<button class="btn small" data-retrywb="${w.id}">Retry</button>` : ""}${w.status === "done" ? `<button class="btn small ghost" data-rebuildwb="${w.id}" title="Process it again from scratch">Rebuild</button>` : ""}${!busy(w.status) ? `<button class="btn small ghost" data-rmwb="${w.id}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No models yet.</p>`}</div>
   </div>
   ${docs.some(d => d.status === "done") && wbs.filter(w => w.status === "done").length >= 2 ? `<div class="row"><button class="btn primary" id="toRef">Next: check the report</button></div>` : ""}`;
 }
+// a workbook's valuation date: checked where the roll-forward reads it (this year's client model; last year's overlay
+// where the report gives no valuation date; last year's client model where neither does), confirmed by you or by the
+// agents' check of the evidence, or a button to confirm it as it stands
+function rollReads(w) {
+  const r = E.roles, reportVd = E.facts.some(f => f.key === "valuation_date" && f.status !== "rejected");
+  return w.id === r.current_model?.id || (!reportVd && w.id === r.prior_overlay?.id) || (!reportVd && !r.prior_overlay && w.id === r.prior_model?.id);
+}
+function dateCheck(w) {
+  if (w.identity_confirmed) return w.identity_by === "agents"
+    ? `<span class="pill ok" title="Confirmed by the agents: ${esc((w.identity_why || []).join("; "))}">✓ agents</span>`
+    : `<span class="pill ok" title="Checked by you">✓</span>`;
+  if (!rollReads(w)) return `<span class="small muted" title="The roll-forward doesn't read this workbook's date">not used</span>`;
+  const why = w.identity_check?.disagree?.length ? ` The agents didn't confirm it: ${w.identity_check.disagree.join("; ")}.` : "";
+  return `<button class="pill warn" data-vdok="${w.id}" title="Read from the file: the roll-forward uses it. Confirm it as it stands, or change it.${esc(why)}" ${w.valuation_date ? "" : "disabled"}>check · confirm</button>`;
+}
 const bind = {
   files() {
+    document.querySelectorAll("[data-vdok]").forEach(b => b.onclick = () => act(async () => {
+      const inp = document.querySelector(`[data-vdwb="${b.dataset.vdok}"]`); if (!inp?.value) return;
+      E = {...E, ...await api(`/api/engagements/${E.id}/workbooks/${b.dataset.vdok}/date`, {method: "POST", body: {valuation_date: inp.value}})};
+      SUM.data = null; OVR.sum = null; BR.data = null; toast("Valuation date confirmed");
+    }));
     document.querySelectorAll("[data-vdwb]").forEach(inp => inp.onchange = () => act(async () => {
       if (!inp.value) return;
       E = {...E, ...await api(`/api/engagements/${E.id}/workbooks/${inp.dataset.vdwb}/date`, {method: "POST", body: {valuation_date: inp.value}})};

@@ -336,7 +336,8 @@ person before the next relies on it:
    five sheets, each against the sheet it is this year, the smaller on a tie, at most two years. The new date is
    always last year's moved by the months, so the plan and the feed agree. The dates
    are read from the files each time (a date corrected in Files moves the roll without a rebuild) and can be
-   checked on the Files page; the Summary shows them and which are checked. Periods move separately from the
+   checked on the Files page: a date the roll-forward reads carries a check that confirms it as it stands (or
+   change it), and the others say they aren't used; the Summary shows them and which are checked. Periods move separately from the
    valuation date, sheet by sheet, by the whole periods that ended in between: from September to December an
    annual sheet's FY2026 is still FY2026 while a quarterly sheet moves one quarter (moving an annual sheet by
    three months would land on dates it doesn't have). Where this year's model ends its periods on the same date
@@ -545,6 +546,10 @@ assumption and not the timeline) can be held at Excel's saved value on every fee
 checked first by recomputing the figures on every feed, and a hold drops if the workbook is rebuilt and that cell
 changed. **Copy for a message** puts the diagnosis and its evidence on the clipboard as plain text.
 `tests/check_doctor.py` plants each kind of fault in the synthetic pack and checks the doctor finds it.
+
+The step list on the left marks each step as not started, running or partly done, done, or done with something
+for you (an amber tick beside its count); hovering says which. The Overview's mark sums them up: done when every
+step is and nothing needs you, and its count is everything that does.
 
 A status panel at the top of every page shows where the engagement is. Each stage appears as done, running (with
 what the agents are doing now, step by step, the review loop animated), needing you, or failed. It also shows the

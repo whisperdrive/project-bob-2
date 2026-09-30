@@ -318,6 +318,24 @@ def retry(fid: int) -> dict:
     return get(fid)
 
 
+def confirm_identity(fid: int, by: str, why: list[str] | None = None) -> dict:
+    """The valuation date as it stands, confirmed (by "you" or "agents", with why): nothing changes, so nothing is
+    compared or re-linked (set_identity does both, and the compare makes a model call)."""
+    rec = get(fid, full=True)
+    ident = (rec or {}).get("identity") or {}
+    ident["confirmed"] = {"by": by, "why": why or [], "at": time.time()}
+    _update(fid, identity_confirmed=1, identity_json=json.dumps(ident, default=str))
+    return get(fid, full=True)
+
+
+def note_identity(fid: int, **fields) -> None:
+    """Keep something about the identity with it (identity_json), e.g. the agents' check of the date."""
+    rec = get(fid, full=True)
+    ident = (rec or {}).get("identity") or {}
+    ident.update(fields)
+    _update(fid, identity_json=json.dumps(ident, default=str))
+
+
 def set_identity(fid: int, target_name: str | None, project_name: str | None, valuation_date: str | None) -> dict:
     """User confirmation / correction. Target and date decide which file is the previous version, so re-link."""
     _update(fid, target_name=target_name or None, project_name=project_name or None,

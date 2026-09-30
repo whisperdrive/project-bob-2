@@ -282,6 +282,10 @@ def get(eid: int) -> dict | None:
         w.pop("source_path", None)
         ident = w.pop("identity", None) or {}
         w["identity_notes"] = ident.get("notes")
+        conf = ident.get("confirmed") or {}
+        w["identity_by"] = conf.get("by") or ("you" if w.get("identity_confirmed") else None)
+        w["identity_why"] = conf.get("why") or []
+        w["identity_check"] = ident.get("auto_check")  # the agents' check of the date, where it didn't confirm
     out = {**e, "documents": documents(eid), "workbooks": wbs, "facts": facts(eid), "roles": roles(eid),
            "session": _session(eid), "now": time.time()}
     _auto_review(out)
@@ -345,7 +349,10 @@ def confirm_date(eid: int, fid: int, valuation_date: str) -> dict:
         raise ValueError("that workbook isn't in this engagement")
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", valuation_date or ""):
         raise ValueError("give the date as YYYY-MM-DD")
-    library.set_identity(fid, w.get("target_name"), w.get("project_name"), valuation_date)
+    if valuation_date == w.get("valuation_date"):  # right as it is: confirmed, nothing re-linked
+        library.confirm_identity(fid, "you")
+    else:
+        library.set_identity(fid, w.get("target_name"), w.get("project_name"), valuation_date)
     _touch(eid)
     return get(eid)
 
