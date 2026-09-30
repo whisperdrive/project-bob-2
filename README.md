@@ -337,7 +337,13 @@ person before the next relies on it:
    always last year's moved by the months, so the plan and the feed agree. The dates
    are read from the files each time (a date corrected in Files moves the roll without a rebuild) and can be
    checked on the Files page: a date the roll-forward reads carries a check that confirms it as it stands (or
-   change it), and the others say they aren't used; the Summary shows them and which are checked. Periods move separately from the
+   change it), and the others say they aren't used; the Summary shows them and which are checked. Before a
+   person is asked, the agents weigh this year's client model's date against what the files already hold (no
+   model calls): another cell labelled like a valuation date holding it, a month and year in the file name ("Jun
+   26"; a date stamp in digits is when it was saved, and doesn't count), a year after last year's valuation date,
+   and the model's own financial-year end. Two or more agreeing and nothing disagreeing (another date in the file
+   name, a date not after last year's, a cell labelled exactly as the valuation date holding another) confirms it
+   as the agents'; otherwise the check says what disagreed. Periods move separately from the
    valuation date, sheet by sheet, by the whole periods that ended in between: from September to December an
    annual sheet's FY2026 is still FY2026 while a quarterly sheet moves one quarter (moving an annual sheet by
    three months would land on dates it doesn't have). Where this year's model ends its periods on the same date

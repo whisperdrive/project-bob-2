@@ -277,6 +277,8 @@ def get(eid: int) -> dict | None:
     for k in ("roles_suggested", "compare_json", "map_json", "overlay_json", "profile_json", "schedule_json"):
         e[k.removesuffix("_json")] = json.loads(e.pop(k) or "null")
     wbs = workbooks(eid)
+    if _agents_check_dates(eid, wbs):
+        wbs = workbooks(eid)
     for w in wbs:
         w.pop("db_path", None)
         w.pop("source_path", None)
@@ -340,6 +342,102 @@ def add_upload(eid: int, tmp: Path, filename: str, sha: str) -> dict:
     _touch(eid)
     _jobs.put(("doc", did))
     return {"status": "queued", "kind": "document", "id": did, "filename": filename}
+
+
+# ---- this year's valuation date, checked by the agents ---------------------------------------------------------
+# identify.py reads a workbook's valuation date off one cell. Before a person is asked to check it, the agents weigh
+# the evidence the files already hold (no model calls): other cells labelled like it, the file name, a year on from
+# last year's valuation date, the model's own financial-year end. Confirmed when two or more agree and none
+# disagrees; otherwise the person is asked, and told why.
+
+_DATE_CHECKED: set = set()  # (workbook, date, last year's): weighed in this run
+_MONTH = r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+_FILE_MONTH = re.compile(rf"(?i)(?<![a-z]){_MONTH}(?![a-z])[\s_.-]*(\d{{4}}|\d{{2}})(?!\d)")
+
+
+def _file_months(name: str) -> set[tuple[int, int]]:
+    """(year, month) a file name gives in words ("Jun 26", "Jun-26", "June 2026"): a date stamp in digits
+    (20260521) is when the file was saved, not its valuation date, so it doesn't count."""
+    out = set()
+    for m in _FILE_MONTH.finditer(name or ""):
+        y = int(m[2])
+        out.add((y + 2000 if y < 100 else y, [x[:3] for x in (s.lower() for s in MONTHS)].index(m[1][:3].lower()) + 1))
+    return out
+
+
+def _year_on(iso: str) -> str:
+    """A date a year later, a month's end kept at the month's end."""
+    import calendar
+    y, m, d = map(int, iso[:10].split("-"))
+    last = d == calendar.monthrange(y, m)[1]
+    return f"{y + 1:04d}-{m:02d}-{calendar.monthrange(y + 1, m)[1] if last else min(d, calendar.monthrange(y + 1, m)[1]):02d}"
+
+
+def _date_evidence(eid: int, w: dict, cited: str | None) -> dict:
+    """What agrees and what disagrees with a workbook's valuation date, besides the cell identify cited:
+    {"agree": [...], "disagree": [...]}. A row whose label names another date ("roll forward to 30/9/2025") counts
+    neither way; the financial-year end counts only where the model shows it or a person set it (the profile's
+    fallback is last year's valuation date's month, which the year-on test already weighs)."""
+    import calendar
+    import chartdata
+    import identify
+    date = w["valuation_date"]
+    y, m, d = map(int, date.split("-"))
+    agree, disagree = [], []
+    others = [x for x in identify.candidates(w["db_path"])["valuation_date"] if x["where"] != cited]
+    same = [x for x in others if x["value"] == date]
+    if same:
+        agree.append(f"{same[0]['where']} ({same[0]['why']}) holds it too" + (f", and {len(same) - 1} more" if len(same) > 1 else ""))
+    against = [x for x in others if x.get("rank", 1) <= 1 and x.get("value") and x["value"] != date]
+    if against:
+        disagree.append(f"{against[0]['where']} ({against[0]['why']}) holds {against[0]['value']}")
+    months = _file_months(w["filename"])
+    if (y, m) in months:
+        agree.append(f"the file name says {MONTHS[m - 1][:3]} {y}")
+    elif months:
+        disagree.append("the file name says " + ", ".join(f"{MONTHS[mm - 1][:3]} {yy}" for yy, mm in sorted(months)))
+    prior = _prior_vd(eid)
+    if prior and date <= prior[:10]:
+        disagree.append(f"not after last year's valuation date ({prior[:10]})")
+    elif prior and date == _year_on(prior):
+        agree.append(f"a year after last year's valuation date ({prior[:10]})")
+    fy = _profile(eid).get("fy_end_month")
+    if not fy:
+        with closing(rodb.connect(w["db_path"])) as db:
+            fy, _ = chartdata.fy_end_detect(db)
+    if fy and m == fy and d == calendar.monthrange(y, m)[1]:
+        agree.append(f"the model's financial year ends in {MONTHS[fy - 1]}")
+    return {"agree": agree, "disagree": disagree}
+
+
+def _agents_check_dates(eid: int, wbs: list[dict]) -> bool:
+    """This year's client model's valuation date, weighed once per date and last year's date (in this run, and kept
+    with the workbook's identity across a restart): confirmed by the agents where two or more signals agree and
+    none disagrees. Waits for last year's valuation date: without it a model's own stale date can't be told.
+    True if it confirmed one."""
+    cur = roles(eid).get("current_model") or {}
+    w = next((x for x in wbs if x["id"] == cur.get("id") and cur.get("kind") == "workbook"), None)
+    if not w or w.get("status") != "done" or w.get("identity_confirmed") or not w.get("valuation_date") or not w.get("db_path"):
+        return False
+    prior = _prior_vd(eid)
+    key = (w["id"], w["valuation_date"], prior)
+    if not prior or key in _DATE_CHECKED:
+        return False
+    _DATE_CHECKED.add(key)
+    ident = (library.get(w["id"], full=True) or {}).get("identity") or {}
+    done = ident.get("auto_check") or {}
+    if (done.get("date"), done.get("prior")) == (w["valuation_date"], prior):
+        return False
+    try:
+        ev = _date_evidence(eid, w, ident.get("valuation_date_evidence"))
+    except Exception:  # the check is a bonus: the person is asked as before
+        traceback.print_exc()
+        return False
+    library.note_identity(w["id"], auto_check={"date": w["valuation_date"], "prior": prior, **ev, "at": time.time()})
+    if len(ev["agree"]) >= 2 and not ev["disagree"]:
+        library.confirm_identity(w["id"], "agents", ev["agree"])
+        return True
+    return False
 
 
 def confirm_date(eid: int, fid: int, valuation_date: str) -> dict:

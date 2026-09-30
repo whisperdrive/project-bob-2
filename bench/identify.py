@@ -55,7 +55,16 @@ def _resolve(db, ref: str):
 
 
 def candidates(db_path: str) -> dict:
+    """The cells that may hold a workbook's valuation date and target name, best first. The model.db is closed
+    after: Windows won't rebuild a file something still holds open."""
     db = rodb.connect(db_path)
+    try:
+        return _candidates(db)
+    finally:
+        db.close()
+
+
+def _candidates(db) -> dict:
     dates, texts, other_dates = [], [], []
     for name, ref in db.execute("SELECT name, ref FROM names"):
         hit = _resolve(db, ref)

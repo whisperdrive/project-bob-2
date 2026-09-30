@@ -9,6 +9,9 @@
 - A fact's number is worked out by code from its text: none for a name holding digits or a range without a
   preferred point. Stored facts are brought up to date once, and one handed to a person whose number changed goes
   back to the loop.
+- This year's valuation date is confirmed by the agents where the files agree on it (another cell labelled like it,
+  the file name, a year after last year's), not where anything disagrees (the file name, a date not after last
+  year's); a row naming another date counts neither way, and the profile's fallback year end isn't counted twice.
 - Retrying a workbook that failed lets go of the live Python overlays reading its model.db first, as a rebuild does
   (Windows won't delete an open file, so a retry without it failed every time).
 
@@ -118,6 +121,53 @@ def main() -> None:
     numbers_check(eid, tmp)
     retry_check()
     profile_check(eid)
+    date_check(tmp)
+
+
+def date_check(tmp: Path) -> None:
+    import build_map
+    import library
+    import xlsxwriter
+    from datetime import date
+    path = tmp / "model.xlsx"
+    wb = xlsxwriter.Workbook(path)
+    dt = wb.add_format({"num_format": "dd-mmm-yy"})
+    val, log = wb.add_worksheet("Val"), wb.add_worksheet("Log")
+    val.write(19, 1, "Valuation Date")
+    val.write_datetime(19, 3, date(2026, 6, 30), dt)
+    val.write(24, 1, "Roll forward valuation date (to 30/9/2025)")  # names another date: counts neither way
+    val.write_datetime(24, 3, date(2025, 9, 30), dt)
+    log.write(89, 1, "Update valuation date")
+    log.write_datetime(89, 3, date(2026, 6, 30), dt)
+    wb.close()
+    db = build_map.main(str(path), str(tmp / "model_db"))["db"]
+    was = engagement._prior_vd, engagement._profile, engagement.roles, library.get, library.note_identity, library.confirm_identity
+    engagement._prior_vd, engagement._profile = (lambda eid: "2025-06-30"), (lambda eid: {})
+    try:
+        w = {"id": 7, "status": "done", "identity_confirmed": 0, "valuation_date": "2026-06-30", "db_path": db,
+             "filename": "Model_Jun 26.xlsx"}
+        ev = engagement._date_evidence(1, w, "Val!D20")
+        assert len(ev["agree"]) == 3 and not ev["disagree"], ev  # the other cell, the file name, a year on; no year end
+        assert engagement._date_evidence(1, {**w, "filename": "Model_Dec 25.xlsx"}, "Val!D20")["disagree"]
+        assert not engagement._date_evidence(1, {**w, "filename": "20260521_Model.xlsx"}, "Val!D20")["disagree"], \
+            "a date stamp in digits is when the file was saved: neither way"
+        engagement._prior_vd = lambda eid: "2026-06-30"
+        assert any("not after" in x for x in engagement._date_evidence(1, w, "Val!D20")["disagree"])
+        # the whole check: confirmed by the agents, once
+        engagement._prior_vd = lambda eid: "2025-06-30"
+        calls = []
+        engagement.roles = lambda eid: {"current_model": {"kind": "workbook", "id": 7}}
+        library.get = lambda fid, full=False: {"identity": {"valuation_date_evidence": "Val!D20"}}
+        library.note_identity = lambda fid, **k: calls.append(("note", k["auto_check"]["agree"]))
+        library.confirm_identity = lambda fid, by, why=None: calls.append((by, why))
+        assert engagement._agents_check_dates(1, [w]) is True and calls[-1][0] == "agents" and len(calls[-1][1]) == 3
+        assert engagement._agents_check_dates(1, [w]) is False, "weighed once per date"
+        assert engagement._agents_check_dates(2, [{**w, "identity_confirmed": 1}]) is False, "a confirmed date is left alone"
+    finally:
+        engagement._prior_vd, engagement._profile, engagement.roles, library.get, library.note_identity, \
+            library.confirm_identity = was
+    print("date: ok (confirmed by the agents on three agreeing signals; a file name or a date not after last year's "
+          "says otherwise; a row naming another date and the fallback year end count neither way)")
 
 
 def profile_check(eid: int) -> None:
