@@ -119,10 +119,51 @@ def outside(facts: list[dict], schedule: list[dict], levers: list[dict] | None =
 
 
 def apply(schedule: list[dict], mine: dict) -> list[dict]:
-    """A person's classes over the detected ones ({"classes": {"Sheet!r12": "working"}})."""
+    """The classes as they stand: a person's ({"classes": {"Sheet!r12": "working"}}), else those carried from last
+    year's confirmed schedule (mine["carried"]["classes"]), else the detected ones. Each output says which ("source":
+    "you" | "carried" | "detected") and, where a schedule was carried, whether it's new this year."""
     classes = mine.get("classes") or {}
+    carried = (mine.get("carried") or {}).get("classes")
     out = []
     for o in schedule:
-        set_ = classes.get(o["row"])
-        out.append({**o, "detected": o["class"], "class": set_ if set_ in CLASSES else o["class"], "set": set_ in CLASSES})
+        set_, got = classes.get(o["row"]), (carried or {}).get(o["row"])
+        cls, source = (set_, "you") if set_ in CLASSES else (got, "carried") if got in CLASSES else (o["class"], "detected")
+        out.append({**o, "detected": o["class"], "class": cls, "set": source == "you", "source": source,
+                    **({"new": o["row"] not in carried} if carried is not None else {})})
     return out
+
+
+def carry(previous: list[dict], old_db: str, new_db: str, sheets: list[str]) -> dict:
+    """Last year's confirmed schedule onto this year's overlay: each of its outputs found again by its label (the
+    same label on the same sheet, its n-th occurrence, else the nearest of its rows: overlay.RowMap), with the class
+    it ended with. A row found only by its place (its label gone) isn't followed: another line item may sit there
+    now. Nor is one on a sheet that isn't an overlay sheet this year, or one a second row of last year's already
+    took. -> {"classes": {this year's row: class}, "missing": [{row, label, class, why}]}."""
+    import overlay as ovmod
+    a, b = ovmod.Workbook(old_db), ovmod.Workbook(new_db)
+    try:
+        rm = ovmod.RowMap(a, b)
+        classes, taken, missing = {}, {}, []
+        for o in previous:
+            m = re.match(r"^(.+)!r(\d+)$", o["row"])
+            if not m:
+                continue
+            s, r = m[1], int(m[2])
+            why = None
+            if s not in sheets:
+                why = f"sheet {s} isn't an overlay sheet this year"
+            else:
+                r2, how = rm.match(s, r)
+                if not r2 or not how.startswith("same label"):
+                    why = "its label isn't on the sheet this year"
+                elif f"{s}!r{r2}" in taken:
+                    why = f"{s}!r{r2} already took last year's {taken[f'{s}!r{r2}']}"
+                else:
+                    taken[f"{s}!r{r2}"] = o["row"]
+                    classes[f"{s}!r{r2}"] = o["class"]
+            if why:
+                missing.append({"row": o["row"], "label": o.get("label"), "class": o["class"], "why": why})
+        return {"classes": classes, "missing": missing}
+    finally:
+        a.close()
+        b.close()

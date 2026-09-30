@@ -360,6 +360,15 @@ async def get_schedule(eid: int):
     return await _run(engagement.schedule_view, eid)
 
 
+class CarryFrom(BaseModel):
+    engagement: int  # the engagement whose confirmed schedule to carry
+
+
+@app.post("/api/engagements/{eid}/schedule/carry")
+async def carry_schedule(eid: int, body: CarryFrom):
+    return await _run(engagement.carry_schedule, eid, body.engagement)
+
+
 @app.put("/api/engagements/{eid}/schedule")
 async def put_schedule(eid: int, body: Schedule):
     return await _run(engagement.set_schedule, eid, body.classes, body.outside, body.confirm)

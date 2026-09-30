@@ -12,6 +12,8 @@
 - This year's valuation date is confirmed by the agents where the files agree on it (another cell labelled like it,
   the file name, a year after last year's), not where anything disagrees (the file name, a date not after last
   year's); a row naming another date counts neither way, and the profile's fallback year end isn't counted twice.
+- Last year's engagement is found through the overlay's earlier versions: the nearest with a confirmed schedule,
+  an unconfirmed one skipped.
 - Retrying a workbook that failed lets go of the live Python overlays reading its model.db first, as a rebuild does
   (Windows won't delete an open file, so a retry without it failed every time).
 
@@ -122,6 +124,78 @@ def main() -> None:
     retry_check()
     profile_check(eid)
     date_check(tmp)
+    link_check()
+    carry_check(tmp)
+
+
+def carry_check(tmp: Path) -> None:
+    """The carry on the engagement: last year's classes onto this year's rows, and its outside-the-model marks for
+    the figures still on no output or input this year (a figure now on a lever loses its mark)."""
+    import sqlite3
+    import build_map
+    import outputs
+    import xlsxwriter
+
+    def overlay(name, labels):
+        path = tmp / f"{name}.xlsx"
+        wb = xlsxwriter.Workbook(path)
+        ws = wb.add_worksheet("Out")
+        for i, label in enumerate(labels):
+            ws.write(4 + i, 1, label)
+            ws.write_formula(4 + i, 3, "=1+1", None, 2.0)
+        wb.close()
+        return build_map.main(str(path), str(tmp / f"{name}_db"))["db"]
+    last = overlay("glue_last", ["Equity value", "Low", "Selected valuation"])
+    now = overlay("glue_now", ["Opening note", "Equity value", "Low", "Selected valuation"])
+    src, dst = (engagement.create(n)["id"] for n in ("Asset B, FY25", "Asset B, FY26"))
+    engagement._set("engagements", src, schedule_json=json.dumps(
+        {"confirmed_at": 1, "classes": {"Out!r6": "conclusion"}, "outside": ["net_debt", "ev_multiple"]}))
+    engagement._SCHEDULES[dst] = (None, outputs.detect(sqlite3.connect(now), ["Out"]))
+    summary = {"wiring": {"overlay": {"db_path": now}}, "sheets": ["Out"], "outputs": [],
+               "levers": [{"key": "ev_multiple", "cell": "Out!D5"}]}  # this year the multiple is an input
+    facts = [{"key": k, "category": "conclusion", "label": k, "value_text": "1.0"} for k in ("net_debt", "ev_multiple")]
+    was = engagement._role_wb, engagement.schedule_view, engagement.reference
+    engagement._role_wb = lambda eid, role: {"id": 1, "db_path": last}
+    engagement.schedule_view = lambda eid: {"outputs": outputs.apply(outputs.detect(sqlite3.connect(last), ["Out"]),
+                                                                     engagement._schedule(src))}
+    engagement.reference = lambda eid: facts
+    try:
+        mine = engagement._carry(dst, src, summary)
+    finally:
+        engagement._role_wb, engagement.schedule_view, engagement.reference = was
+    c = mine["carried"]
+    assert c["from"] == src and c["classes"]["Out!r7"] == "conclusion" and not c["missing"], c
+    assert mine["outside"] == ["net_debt"] and c["outside_dropped"] == ["ev_multiple"], mine
+    assert not mine.get("confirmed_at"), "carried, not confirmed: the person looks at what's new first"
+    try:
+        engagement._carry(src, src, summary)
+        raise AssertionError("carried its own schedule")
+    except ValueError:
+        pass
+    print("carry: ok (last year's classes onto this year's rows; its outside marks for figures still outside; "
+          "not confirmed until a person looks)")
+
+
+def link_check() -> None:
+    import library
+    a, b, c = (engagement.create(n)["id"] for n in ("Asset A, FY25", "Asset A, FY26", "Asset A, FY24"))
+    for eid, fid in ((a, 19), (b, 20), (c, 18)):
+        engagement._exec("INSERT INTO roles VALUES (?,?,?,?,?,?,1)", eid, "prior_overlay", "workbook", fid, "null", "[]")
+    was = library.get, engagement._role_wb
+    chain = {20: 19, 19: 18, 18: None}  # this year's overlay, an earlier version of it, and one before that
+    library.get = lambda fid, full=False: {"id": fid, "previous_id": chain.get(fid)}
+    engagement._role_wb = lambda eid, role: {"id": {a: 19, b: 20, c: 18}[eid]}
+    try:
+        assert engagement._schedule_source(b) is None, "no confirmed schedule: nothing to carry"
+        engagement._set("engagements", c, schedule_json='{"confirmed_at": 1}')
+        assert engagement._schedule_source(b) == c, "the confirmed one further back"
+        engagement._set("engagements", a, schedule_json='{"confirmed_at": 2}')
+        assert engagement._schedule_source(b) == a, "the nearest confirmed one"
+        assert {e["id"] for e in engagement._schedule_sources(b)["engagements"]} == {a, c}
+        assert engagement._schedule_source(a) == c and engagement._schedule_source(c) is None
+    finally:
+        library.get, engagement._role_wb = was
+    print("link: ok (last year's engagement through the overlay's earlier versions: the nearest confirmed schedule)")
 
 
 def date_check(tmp: Path) -> None:

@@ -19,6 +19,9 @@ this year's model with rows inserted, renamed, restructured and a sheet renamed.
   unlabelled    a row with no label found by its numbers
   schedule      the overlay's own outputs, whether or not the report quotes them: its figures and the rows of
                 periods nothing reads, classified (the report's figure where it sits, values, rates), not its inputs
+  carry         last year's confirmed schedule onto this year's overlay: each output found again by its label, a
+                row whose label is gone not followed to whatever sits at its number now, new rows flagged, a
+                person's own class winning over the carried one
   horizon       a model that ends where last year's did (a fixed horizon): the periods stay, only the valuation
                 date moves; one whose horizon rolled on moves its periods as before
   layout        a model of mostly unlabelled rows: found at their own row numbers where the layout is unchanged;
@@ -65,6 +68,7 @@ def main() -> None:
     v = summary["validation"]
     assert v["matched"] == v["cells"], v["mismatches"][:3]
     schedule_check(summary)
+    carry_check(out)
 
     # ---- facts
     fx = ov.deep(dcffacts.facts, sess, summary, "Report!C5")
@@ -543,6 +547,48 @@ def schedule_check(summary: dict) -> None:
     n = {c: sum(o["class"] == c for o in got) for c in outputs.CLASSES}
     print(f"schedule: ok ({len(got)} outputs of the overlay: {n['conclusion']} conclusion(s), {n['assumption']} "
           f"assumption(s), {n['working']} working(s); the report's figure where it sits; inputs left out)")
+
+
+def carry_check(out: Path) -> None:
+    import sqlite3
+    import xlsxwriter
+    import outputs
+
+    def overlay(name, rows):  # [(label, formula values)] from row 5 down; one to three formulas is a figure
+        path = out / f"{name}.xlsx"
+        wb = xlsxwriter.Workbook(path)
+        ws = wb.add_worksheet("Out")
+        for i, (label, vals) in enumerate(rows):
+            ws.write(4 + i, 1, label)
+            for k, v in enumerate(vals):
+                ws.write_formula(4 + i, 3 + k, f"={v}+0", None, v)
+        wb.close()
+        return build_map.main(str(path), str(out / f"{name}_db"))["db"]
+    last = overlay("carry_last", [("Equity value", [100.0]), ("Low", [90.0]), ("Selected valuation", [95.0]),
+                                  ("Mid", [92.0]), ("Bridge adjustment", [5.0])])
+    # four of five labels where they were: laid out as before, so the row map would take row 9 by its number
+    same_layout = overlay("carry_renamed", [("Equity value", [110.0]), ("Low", [99.0]), ("Selected valuation", [104.0]),
+                                            ("Mid", [101.0]), ("Another adjustment", [6.0])])
+    moved = overlay("carry_moved", [("Opening note", [1.0]), ("Equity value", [110.0]), ("Low", [99.0]),
+                                    ("Selected valuation", [104.0]), ("Mid", [101.0]), ("Net debt bridge", [7.0])])
+    confirmed = outputs.apply(outputs.detect(sqlite3.connect(last), ["Out"]), {"classes": {"Out!r6": "conclusion"}})
+    got = outputs.carry(confirmed, last, moved, ["Out"])
+    assert got["classes"]["Out!r7"] == "conclusion" and got["classes"]["Out!r6"] == "conclusion", got["classes"]
+    assert [m["row"] for m in got["missing"]] == ["Out!r9"], got["missing"]  # "Bridge adjustment" is gone
+    import overlay as ovm
+    assert ovm.RowMap(ovm.Workbook(last), ovm.Workbook(same_layout)).match("Out", 9)[1].startswith("same row")
+    got2 = outputs.carry(confirmed, last, same_layout, ["Out"])
+    assert "Out!r9" not in got2["classes"] and got2["missing"][0]["why"].startswith("its label isn't"), \
+        "a row whose label is gone isn't followed to the row now at its number"
+    assert outputs.carry(confirmed, last, moved, ["Elsewhere"])["missing"][0]["why"].startswith("sheet Out isn't")
+    now = outputs.detect(sqlite3.connect(moved), ["Out"])
+    mine = outputs.apply(now, {"carried": got, "classes": {"Out!r6": "working"}})
+    by = {o["row"]: o for o in mine}
+    assert by["Out!r7"]["source"] == "carried" and by["Out!r7"]["class"] == "conclusion" and not by["Out!r7"]["new"]
+    assert by["Out!r6"]["source"] == "you" and by["Out!r6"]["class"] == "working", "a person's own class wins"
+    assert by["Out!r10"]["new"] and by["Out!r10"]["source"] == "detected", "a row that wasn't there last year is new"
+    print("carry: ok (a class carried to its moved row; a gone label missing, not followed to its old number; new "
+          "rows flagged; a person's own class wins)")
 
 
 def horizon_check(out: Path) -> None:

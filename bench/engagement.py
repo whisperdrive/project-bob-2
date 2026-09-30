@@ -1693,12 +1693,87 @@ def schedule_view(eid: int) -> dict:
             _SCHEDULES[eid] = (key, outmod.detect(db, summary.get("sheets") or [], summary.get("levers"),
                                                   summary.get("outputs"), anchors))
     mine = _schedule(eid)
+    if not any(mine.get(k) for k in ("classes", "outside", "confirmed_at", "carried")):
+        src = _schedule_source(eid)  # a new schedule, and last year's engagement confirmed one: carried, once
+        if src:
+            try:
+                mine = _carry(eid, src, summary)
+            except Exception:  # a carry that fails leaves the detected schedule, and the button to try again
+                traceback.print_exc()
     sched = outmod.apply(_SCHEDULES[eid][1], mine)
     marked = set(mine.get("outside") or [])
     out = outmod.outside(reference(eid), sched, summary.get("levers"))
     return {"outputs": sched, "outside": [{**f, "marked": f["key"] in marked} for f in out],
             "counts": dict(Counter(o["class"] for o in sched)), "confirmed_at": mine.get("confirmed_at"),
-            "changed_at": mine.get("changed_at")}
+            "changed_at": mine.get("changed_at"), "carried": {k: v for k, v in (mine.get("carried") or {}).items() if k != "classes"} or None,
+            "sources": _schedule_sources(eid)}
+
+
+# ---- carrying a confirmed schedule into next year's engagement ---------------------------------------------------
+
+def _chain(fid: int, steps: int = 5) -> list[int]:
+    """A workbook and its earlier versions (library previous_id), nearest first."""
+    out = [fid]
+    for _ in range(steps):
+        prev = (library.get(out[-1]) or {}).get("previous_id")
+        if not prev or prev in out:
+            break
+        out.append(prev)
+    return out
+
+
+def _schedule_source(eid: int) -> int | None:
+    """Last year's engagement: the nearest whose prior overlay is this one's overlay or an earlier version of it
+    (the library links versions of one workbook), with a confirmed schedule."""
+    ov = _role_wb(eid, "prior_overlay")
+    for fid in _chain(ov["id"]) if ov else []:
+        for r in _q("SELECT engagement_id FROM roles WHERE role='prior_overlay' AND kind='workbook' AND ref_id=? "
+                    "AND engagement_id != ?", fid, eid):
+            if _schedule(r["engagement_id"]).get("confirmed_at"):
+                return r["engagement_id"]
+    return None
+
+
+def _schedule_sources(eid: int) -> dict:
+    """For carrying by hand: the linked engagement, and every other one with a confirmed schedule."""
+    linked = _schedule_source(eid)
+    others = [{"id": r["id"], "name": r["name"]} for r in _q("SELECT id, name, schedule_json FROM engagements WHERE id != ?", eid)
+              if (json.loads(r["schedule_json"] or "null") or {}).get("confirmed_at")]
+    return {"linked": linked, "engagements": others}
+
+
+def _carry(eid: int, src: int, summary: dict) -> dict:
+    """Carry engagement src's confirmed schedule into this one (outputs.carry): its classes, as carried (a person's
+    own classes here still win), and its outside-the-model marks for figures still on no output or input this year.
+    Returns the schedule as it now stands; nothing is confirmed: the person looks at what's new, then confirms."""
+    import outputs as outmod
+    if src == eid:
+        raise ValueError("an engagement can't carry its own schedule")
+    theirs = _schedule(src)
+    if not theirs.get("confirmed_at"):
+        raise ValueError("that engagement hasn't confirmed its schedule")
+    ov_src = _role_wb(src, "prior_overlay")
+    if not ov_src or not ov_src.get("db_path"):
+        raise ValueError("that engagement's overlay isn't available")
+    got = outmod.carry(schedule_view(src)["outputs"], ov_src["db_path"], summary["wiring"]["overlay"]["db_path"],
+                       summary.get("sheets") or [])
+    mine = _schedule(eid)
+    here = {f["key"] for f in outmod.outside(reference(eid), outmod.apply(_SCHEDULES[eid][1], mine), summary.get("levers"))}
+    kept = [k for k in theirs.get("outside") or [] if k in here]
+    name = (_q("SELECT name FROM engagements WHERE id=?", src) or [{}])[0].get("name")
+    mine["carried"] = {"from": src, "name": name, "at": time.time(), "classes": got["classes"], "missing": got["missing"],
+                       "outside": kept, "outside_dropped": [k for k in theirs.get("outside") or [] if k not in here]}
+    mine["outside"] = sorted(set(mine.get("outside") or []) | set(kept))
+    _set("engagements", eid, schedule_json=json.dumps(mine), updated_at=time.time())
+    return mine
+
+
+def carry_schedule(eid: int, src: int) -> dict:
+    """Carry a confirmed schedule from another engagement by hand (again, or from one not linked)."""
+    schedule_view(eid)  # this year's detected schedule, worked out
+    rows = _q("SELECT overlay_json FROM engagements WHERE id=?", eid)
+    _carry(eid, int(src), json.loads(rows[0]["overlay_json"]))
+    return schedule_view(eid)
 
 
 def _schedule_rows(eid: int) -> list[dict]:
