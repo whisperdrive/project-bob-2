@@ -587,7 +587,8 @@ move the rate the discountings under the figures use (read back from their facto
 report's rate, the lever's and the discountings' side by side with their labels: rates on different bases can
 rightly differ, but a scenario on a lever that moves nothing means nothing. Where those cells and one holding the
 report's rate sit on one row (a low, mid and high: figures that average the values at a low and a high rate), the
-Summary describes the range, which cell the report quotes, and which of the discountings' rates the lever moves.
+Summary describes the range, which cell the report quotes, and which of the discountings' rates the lever moves;
+the scenario's discount rate then moves the whole range together, each of its rates by the same amount.
 A lever is bound to the cell holding the report's own figure before one holding the low or high end of its range. The row agents' record counts the
 rows still open from the gate as it is now, and is marked out of date after a rebuild, a workbook built again,
 or a newer row finder.

@@ -2058,6 +2058,8 @@ function priorFeedOff() {
   const file = E.workbooks.find(w => w.id === E.roles.prior_model?.id)?.filename || "the file assigned as last year's client model";
   return {file, moved, text: `Last year's overlay ties the report as saved (${moved.slice(0, 2).map(o => `${o.label} ${o.report}`).join(", ")}), but fed from ${file} it gives ${moved.slice(0, 2).map(o => fmt(o.fed, 1)).join(", ")}${moved.length > 1 ? `: ${moved.length} conclusions don't tie on last year's model for this one reason` : ""}`};
 }
+// the rate a range's lever shows: the report's cell, else the middle of the range
+const rangeMid = rc => rc.range.find(c => c.cell === rc.report_at) || rc.range[Math.floor(rc.range.length / 2)];
 // the discount rate three ways where they don't agree (overlay._rate_check): the report's, the lever's and the one the
 // discountings use; different bases can rightly differ, but a lever that doesn't move the discountings moves nothing
 function rateNote(t) {
@@ -2066,7 +2068,7 @@ function rateNote(t) {
   const at = c => `${pc(c.value)} in <span class="mono">${esc(c.cell)}</span>${c.label ? ` (${esc(c.label)})` : ""}`;
   const used = x.dcf.map(c => `<span class="mono">${esc(c.cell)}</span>`).join(" and "), moves = x.moves || [];
   const lever = x.lever ? `The lever is ${at(x.lever)}: changing it moves ${moves.length ? `${moves.map(c => `<span class="mono">${esc(c)}</span>`).join(" and ")} only, not ${x.dcf.filter(c => !moves.includes(c.cell)).map(c => `<span class="mono">${esc(c.cell)}</span>`).join(" and ")}` : "none of them, so a scenario on it changes nothing"}.` : "No lever was found for it.";
-  if (x.range) return `<div class="callout info small" style="margin-top:10px"><b>The discount rate is a range:</b> ${x.range.map(c => `${pc(c.value)} (<span class="mono">${esc(c.cell)}</span>)`).join(" · ")}. The report quotes ${esc(x.report?.value || "?")}${x.report_at ? ` (<span class="mono">${esc(x.report_at)}</span>)` : ""}${x.report?.basis ? `, ${esc(x.report.basis)}` : ""}; the discountings under the figures use ${used}. ${lever} A change to the rate has to move the range's ends together: change both in <a href="#" data-go="python">Rebuild in Python → Run it live</a>, where any input can be changed.</div>`;
+  if (x.range) return `<div class="callout info small" style="margin-top:10px"><b>The discount rate is a range:</b> ${x.range.map(c => `${pc(c.value)} (<span class="mono">${esc(c.cell)}</span>)`).join(" · ")}. The report quotes ${esc(x.report?.value || "?")}${x.report_at ? ` (<span class="mono">${esc(x.report_at)}</span>)` : ""}${x.report?.basis ? `, ${esc(x.report.basis)}` : ""}; the discountings under the figures use ${used}. ${lever} The scenario's discount rate moves the whole range together, each rate by the same amount.</div>`;
   if (moves.length) return `<div class="callout info small" style="margin-top:10px"><b>The discount rate:</b> the discountings under the figures use ${x.dcf.map(at).join(", ")}. ${lever}</div>`;
   return `<div class="callout warn small" style="margin-top:10px"><b>The discount rate three ways:</b> the report's ${esc(x.report?.value || "?")}${x.report?.basis ? ` (${esc(x.report.basis)})` : ""}; ${x.lever ? `the lever ${at(x.lever)}` : "no lever found for it"}; the discountings under the figures use ${x.dcf.map(at).join(", ")} (read back from their discount factors). ${x.lever ? "Changing the lever doesn't move the rate the discountings use, so a scenario on it changes nothing." : ""} Rates on different bases can rightly differ (a WACC, and a cost of equity for equity cash flows): check which cell is the rate before reading a rate scenario.</div>`;
 }
@@ -2116,7 +2118,12 @@ function summaryCard(d) {
     const moves = col === "rebuilt" && r.feed_moves ? ` <span class="small bad-text" title="Fed from the file assigned as last year's client model, the overlay doesn't give what Excel saved: that file isn't the version the overlay was built on">moves</span>` : "";
     return `<td class="num">${r.cell ? `<b>${sumNum(r, v)}</b>${col === "saved" ? tick(r) : ""}${moves}${lo != null || hi != null ? `<div class="rng">${sumNum(r, lo)} – ${sumNum(r, hi)}</div>` : ""}${delta}${zero}` : `<span class="muted small">${r.outside || outside.has(r.key) ? "outside the model" : "not in the overlay"}</span>`}</td>`;
   };
+  const R = r => r.key === "discount_rate" && t.rate_check?.range?.length ? t.rate_check.range : null;  // a low / mid / high
   const lev = (r, col) => {
+    if (col === "scenario" && R(r)) {  // the range moves together: each of its rates by the same amount
+      const at = rangeMid(t.rate_check), shift = SUM.changes[at.cell] !== undefined ? SUM.changes[at.cell] - at.value : 0;
+      return `<td class="num"><input type="text" data-sumrange value="${esc(+((at.value + shift) * 100).toPrecision(12))}" aria-label="${esc(r.label)}, the range's ${esc(at.cell)}"> %<div class="small muted" title="Each of the range's rates moves by the same amount">moves ${R(r).map(c => `${+((c.value + shift) * 100).toFixed(3)}%`).join(" · ")} together</div></td>`;
+    }
     const l = r.lever; if (!l) return `<td class="num muted small">${col === "scenario" ? "" : "–"}</td>`;
     const v = r.values?.[col];
     if (col !== "scenario" || l.key === "valuation_date" || l.unit === "date") return `<td class="num">${esc(leverShown(l, v))}${l.unit === "%" && typeof v === "number" ? " %" : ""}</td>`;
@@ -2258,6 +2265,12 @@ function bindSummary() {
   else if (busy(E.rows_status) && d.rows && !busy(d.rows.status)) { Object.assign(d.rows, {status: E.rows_status, step: E.rows_step}); }
   let t;
   const rerun = () => { clearTimeout(t); t = setTimeout(loadSummary, 400); };
+  document.querySelectorAll("[data-sumrange]").forEach(inp => inp.oninput = () => {
+    const rc = d.table.rate_check, at = rangeMid(rc), x = +inp.value / 100;
+    if (inp.value === "" || isNaN(x)) { rc.range.forEach(c => delete SUM.changes[c.cell]); if (inp.value !== "") return; }
+    else rc.range.forEach(c => { SUM.changes[c.cell] = c.value + (x - at.value); });
+    rerun();
+  });
   document.querySelectorAll("[data-sumlever]").forEach(inp => inp.oninput = () => {
     const r = d.table.rows.find(x => x.lever?.cell === inp.dataset.sumlever), l = r.lever;
     if (inp.value === "") delete SUM.changes[l.cell]; else if (!isNaN(+inp.value)) SUM.changes[l.cell] = leverRaw(l, inp.value); else return;
